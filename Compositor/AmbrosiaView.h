@@ -1,0 +1,69 @@
+#ifndef AMBROSIA_VIEW_H
+#define AMBROSIA_VIEW_H
+
+#import <Foundation/Foundation.h>
+#include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_scene.h>
+
+@class AmbrosiaCompositor;
+@class AmbrosiaDecoration;
+
+struct ambrosia_view_state {
+    struct wlr_xdg_toplevel *xdg_toplevel;
+    struct wlr_scene_tree   *scene_tree;
+
+    struct wl_listener map;
+    struct wl_listener unmap;
+    struct wl_listener destroy;
+    struct wl_listener request_move;
+    struct wl_listener request_resize;
+    struct wl_listener request_maximize;
+    struct wl_listener request_fullscreen;
+    struct wl_listener request_close;
+    struct wl_listener set_title;
+    struct wl_listener set_app_id;
+
+    void *objc_view;
+};
+
+@interface AmbrosiaView : NSObject
+
+@property (nonatomic, weak) AmbrosiaCompositor *compositor;
+@property (nonatomic, readonly) struct ambrosia_view_state *state;
+@property (nonatomic, strong, nullable) AmbrosiaDecoration *decoration;
+
+/** Position of the view (including decoration offset) in compositor space */
+@property (nonatomic) int x;
+@property (nonatomic) int y;
+@property (nonatomic, readonly) BOOL isMapped;
+@property (nonatomic, readonly) BOOL isMenu;     /**< YES → skip decorations */
+
+- (instancetype)initWithToplevel:(struct wlr_xdg_toplevel *)toplevel
+                      compositor:(AmbrosiaCompositor *)compositor;
+
+/** Expose the underlying wlr_surface of this view */
+- (struct wlr_surface *)surface;
+
+/** Geometry of the surface content (no decoration) */
+- (struct wlr_box)geometry;
+
+/** Move the scene tree to (x, y) */
+- (void)moveTo:(int)x y:(int)y;
+
+/** Update title in the decoration (if any) */
+- (void)updateTitle;
+
+/** Called by C callbacks */
+- (void)handleMap;
+- (void)handleUnmap;
+- (void)handleDestroy;
+- (void)handleRequestMoveSerial:(uint32_t)serial;
+- (void)handleRequestResizeSerial:(uint32_t)serial edges:(uint32_t)edges;
+- (void)handleRequestMaximize;
+- (void)handleRequestFullscreen;
+- (void)handleSetTitle;
+- (void)handleSetAppId;
+
+@end
+
+#endif /* AMBROSIA_VIEW_H */

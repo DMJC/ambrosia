@@ -1,0 +1,116 @@
+#ifndef AMBROSIA_COMPOSITOR_H
+#define AMBROSIA_COMPOSITOR_H
+
+#import <Foundation/Foundation.h>
+#include <wayland-server-core.h>
+#include <wlr/backend.h>
+#include <wlr/render/allocator.h>
+#include <wlr/render/wlr_renderer.h>
+#include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/types/wlr_data_device.h>
+#include <wlr/types/wlr_subcompositor.h>
+
+@class AmbrosiaView;
+@class AmbrosiaOutput;
+
+/* Cursor interaction mode */
+typedef NS_ENUM(NSInteger, AmbrosiaCursorMode) {
+    AmbrosiaCursorModePassthrough = 0,
+    AmbrosiaCursorModeMove,
+    AmbrosiaCursorModeResize,
+};
+
+/* All C-level Wayland listener state, kept separate for wl_container_of compatibility */
+struct ambrosia_compositor_state {
+    struct wl_display           *display;
+    struct wl_event_loop        *event_loop;
+    struct wlr_backend          *backend;
+    struct wlr_renderer         *renderer;
+    struct wlr_allocator        *allocator;
+    struct wlr_scene            *scene;
+    struct wlr_scene_output_layout *scene_layout;
+    struct wlr_output_layout    *output_layout;
+    struct wlr_compositor       *compositor;
+    struct wlr_subcompositor    *subcompositor;
+    struct wlr_data_device_manager *data_device_manager;
+    struct wlr_xdg_shell        *xdg_shell;
+    struct wlr_xdg_decoration_manager_v1 *decoration_manager;
+    struct wlr_seat             *seat;
+    struct wlr_cursor           *cursor;
+    struct wlr_xcursor_manager  *cursor_mgr;
+
+    /* Listeners */
+    struct wl_listener new_output;
+    struct wl_listener new_xdg_toplevel;
+    struct wl_listener new_xdg_popup;
+    struct wl_listener new_toplevel_decoration;
+    struct wl_listener cursor_motion;
+    struct wl_listener cursor_motion_absolute;
+    struct wl_listener cursor_button;
+    struct wl_listener cursor_axis;
+    struct wl_listener cursor_frame;
+    struct wl_listener new_input;
+    struct wl_listener request_set_cursor;
+    struct wl_listener request_set_selection;
+
+    /* Grab / resize state */
+    AmbrosiaCursorMode  cursor_mode;
+    double              grab_x;
+    double              grab_y;
+    struct wlr_box      grab_geobox;
+    uint32_t            resize_edges;
+
+    /* Back-reference (not retained – ObjC object owns this struct) */
+    void               *objc_compositor;
+};
+
+@interface AmbrosiaCompositor : NSObject
+
+@property (readonly) struct ambrosia_compositor_state *state;
+@property (readonly) NSMutableArray<AmbrosiaView *>   *views;
+@property (readonly) NSMutableArray<AmbrosiaOutput *> *outputs;
+@property (readonly, nullable) AmbrosiaView            *focusedView;
+
+- (instancetype)init;
+- (BOOL)setup:(NSError **)error;
+- (void)run;
+- (void)stop;
+
+/* View management */
+- (void)addView:(AmbrosiaView *)view;
+- (void)removeView:(AmbrosiaView *)view;
+- (nullable AmbrosiaView *)viewAtX:(double)x y:(double)y
+                         surface:(struct wlr_surface **)surfaceOut
+                          localX:(double *)lx
+                          localY:(double *)ly;
+- (void)focusView:(AmbrosiaView *)view surface:(struct wlr_surface *)surface;
+- (void)beginMoveView:(AmbrosiaView *)view cursor:(struct wlr_cursor *)cursor;
+- (void)beginResizeView:(AmbrosiaView *)view
+                 cursor:(struct wlr_cursor *)cursor
+                  edges:(uint32_t)edges;
+
+/* Called from C callbacks */
+- (void)handleNewOutput:(struct wlr_output *)output;
+- (void)handleNewXdgToplevel:(struct wlr_xdg_toplevel *)toplevel;
+- (void)handleNewXdgPopup:(struct wlr_xdg_popup *)popup;
+- (void)handleNewToplevelDecoration:(struct wlr_xdg_toplevel_decoration_v1 *)decoration;
+- (void)handleCursorMotionTime:(uint32_t)time dx:(double)dx dy:(double)dy;
+- (void)handleCursorMotionAbsoluteTime:(uint32_t)time x:(double)x y:(double)y output:(struct wlr_output *)output;
+- (void)handleCursorButtonTime:(uint32_t)time button:(uint32_t)button state:(uint32_t)state;
+- (void)handleCursorAxisTime:(uint32_t)time orientation:(uint32_t)orientation delta:(double)delta deltaDiscrete:(int32_t)discrete;
+- (void)handleCursorFrame;
+- (void)handleNewInput:(struct wlr_input_device *)device;
+- (void)handleRequestSetCursor:(struct wlr_seat_pointer_request_set_cursor_event *)event;
+- (void)handleRequestSetSelection:(struct wlr_seat_request_set_selection_event *)event;
+
+@end
+
+#endif /* AMBROSIA_COMPOSITOR_H */
