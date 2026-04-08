@@ -4,6 +4,7 @@
 
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_keyboard.h>
+#include <wlr/backend/session.h>
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
 
@@ -135,8 +136,31 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
     uint32_t modifiers = wlr_keyboard_get_modifiers(kb);
 
     for (int i = 0; i < nsyms; i++) {
+        /* Ctrl+Alt+Backspace → save session and quit compositor */
+        if (syms[i] == XKB_KEY_BackSpace
+                && (modifiers & WLR_MODIFIER_CTRL) && (modifiers & WLR_MODIFIER_ALT)
+                && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+            wlr_log(WLR_INFO, "Ctrl+Alt+Backspace: saving session and stopping compositor");
+            [_compositor saveSessionAndLogout];
+            handled = YES;
+        }
+        /* Ctrl+Alt+F1–F12 → switch VTY */
+        if ((modifiers & WLR_MODIFIER_CTRL) && (modifiers & WLR_MODIFIER_ALT)
+                && event->state == WL_KEYBOARD_KEY_STATE_PRESSED
+                && syms[i] >= XKB_KEY_F1 && syms[i] <= XKB_KEY_F12) {
+            unsigned vt = syms[i] - XKB_KEY_F1 + 1;
+            struct wlr_session *session = _compositor.state->wlr_session;
+            if (session) {
+                wlr_log(WLR_INFO, "Switching to VT %u", vt);
+                wlr_session_change_vt(session, vt);
+            } else {
+                wlr_log(WLR_DEBUG, "VT switch requested but no session available (nested compositor?)");
+            }
+            handled = YES;
+        }
         /* Alt+F4 → close focused window */
-        if (syms[i] == XKB_KEY_F4 && (modifiers & WLR_MODIFIER_ALT)) {
+        if (syms[i] == XKB_KEY_F4 && (modifiers & WLR_MODIFIER_ALT)
+                && !(modifiers & WLR_MODIFIER_CTRL)) {
             if (_compositor.focusedView) {
                 wlr_xdg_toplevel_send_close(
                     _compositor.focusedView.state->xdg_toplevel);

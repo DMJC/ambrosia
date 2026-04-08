@@ -10,6 +10,7 @@
 #include <wlr/types/wlr_output_layout.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <signal.h>
 
 /* --------------------------------------------------------------------------
@@ -134,6 +135,19 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
 }
 
 /* --------------------------------------------------------------------------
+ * Logout pipe watcher — called on the compositor's wl_event_loop thread
+ * -------------------------------------------------------------------------- */
+
+static int handle_logout_pipe(int fd, uint32_t mask, void *data)
+{
+    char byte;
+    (void)read(fd, &byte, 1); /* drain */
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)data;
+    [c saveSessionAndLogout];
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
  * AmbrosiaCompositor
  * -------------------------------------------------------------------------- */
 
@@ -143,11 +157,12 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
     NSMutableArray<AmbrosiaOutput *> *_outputs;
     AmbrosiaInput                    *_input;
     AmbrosiaView                     *_focusedView;
+    AmbrosiaSession                  *_session;
     BOOL                              _running;
-    pid_t                             _dockPid;
 }
 
 @synthesize state    = _state;
+@synthesize session  = _session;
 @synthesize views    = _views;
 @synthesize outputs  = _outputs;
 
@@ -185,68 +200,84 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
 - (BOOL)setup:(NSError **)error
 {
     wlr_log_init(WLR_DEBUG, NULL);
+    wlr_log(WLR_INFO, "Ambrosia: initialising compositor");
 
     /* Wayland display + event loop */
     _state->display    = wl_display_create();
     _state->event_loop = wl_display_get_event_loop(_state->display);
     if (!_state->display || !_state->event_loop) {
+        wlr_log(WLR_ERROR, "Failed to create wl_display");
         if (error) *error = [NSError errorWithDomain:@"AmbrosiaCompositor"
                                                 code:1
                                             userInfo:@{NSLocalizedDescriptionKey:@"Failed to create wl_display"}];
         return NO;
     }
+    wlr_log(WLR_DEBUG, "Wayland display created");
 
     /* Backend (DRM/KMS on bare metal, Wayland/X11 nested in an existing compositor) */
-    _state->backend = wlr_backend_autocreate(_state->event_loop, NULL);
+    _state->backend = wlr_backend_autocreate(_state->event_loop, &_state->wlr_session);
     if (!_state->backend) {
+        wlr_log(WLR_ERROR, "Failed to create backend");
         if (error) *error = [NSError errorWithDomain:@"AmbrosiaCompositor"
                                                 code:2
                                             userInfo:@{NSLocalizedDescriptionKey:@"Failed to create backend"}];
         return NO;
     }
+    wlr_log(WLR_DEBUG, "Backend created%s",
+            _state->wlr_session ? " (session available, VT switching enabled)" : "");
 
     /* Renderer */
     _state->renderer = wlr_renderer_autocreate(_state->backend);
     if (!_state->renderer) {
+        wlr_log(WLR_ERROR, "Failed to create renderer");
         if (error) *error = [NSError errorWithDomain:@"AmbrosiaCompositor"
                                                 code:3
                                             userInfo:@{NSLocalizedDescriptionKey:@"Failed to create renderer"}];
         return NO;
     }
     wlr_renderer_init_wl_display(_state->renderer, _state->display);
+    wlr_log(WLR_DEBUG, "Renderer created");
 
     /* Allocator */
     _state->allocator = wlr_allocator_autocreate(_state->backend, _state->renderer);
     if (!_state->allocator) {
+        wlr_log(WLR_ERROR, "Failed to create allocator");
         if (error) *error = [NSError errorWithDomain:@"AmbrosiaCompositor"
                                                 code:4
                                             userInfo:@{NSLocalizedDescriptionKey:@"Failed to create allocator"}];
         return NO;
     }
+    wlr_log(WLR_DEBUG, "Allocator created");
 
     /* Wayland globals */
     wlr_compositor_create(_state->display, 5, _state->renderer);
     wlr_subcompositor_create(_state->display);
     wlr_data_device_manager_create(_state->display);
+    wlr_log(WLR_DEBUG, "Wayland globals registered");
 
     /* Output layout + scene */
     _state->output_layout = wlr_output_layout_create(_state->display);
     _state->scene         = wlr_scene_create();
     _state->scene_layout  = wlr_scene_attach_output_layout(_state->scene, _state->output_layout);
+    wlr_log(WLR_DEBUG, "Scene graph initialised");
 
     /* XDG shell (version 3) */
     _state->xdg_shell = wlr_xdg_shell_create(_state->display, 3);
+    wlr_log(WLR_DEBUG, "XDG shell created");
 
     /* Server-side decoration manager */
     _state->decoration_manager = wlr_xdg_decoration_manager_v1_create(_state->display);
+    wlr_log(WLR_DEBUG, "Decoration manager created");
 
     /* Seat */
     _state->seat = wlr_seat_create(_state->display, "seat0");
+    wlr_log(WLR_DEBUG, "Seat 'seat0' created");
 
     /* Cursor */
     _state->cursor     = wlr_cursor_create();
     _state->cursor_mgr = wlr_xcursor_manager_create(NULL, 24);
     wlr_cursor_attach_output_layout(_state->cursor, _state->output_layout);
+    wlr_log(WLR_DEBUG, "Cursor initialised");
 
     /* Register all listeners */
     _state->new_output.notify = handle_new_output;
@@ -289,6 +320,27 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
     /* Input handler */
     _input = [[AmbrosiaInput alloc] initWithCompositor:self];
 
+    /* Logout self-pipe: background NSRunLoop thread → wl_event_loop */
+    if (pipe(_state->logout_pipe) != 0) {
+        wlr_log(WLR_ERROR, "Failed to create logout pipe: %s", strerror(errno));
+        if (error) *error = [NSError errorWithDomain:@"AmbrosiaCompositor"
+                                                code:5
+                                            userInfo:@{NSLocalizedDescriptionKey:@"Failed to create logout pipe"}];
+        return NO;
+    }
+    for (int i = 0; i < 2; i++) {
+        fcntl(_state->logout_pipe[i], F_SETFD, FD_CLOEXEC);
+        fcntl(_state->logout_pipe[i], F_SETFL,
+              fcntl(_state->logout_pipe[i], F_GETFL) | O_NONBLOCK);
+    }
+    _state->logout_source = wl_event_loop_add_fd(
+        _state->event_loop,
+        _state->logout_pipe[0],
+        WL_EVENT_READABLE,
+        handle_logout_pipe,
+        (__bridge void *)self);
+
+    wlr_log(WLR_INFO, "Ambrosia: compositor setup complete");
     return YES;
 }
 
@@ -312,13 +364,36 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
     setenv("WAYLAND_DISPLAY", socket, 1);
     wlr_log(WLR_INFO, "Ambrosia compositor running on WAYLAND_DISPLAY=%s", socket);
 
-    [self launchDock];
+    /* Start the session manager — launches AmbrosiaDock and GFinder,
+     * restarting either automatically if they exit unexpectedly.     */
+    _session = AmbrosiaSessionCreateDefault(_state->event_loop);
+    [_session start];
+
+    /* Background thread: pumps NSRunLoop so NSDistributedNotificationCenter
+     * can deliver "AmbrosiaLogoutRequest" notifications.  On arrival the
+     * handler writes one byte to logout_pipe[1]; handle_logout_pipe() on the
+     * wl_event_loop thread calls saveSessionAndLogout from there.          */
+    NSThread *notifThread = [[NSThread alloc]
+        initWithTarget:self
+              selector:@selector(_runNotificationListener)
+                object:nil];
+    notifThread.name = @"AmbrosiaNotificationListener";
+    [notifThread start];
 
     _running = YES;
     wl_display_run(_state->display);
 
-    /* Cleanup */
-    if (_dockPid > 0) kill(_dockPid, SIGTERM);
+    /* Shutdown */
+    [[NSDistributedNotificationCenter defaultCenter] removeObserver:self];
+    if (_state->logout_source) {
+        wl_event_source_remove(_state->logout_source);
+        _state->logout_source = NULL;
+    }
+    close(_state->logout_pipe[0]);
+    close(_state->logout_pipe[1]);
+
+    [_session stop];
+    _session = nil;
     wl_display_destroy_clients(_state->display);
     wlr_xcursor_manager_destroy(_state->cursor_mgr);
     wlr_cursor_destroy(_state->cursor);
@@ -328,26 +403,8 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
 
 - (void)stop
 {
+    wlr_log(WLR_INFO, "Ambrosia: stopping compositor");
     if (_state->display) wl_display_terminate(_state->display);
-}
-
-- (void)launchDock
-{
-    pid_t pid = fork();
-    if (pid == 0) {
-        /* Child: launch the dock */
-        NSString *dockPath = [[NSBundle mainBundle].bundlePath
-                              stringByAppendingPathComponent:@"../AmbrosiaDock.app/AmbrosiaDock"];
-        if (![[NSFileManager defaultManager] fileExistsAtPath:dockPath]) {
-            /* Fallback: look next to the compositor binary */
-            dockPath = @"AmbrosiaDock";
-        }
-        execlp([dockPath UTF8String], "AmbrosiaDock", NULL);
-        /* If exec fails, try relative path */
-        execlp("AmbrosiaDock", "AmbrosiaDock", NULL);
-        _exit(1);
-    }
-    _dockPid = pid;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -356,12 +413,14 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
 - (void)addView:(AmbrosiaView *)view
 {
     [_views addObject:view];
+    wlr_log(WLR_DEBUG, "View added (total: %lu)", (unsigned long)_views.count);
 }
 
 - (void)removeView:(AmbrosiaView *)view
 {
     if (_focusedView == view) _focusedView = nil;
     [_views removeObject:view];
+    wlr_log(WLR_DEBUG, "View removed (total: %lu)", (unsigned long)_views.count);
 }
 
 - (nullable AmbrosiaView *)viewAtX:(double)x y:(double)y
@@ -402,6 +461,14 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
 - (void)focusView:(AmbrosiaView *)view surface:(struct wlr_surface *)surface
 {
     if (_focusedView == view) return;
+
+    if (view) {
+        const char *title   = view.state->xdg_toplevel->title   ?: "(untitled)";
+        const char *app_id  = view.state->xdg_toplevel->app_id  ?: "(unknown)";
+        wlr_log(WLR_DEBUG, "Focus: %s [%s]", title, app_id);
+    } else {
+        wlr_log(WLR_DEBUG, "Focus cleared");
+    }
 
     /* Unfocus previous */
     if (_focusedView) {
@@ -451,6 +518,8 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
 
 - (void)beginMoveView:(AmbrosiaView *)view cursor:(struct wlr_cursor *)cursor
 {
+    wlr_log(WLR_DEBUG, "Begin move: %s",
+            view.state->xdg_toplevel->title ?: "(untitled)");
     _state->cursor_mode = AmbrosiaCursorModeMove;
     _state->grab_x = cursor->x - view.x;
     _state->grab_y = cursor->y - view.y;
@@ -460,6 +529,8 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
                  cursor:(struct wlr_cursor *)cursor
                   edges:(uint32_t)edges
 {
+    wlr_log(WLR_DEBUG, "Begin resize: %s (edges: 0x%x)",
+            view.state->xdg_toplevel->title ?: "(untitled)", edges);
     _state->cursor_mode  = AmbrosiaCursorModeResize;
     _state->resize_edges = edges;
 
@@ -562,6 +633,7 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
 
 - (void)handleNewOutput:(struct wlr_output *)output
 {
+    wlr_log(WLR_INFO, "New output: %s", output->name);
     wlr_output_init_render(output, _state->allocator, _state->renderer);
 
     struct wlr_output_state state;
@@ -584,16 +656,26 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
     ambOutput.state->scene_output = scene_output;
 
     wlr_xcursor_manager_load(_state->cursor_mgr, output->scale);
+
+    struct wlr_output_mode *cur_mode = output->current_mode;
+    if (cur_mode) {
+        wlr_log(WLR_INFO, "Output %s: %dx%d @ %d mHz",
+                output->name, cur_mode->width, cur_mode->height, cur_mode->refresh);
+    }
 }
 
 - (void)handleNewXdgToplevel:(struct wlr_xdg_toplevel *)toplevel
 {
+    wlr_log(WLR_INFO, "New toplevel: %s [%s]",
+            toplevel->title  ?: "(untitled)",
+            toplevel->app_id ?: "(unknown)");
     AmbrosiaView *view = [[AmbrosiaView alloc] initWithToplevel:toplevel compositor:self];
     [self addView:view];
 }
 
 - (void)handleNewXdgPopup:(struct wlr_xdg_popup *)popup
 {
+    wlr_log(WLR_DEBUG, "New XDG popup");
     /* Popups (including GNUstep menus) are managed entirely by the scene graph.
      * No decorations; the surface is parented to the scene automatically.  */
     struct wlr_xdg_surface *xdg_surface = popup->base;
@@ -726,6 +808,17 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
 
 - (void)handleNewInput:(struct wlr_input_device *)device
 {
+    const char *type_name = "unknown";
+    switch (device->type) {
+        case WLR_INPUT_DEVICE_KEYBOARD: type_name = "keyboard"; break;
+        case WLR_INPUT_DEVICE_POINTER:  type_name = "pointer";  break;
+        case WLR_INPUT_DEVICE_TOUCH:    type_name = "touch";    break;
+        case WLR_INPUT_DEVICE_TABLET:     type_name = "tablet";     break;
+        case WLR_INPUT_DEVICE_TABLET_PAD: type_name = "tablet_pad"; break;
+        case WLR_INPUT_DEVICE_SWITCH:     type_name = "switch";     break;
+        default: break;
+    }
+    wlr_log(WLR_INFO, "New input device: %s (%s)", device->name, type_name);
     [_input addDevice:device];
 
     /* Update seat capabilities */
@@ -746,6 +839,83 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
 - (void)handleRequestSetSelection:(struct wlr_seat_request_set_selection_event *)event
 {
     wlr_seat_set_selection(_state->seat, event->source, event->serial);
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Logout / session save
+
+- (void)_runNotificationListener
+{
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_handleLogoutNotification:)
+               name:@"AmbrosiaLogoutRequest"
+             object:nil];
+    wlr_log(WLR_DEBUG, "Notification listener running (AmbrosiaLogoutRequest)");
+    /* Runs until the process exits; the observer keeps the loop alive. */
+    [[NSRunLoop currentRunLoop] run];
+}
+
+- (void)_handleLogoutNotification:(NSNotification *)note
+{
+    wlr_log(WLR_INFO, "Logout requested via AmbrosiaLogoutRequest notification");
+    /* Write one byte to wake up the wl_event_loop on the main thread. */
+    char byte = 1;
+    (void)write(_state->logout_pipe[1], &byte, 1);
+}
+
+- (void)saveSessionAndLogout
+{
+    wlr_log(WLR_INFO, "Saving session state and logging out");
+
+    /* Build window list from currently mapped views */
+    NSMutableArray<NSDictionary *> *windows = [NSMutableArray array];
+    for (AmbrosiaView *view in _views) {
+        if (!view.isMapped) continue;
+        struct wlr_box geo = [view geometry];
+        const char *appId = view.state->xdg_toplevel->app_id;
+        const char *title = view.state->xdg_toplevel->title;
+        [windows addObject:@{
+            @"AppId":  appId ? [NSString stringWithUTF8String:appId] : @"",
+            @"Title":  title ? [NSString stringWithUTF8String:title] : @"",
+            @"X":      @(view.x),
+            @"Y":      @(view.y),
+            @"Width":  @(geo.width),
+            @"Height": @(geo.height),
+        }];
+    }
+
+    NSDictionary *state = @{
+        @"SchemaVersion": @1,
+        @"Windows":       windows,
+    };
+
+    /* ~/GNUstep/Library/Ambrosia/session.plist */
+    NSArray *libDirs = NSSearchPathForDirectoriesInDomains(
+        NSLibraryDirectory, NSUserDomainMask, YES);
+    NSString *dir  = [[libDirs firstObject]
+                      stringByAppendingPathComponent:@"Ambrosia"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                                withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
+    NSString *path = [dir stringByAppendingPathComponent:@"session.plist"];
+
+    NSError *err = nil;
+    NSData  *data = [NSPropertyListSerialization
+        dataWithPropertyList:state
+                      format:NSPropertyListXMLFormat_v1_0
+                     options:0
+                       error:&err];
+    if (data && [data writeToFile:path atomically:YES]) {
+        wlr_log(WLR_INFO, "Session saved: %s (%lu window(s))",
+                [path UTF8String], (unsigned long)windows.count);
+    } else {
+        wlr_log(WLR_ERROR, "Failed to save session: %s",
+                err ? [[err localizedDescription] UTF8String] : "write error");
+    }
+
+    [self stop];
 }
 
 @end

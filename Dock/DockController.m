@@ -2,6 +2,10 @@
 #import "DockView.h"
 #import "DockItem.h"
 
+#include <dirent.h>
+#include <stdio.h>
+#include <string.h>
+
 static NSString *const kPrefsIconSize    = @"iconSize";
 static NSString *const kPrefsZoomFactor  = @"zoomFactor";
 static NSString *const kPrefsPosition    = @"dockPosition";
@@ -80,18 +84,17 @@ static NSString *const kPrefsItems       = @"items";
     NSRect screenFrame = [NSScreen mainScreen].frame;
     NSRect panelRect   = [self dockRectForScreen:[NSScreen mainScreen]];
 
+    /* NSWindowStyleMaskNonactivatingPanel and NSWindowCollectionBehavior
+     * are not supported by GNUstep — use a plain borderless panel. */
     _dockPanel = [[NSPanel alloc]
                   initWithContentRect:panelRect
-                            styleMask:NSWindowStyleMaskBorderless |
-                                      NSWindowStyleMaskNonactivatingPanel
+                            styleMask:NSWindowStyleMaskBorderless
                               backing:NSBackingStoreBuffered
                                 defer:NO];
-    _dockPanel.level                = NSStatusWindowLevel;
-    _dockPanel.opaque               = NO;
-    _dockPanel.backgroundColor      = [NSColor clearColor];
-    _dockPanel.hasShadow             = NO;
-    _dockPanel.collectionBehavior   = NSWindowCollectionBehaviorCanJoinAllSpaces |
-                                      NSWindowCollectionBehaviorStationary;
+    _dockPanel.level           = NSStatusWindowLevel;
+    _dockPanel.opaque          = NO;
+    _dockPanel.backgroundColor = [NSColor clearColor];
+    _dockPanel.hasShadow       = NO;
 
     _dockView = [[DockView alloc] initWithFrame:((NSView *)_dockPanel.contentView).bounds];
     _dockView.controller     = self;
@@ -104,23 +107,47 @@ static NSString *const kPrefsItems       = @"items";
     (void)screenFrame;
 }
 
+/**
+ * Return the frame for the dock panel given the current item list and
+ * the screen geometry.  For "bottom" (default) the dock is sized to fit
+ * its items and centred horizontally at the very bottom of the screen.
+ */
 - (NSRect)dockRectForScreen:(NSScreen *)screen
 {
-    NSRect sf    = screen.frame;
-    CGFloat h    = _iconSize + 32; /* icon + padding + running dot */
-    CGFloat w    = sf.size.width * 0.6;
-    CGFloat x    = sf.origin.x + (sf.size.width - w) * 0.5;
+    NSRect sf = screen ? screen.frame : NSZeroRect;
+
+    /* gnustep-back on Wayland may report zero dimensions before the
+     * display handshake completes — fall back to a sensible default. */
+    if (sf.size.width  < 32) sf.size.width  = 1920;
+    if (sf.size.height < 32) sf.size.height = 1080;
+
+    /* Panel height must accommodate icons at maximum zoom factor plus the
+     * hover label drawn above the zoomed icon (~11 pt font + 4 pt padding
+     * + 4 pt gap = ~20 pt).  Background is painted only over the base-
+     * height strip; transparent space above lets icons and labels overflow. */
+    CGFloat h = _iconSize * _zoomFactor + 44.0;
 
     if ([_dockPosition isEqualToString:@"left"]) {
         return NSMakeRect(sf.origin.x, sf.origin.y,
-                          _iconSize + 32, sf.size.height);
+                          _iconSize * _zoomFactor + 44.0, sf.size.height);
     }
     if ([_dockPosition isEqualToString:@"right"]) {
-        return NSMakeRect(NSMaxX(sf) - (_iconSize + 32), sf.origin.y,
-                          _iconSize + 32, sf.size.height);
+        CGFloat panelW = _iconSize * _zoomFactor + 44.0;
+        return NSMakeRect(NSMaxX(sf) - panelW, sf.origin.y,
+                          panelW, sf.size.height);
     }
-    /* default: bottom */
-    return NSMakeRect(x, sf.origin.y, w, h);
+
+    /* Bottom-centre: width fits the current items with some padding */
+    NSUInteger count = _items.count;
+    CGFloat itemSlot = _iconSize + 8.0;           /* icon + inter-item gap */
+    CGFloat w = MAX(120.0, count * itemSlot + 20.0); /* 10 px side padding × 2 */
+    w = MIN(w, sf.size.width - 40.0);             /* never wider than screen */
+
+    /* Centre horizontally; sit flush at the bottom edge */
+    CGFloat x = sf.origin.x + floor((sf.size.width - w) * 0.5);
+    CGFloat y = sf.origin.y;                       /* y=0 = bottom in GNUstep */
+
+    return NSMakeRect(x, y, w, h);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -158,9 +185,15 @@ static NSString *const kPrefsItems       = @"items";
 
 - (void)loadDefaultItems
 {
-    /* Scan /Applications for .app bundles */
-    NSArray<NSString *> *appDirs = @[@"/Applications",
-                                     [NSHomeDirectory() stringByAppendingPathComponent:@"Applications"]];
+    /* Scan standard GNUstep and FHS application directories */
+    NSArray<NSString *> *appDirs = @[
+        @"/usr/GNUstep/Local/Applications",
+        @"/usr/GNUstep/System/Applications",
+        @"/usr/local/GNUstep/Local/Applications",
+        @"/Applications",
+        [NSHomeDirectory() stringByAppendingPathComponent:@"GNUstep/Applications"],
+        [NSHomeDirectory() stringByAppendingPathComponent:@"Applications"],
+    ];
     NSFileManager *fm = [NSFileManager defaultManager];
 
     for (NSString *dir in appDirs) {
@@ -230,14 +263,13 @@ static NSString *const kPrefsItems       = @"items";
 
 - (void)observeRunningApps
 {
-    /* GNUstep workspace notifications carry plain-string keys in userInfo:
-     *   NSApplicationName            → NSString (localised app name)
-     *   NSApplicationPath            → NSString (path to .app bundle)
-     *   NSApplicationBundleIdentifier → NSString (bundle ID, may be absent)
-     *   NSApplicationProcessIdentifier → NSNumber (PID)
-     *
-     * NSRunningApplication / NSWorkspaceApplicationKey are macOS-only.
-     */
+    /* Seed running state from /proc — avoids connecting to GWorkspace
+     * (which would launch it if it is not already running).            */
+    [self seedRunningAppsFromProc];
+
+    /* GNUstep workspace notifications for future launch/quit events.
+     * These arrive via the DO notification centre without needing
+     * GWorkspace to be the workspace manager.                          */
     NSWorkspace *ws = [NSWorkspace sharedWorkspace];
     __weak typeof(self) weakSelf = self;
 
@@ -255,18 +287,99 @@ static NSString *const kPrefsItems       = @"items";
 }
 
 /**
- * Parse a GNUstep workspace notification userInfo dictionary and update
- * the dock item running-state accordingly.
+ * Scan /proc/any/cmdline for processes whose argv[0] ends with a known
+ * GNUstep app binary pattern (inside an .app bundle).  For each one
+ * found, synthesise an info dict and call -syncRunningAppFromUserInfo:.
+ *
+ * This is Linux-specific but lets us detect already-running apps
+ * without requiring GWorkspace to be active.
+ */
+- (void)seedRunningAppsFromProc
+{
+    NSFileManager *fm = [NSFileManager defaultManager];
+    DIR *proc = opendir("/proc");
+    if (!proc) return;
+
+    struct dirent *entry;
+    while ((entry = readdir(proc)) != NULL) {
+        /* Only numeric directories (PIDs) */
+        if (entry->d_name[0] < '1' || entry->d_name[0] > '9') continue;
+
+        char cmdline_path[64];
+        snprintf(cmdline_path, sizeof(cmdline_path),
+                 "/proc/%s/cmdline", entry->d_name);
+
+        FILE *f = fopen(cmdline_path, "r");
+        if (!f) continue;
+
+        char buf[4096];
+        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+        if (n == 0) continue;
+        buf[n] = '\0';
+
+        /* argv[0] is the first null-terminated string */
+        NSString *argv0 = [NSString stringWithUTF8String:buf];
+        if (!argv0.length) continue;
+
+        /* Must be inside a .app bundle */
+        NSRange appRange = [argv0 rangeOfString:@".app/"
+                                        options:NSBackwardsSearch];
+        if (appRange.location == NSNotFound) continue;
+
+        /* Derive the .app bundle path */
+        NSString *bundlePath =
+            [argv0 substringToIndex:appRange.location + appRange.length - 1];
+
+        /* Verify the bundle exists */
+        BOOL isDir = NO;
+        if (![fm fileExistsAtPath:bundlePath isDirectory:&isDir] || !isDir)
+            continue;
+
+        NSBundle *bundle = [NSBundle bundleWithPath:bundlePath];
+        NSString *appName = [bundle objectForInfoDictionaryKey:@"CFBundleName"]
+                         ?: [bundle objectForInfoDictionaryKey:@"NSExecutable"]
+                         ?: [[bundlePath lastPathComponent]
+                             stringByDeletingPathExtension];
+        NSString *bundleID = [bundle objectForInfoDictionaryKey:@"CFBundleIdentifier"];
+
+        NSDictionary *info = @{
+            @"NSApplicationPath":                bundlePath,
+            @"NSApplicationName":                appName ?: @"",
+            @"NSApplicationBundleIdentifier":    bundleID ?: @"",
+            @"NSApplicationProcessIdentifier":
+                [NSNumber numberWithInt:atoi(entry->d_name)],
+        };
+
+        [self syncRunningAppFromUserInfo:info launched:YES];
+    }
+    closedir(proc);
+}
+
+/**
+ * Update dock running-state from a GNUstep workspace info dictionary.
+ *
+ * GNUstep keys (all are NSString unless noted):
+ *   NSApplicationName                  — localised display name
+ *   NSApplicationPath                  — absolute path to .app bundle
+ *   NSApplicationProcessIdentifier     — NSNumber (PID)
+ *   NSApplicationBundleIdentifier      — bundle ID (present in newer GNUstep; absent in older)
  */
 - (void)syncRunningAppFromUserInfo:(NSDictionary *)info launched:(BOOL)launched
 {
     if (!info) return;
 
-    NSString *bundleID = info[@"NSApplicationBundleIdentifier"];
     NSString *appPath  = info[@"NSApplicationPath"];
     NSString *appName  = info[@"NSApplicationName"];
+    NSString *bundleID = info[@"NSApplicationBundleIdentifier"];
 
-    /* Try to match an existing dock item by bundle ID or launch path */
+    /* Derive bundle ID from the bundle if the notification didn't supply it */
+    if (!bundleID.length && appPath.length) {
+        NSBundle *b = [NSBundle bundleWithPath:appPath];
+        bundleID = [b objectForInfoDictionaryKey:@"CFBundleIdentifier"];
+    }
+
+    /* Match priority: bundle ID > path > display name */
     DockItem *matched = nil;
     for (DockItem *item in _items) {
         if (bundleID.length && [item.bundleIdentifier isEqualToString:bundleID]) {
@@ -275,44 +388,54 @@ static NSString *const kPrefsItems       = @"items";
         if (appPath.length && [item.launchPath isEqualToString:appPath]) {
             matched = item; break;
         }
+        if (appName.length && [item.label isEqualToString:appName]) {
+            matched = item; break;
+        }
     }
 
     if (matched) {
         matched.isRunning = launched;
-        if (!launched) matched.runningApp = nil;
         dispatch_async(dispatch_get_main_queue(), ^{
             [self->_dockView setNeedsDisplay:YES];
         });
         return;
     }
 
-    /* App not in dock and just launched – add a transient entry */
-    if (launched && appPath.length) {
-        DockItem *item = [[DockItem alloc] init];
-        item.label            = appName ?: [[[appPath lastPathComponent]
-                                             stringByDeletingPathExtension] copy];
+    /* Running app not pinned to dock — show as transient entry */
+    if (launched) {
+        /* Skip apps without a visible path (e.g. background agents) */
+        NSString *label = appName;
+        if (!label.length && appPath.length)
+            label = [[[appPath lastPathComponent] stringByDeletingPathExtension] copy];
+        if (!label.length) return;
+
+        DockItem *item    = [[DockItem alloc] init];
+        item.label        = label;
+        item.launchPath   = appPath;
         item.bundleIdentifier = bundleID;
-        item.launchPath       = appPath;
-        item.isRunning        = YES;
-        item.keepInDock       = NO;
+        item.isRunning    = YES;
+        item.keepInDock   = NO;
         [item reloadIcon];
         dispatch_async(dispatch_get_main_queue(), ^{
             [self->_items addObject:item];
+            [self repositionDock];
             [self->_dockView reloadItems];
         });
+        return;
     }
 
-    /* Remove transient items when their app quits */
-    if (!launched) {
-        for (DockItem *item in [_items copy]) {
-            BOOL matchID   = bundleID.length && [item.bundleIdentifier isEqualToString:bundleID];
-            BOOL matchPath = appPath.length  && [item.launchPath isEqualToString:appPath];
-            if (!item.keepInDock && (matchID || matchPath)) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [self->_items removeObject:item];
-                    [self->_dockView reloadItems];
-                });
-            }
+    /* App quit — remove any transient entry for it */
+    for (DockItem *item in [_items copy]) {
+        if (item.keepInDock) continue;
+        BOOL byID   = bundleID.length && [item.bundleIdentifier isEqualToString:bundleID];
+        BOOL byPath = appPath.length  && [item.launchPath isEqualToString:appPath];
+        BOOL byName = appName.length  && [item.label isEqualToString:appName];
+        if (byID || byPath || byName) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self->_items removeObject:item];
+                [self repositionDock];
+                [self->_dockView reloadItems];
+            });
         }
     }
 }
@@ -358,6 +481,7 @@ static NSString *const kPrefsItems       = @"items";
     item.bundleIdentifier = [bundle objectForInfoDictionaryKey:@"CFBundleIdentifier"];
 
     [_items addObject:item];
+    [self repositionDock];
     [_dockView reloadItems];
     [self savePreferences];
 }
@@ -365,6 +489,7 @@ static NSString *const kPrefsItems       = @"items";
 - (void)removeItem:(DockItem *)item
 {
     [_items removeObject:item];
+    [self repositionDock];
     [_dockView reloadItems];
     [self savePreferences];
 }
@@ -475,11 +600,11 @@ static NSString *const kPrefsItems       = @"items";
 - (void)repositionDock
 {
     NSScreen *screen = [NSScreen mainScreen];
-    if (!screen) return;
-    NSRect rect = [self dockRectForScreen:screen];
+    NSRect rect = [self dockRectForScreen:screen]; /* handles nil screen */
     [_dockPanel setFrame:rect display:YES animate:NO];
     _dockView.baseIconSize  = _iconSize;
     _dockView.maxZoomFactor = _zoomFactor;
+    [_dockView setFrame:((NSView *)_dockPanel.contentView).bounds];
     [_dockView setNeedsDisplay:YES];
 }
 

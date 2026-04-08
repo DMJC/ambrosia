@@ -2,6 +2,7 @@
 #define AMBROSIA_COMPOSITOR_H
 
 #import <Foundation/Foundation.h>
+#import "AmbrosiaSession.h"
 #include <wayland-server-core.h>
 #include <wlr/backend.h>
 #include <wlr/render/allocator.h>
@@ -17,6 +18,7 @@
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_subcompositor.h>
+#include <wlr/backend/session.h>
 
 @class AmbrosiaView;
 @class AmbrosiaOutput;
@@ -46,6 +48,7 @@ struct ambrosia_compositor_state {
     struct wlr_seat             *seat;
     struct wlr_cursor           *cursor;
     struct wlr_xcursor_manager  *cursor_mgr;
+    struct wlr_session          *wlr_session;
 
     /* Listeners */
     struct wl_listener new_output;
@@ -68,6 +71,10 @@ struct ambrosia_compositor_state {
     struct wlr_box      grab_geobox;
     uint32_t            resize_edges;
 
+    /* Logout self-pipe: background notification thread → wl_event_loop */
+    int                  logout_pipe[2];
+    struct wl_event_source *logout_source;
+
     /* Back-reference (not retained – ObjC object owns this struct) */
     void               *objc_compositor;
 };
@@ -78,11 +85,21 @@ struct ambrosia_compositor_state {
 @property (readonly) NSMutableArray<AmbrosiaView *>   *views;
 @property (readonly) NSMutableArray<AmbrosiaOutput *> *outputs;
 @property (readonly, nullable) AmbrosiaView            *focusedView;
+@property (readonly)           AmbrosiaSession         *session;
 
 - (instancetype)init;
 - (BOOL)setup:(NSError **)error;
 - (void)run;
 - (void)stop;
+
+/**
+ * Save the current window layout to ~/GNUstep/Library/Ambrosia/session.plist
+ * and then terminate the compositor.  Safe to call from within the compositor
+ * process (e.g. from a Wayland protocol handler or privileged helper).
+ * External processes should post an NSDistributedNotification named
+ * "AmbrosiaLogoutRequest" instead.
+ */
+- (void)saveSessionAndLogout;
 
 /* View management */
 - (void)addView:(AmbrosiaView *)view;

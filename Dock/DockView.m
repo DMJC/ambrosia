@@ -119,8 +119,13 @@ static const CGFloat kZoomRadius     = 80.0;
 {
     NSRect bounds = self.bounds;
 
-    /* Background */
-    NSBezierPath *bg = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(bounds, 2, 2)
+    /* The panel is taller than the visible bar so zoomed icons have room
+     * to grow upward without clipping.  Draw the background only over the
+     * base-height strip sitting at the bottom of the view. */
+    CGFloat bgH = _baseIconSize + 22.0;   /* base icon + running-dot + padding */
+    NSRect bgRect = NSMakeRect(0, 0, bounds.size.width, bgH);
+
+    NSBezierPath *bg = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(bgRect, 2, 2)
                                                        xRadius:12 yRadius:12];
     [[NSColor colorWithCalibratedWhite:0.12 alpha:0.82] set];
     [bg fill];
