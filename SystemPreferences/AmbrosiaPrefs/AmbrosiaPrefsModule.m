@@ -179,7 +179,7 @@ static NSString *const kCompPrefsChanged = @"AmbrosiaCompositorPrefsChanged";
     panel.allowedFileTypes = @[@"app"];
     panel.canChooseDirectories = YES;
     panel.canChooseFiles = NO;
-    [panel beginSheetModalForWindow:self.mainView.window
+    [panel beginSheetModalForWindow:self.mainView.window ?: [NSApp mainWindow]
                   completionHandler:^(NSModalResponse r) {
         if (r != NSModalResponseOK) return;
         NSString *path = panel.URL.path;
