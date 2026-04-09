@@ -177,40 +177,48 @@ static const float BTN_INACTIVE[4]      = { 0.45f, 0.45f, 0.45f, 0.80f };
     int M = AMBROSIA_BUTTON_MARGIN;
     int W = _surfaceWidth  + B * 2;
     int H = _surfaceHeight + T + B;
+    int corner = 12;
 
-    int corner = 10;
-
-    /* Corners */
-    if (x < B + corner && y < T + corner)         return AmbrosiaDecorationHitResizeTopLeft;
-    if (x > W-B-corner && y < T + corner)          return AmbrosiaDecorationHitResizeTopRight;
-    if (x < B + corner && y > H-B-corner)          return AmbrosiaDecorationHitResizeBottomLeft;
-    if (x > W-B-corner && y > H-B-corner)          return AmbrosiaDecorationHitResizeBottomRight;
-
-    /* Edges */
-    if (y < B)     return AmbrosiaDecorationHitResizeTop;
-    if (y > H - B) return AmbrosiaDecorationHitResizeBottom;
-    if (x < B)     return AmbrosiaDecorationHitResizeLeft;
-    if (x > W - B) return AmbrosiaDecorationHitResizeRight;
-
-    /* Title bar */
+    /* ---- Title bar (y 0 .. T) -------------------------------------------
+     * Buttons must be checked here, before corner/edge resize regions, because
+     * the close button sits at x ≈ 8 which overlaps the top-left corner zone. */
     if (y >= 0 && y < T) {
-        /* Button hit zones (square, slightly padded) */
+        /* Very top edge: allow resize from the thin strip at y < B */
+        if (y < B) {
+            if (x < corner)     return AmbrosiaDecorationHitResizeTopLeft;
+            if (x > W - corner) return AmbrosiaDecorationHitResizeTopRight;
+            return AmbrosiaDecorationHitResizeTop;
+        }
+
+        /* Window control buttons */
         int btn_y_min = (T - D) / 2 - 3;
         int btn_y_max = btn_y_min + D + 6;
-
         int close_x = M;
         int min_x   = close_x + D + M;
         int max_x   = min_x   + D + M;
-
-        if (x >= close_x-3 && x < close_x+D+3 && y >= btn_y_min && y < btn_y_max)
-            return AmbrosiaDecorationHitClose;
-        if (x >= min_x-3   && x < min_x+D+3   && y >= btn_y_min && y < btn_y_max)
-            return AmbrosiaDecorationHitMinimize;
-        if (x >= max_x-3   && x < max_x+D+3   && y >= btn_y_min && y < btn_y_max)
-            return AmbrosiaDecorationHitMaximize;
+        if (y >= btn_y_min && y < btn_y_max) {
+            if (x >= close_x-3 && x < close_x+D+3) return AmbrosiaDecorationHitClose;
+            if (x >= min_x-3   && x < min_x+D+3)   return AmbrosiaDecorationHitMinimize;
+            if (x >= max_x-3   && x < max_x+D+3)   return AmbrosiaDecorationHitMaximize;
+        }
 
         return AmbrosiaDecorationHitTitlebar;
     }
+
+    /* ---- Below title bar: corners, then edges ---------------------------- */
+
+    /* Bottom corners */
+    if (x < corner && y > H - corner)     return AmbrosiaDecorationHitResizeBottomLeft;
+    if (x > W-corner && y > H - corner)   return AmbrosiaDecorationHitResizeBottomRight;
+
+    /* Top corners in the side-border strip just below the title bar */
+    if (x < corner && y < T + corner)     return AmbrosiaDecorationHitResizeTopLeft;
+    if (x > W-corner && y < T + corner)   return AmbrosiaDecorationHitResizeTopRight;
+
+    /* Edges */
+    if (y > H - B) return AmbrosiaDecorationHitResizeBottom;
+    if (x < B)     return AmbrosiaDecorationHitResizeLeft;
+    if (x > W - B) return AmbrosiaDecorationHitResizeRight;
 
     return AmbrosiaDecorationHitNone;
 }

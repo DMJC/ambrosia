@@ -8,6 +8,9 @@
 #include <wlr/util/log.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_keyboard.h>
+#include <linux/input-event-codes.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -145,6 +148,33 @@ static int handle_logout_pipe(int fd, uint32_t mask, void *data)
     AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)data;
     [c saveSessionAndLogout];
     return 0;
+}
+
+/* --------------------------------------------------------------------------
+ * Per-popup state: wlroots 0.18+ requires the compositor to send a configure
+ * in response to initial_commit for popups just as it does for toplevels.
+ * -------------------------------------------------------------------------- */
+
+struct ambrosia_popup_state {
+    struct wlr_xdg_surface *xdg_surface;
+    struct wl_listener      surface_commit;
+    struct wl_listener      destroy;
+};
+
+static void handle_popup_surface_commit(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_popup_state *s = wl_container_of(listener, s, surface_commit);
+    if (s->xdg_surface->initial_commit) {
+        wlr_xdg_surface_schedule_configure(s->xdg_surface);
+    }
+}
+
+static void handle_popup_destroy(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_popup_state *s = wl_container_of(listener, s, destroy);
+    wl_list_remove(&s->surface_commit.link);
+    wl_list_remove(&s->destroy.link);
+    free(s);
 }
 
 /* --------------------------------------------------------------------------
@@ -428,16 +458,16 @@ static int handle_logout_pipe(int fd, uint32_t mask, void *data)
                            localX:(double *)lx
                            localY:(double *)ly
 {
+    NSEdgeInsets insets = [AmbrosiaDecoration frameInsets];
+
     /* Iterate top-to-bottom (last added = topmost) */
     for (NSInteger i = (NSInteger)_views.count - 1; i >= 0; i--) {
         AmbrosiaView *view = _views[i];
         if (!view.isMapped) continue;
 
+        /* Try surface hit first */
         double view_sx = x - view.x;
         double view_sy = y - view.y;
-
-        /* Account for decoration offset so we hit-test the surface correctly */
-        NSEdgeInsets insets = [AmbrosiaDecoration frameInsets];
         if (view.decoration) {
             view_sx -= insets.left;
             view_sy -= insets.top;
@@ -453,6 +483,23 @@ static int handle_logout_pipe(int fd, uint32_t mask, void *data)
             if (lx) *lx = sx;
             if (ly) *ly = sy;
             return view;
+        }
+
+        /* The titlebar/borders are compositor-drawn rects, not Wayland surfaces,
+         * so wlr_xdg_surface_surface_at will not find them.  Check whether the
+         * cursor is inside the decorated bounding box instead.               */
+        if (view.decoration) {
+            struct wlr_box geo = [view geometry];
+            double frameW = insets.left + geo.width  + insets.right;
+            double frameH = insets.top  + geo.height + insets.bottom;
+            double dx = x - view.x;
+            double dy = y - view.y;
+            if (dx >= 0 && dx < frameW && dy >= 0 && dy < frameH) {
+                if (surfaceOut) *surfaceOut = NULL;
+                if (lx) *lx = 0;
+                if (ly) *ly = 0;
+                return view;
+            }
         }
     }
     return nil;
@@ -619,8 +666,12 @@ static int handle_logout_pipe(int fd, uint32_t mask, void *data)
                 return;
             }
         }
-        wlr_seat_pointer_notify_enter(_state->seat, surface, sx, sy);
-        wlr_seat_pointer_notify_motion(_state->seat, time, sx, sy);
+        if (surface) {
+            wlr_seat_pointer_notify_enter(_state->seat, surface, sx, sy);
+            wlr_seat_pointer_notify_motion(_state->seat, time, sx, sy);
+        } else {
+            wlr_seat_pointer_notify_clear_focus(_state->seat);
+        }
         wlr_cursor_set_xcursor(_state->cursor, _state->cursor_mgr, "default");
     } else {
         wlr_seat_pointer_notify_clear_focus(_state->seat);
@@ -679,7 +730,7 @@ static int handle_logout_pipe(int fd, uint32_t mask, void *data)
     /* Popups (including GNUstep menus) are managed entirely by the scene graph.
      * No decorations; the surface is parented to the scene automatically.  */
     struct wlr_xdg_surface *xdg_surface = popup->base;
-    struct wlr_scene_tree *parent_tree = _state->scene->tree.node.data;
+    struct wlr_scene_tree *parent_tree = &_state->scene->tree;
 
     /* If the popup has a parent xdg_surface, parent to its scene tree */
     if (popup->parent) {
@@ -692,14 +743,27 @@ static int handle_logout_pipe(int fd, uint32_t mask, void *data)
     struct wlr_scene_tree *scene_tree =
         wlr_scene_xdg_surface_create(parent_tree, xdg_surface);
     xdg_surface->data = scene_tree;
+
+    /* wlroots 0.18+: send configure on initial_commit for popups too */
+    struct ambrosia_popup_state *ps = calloc(1, sizeof(*ps));
+    ps->xdg_surface = xdg_surface;
+    ps->surface_commit.notify = handle_popup_surface_commit;
+    wl_signal_add(&xdg_surface->surface->events.commit, &ps->surface_commit);
+    ps->destroy.notify = handle_popup_destroy;
+    wl_signal_add(&xdg_surface->events.destroy, &ps->destroy);
 }
 
 - (void)handleNewToplevelDecoration:(struct wlr_xdg_toplevel_decoration_v1 *)decoration
 {
-    /* Always request server-side decorations. */
-    wlr_xdg_toplevel_decoration_v1_set_mode(
-        decoration,
-        WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    /* Honour the client's preference for borderless / client-side windows
+     * (e.g. GNUstep menu panels, dock, desktop).  For every other window
+     * request server-side so Ambrosia draws the title bar and borders.   */
+    enum wlr_xdg_toplevel_decoration_v1_mode mode =
+        (decoration->requested_mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE)
+        ? WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
+        : WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
+
+    wlr_xdg_toplevel_decoration_v1_set_mode(decoration, mode);
 }
 
 - (void)handleCursorMotionTime:(uint32_t)time dx:(double)dx dy:(double)dy
@@ -717,10 +781,10 @@ static int handle_logout_pipe(int fd, uint32_t mask, void *data)
 
 - (void)handleCursorButtonTime:(uint32_t)time button:(uint32_t)button state:(uint32_t)state
 {
-    wlr_seat_pointer_notify_button(_state->seat, time, button, (enum wl_pointer_button_state)state);
-
     if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
         _state->cursor_mode = AmbrosiaCursorModePassthrough;
+        wlr_seat_pointer_notify_button(_state->seat, time, button,
+                                       (enum wl_pointer_button_state)state);
         return;
     }
 
@@ -730,6 +794,25 @@ static int handle_logout_pipe(int fd, uint32_t mask, void *data)
     struct wlr_surface *surface = NULL;
     double sx = 0, sy = 0;
     AmbrosiaView *view = [self viewAtX:cx y:cy surface:&surface localX:&sx localY:&sy];
+
+    /* Ctrl+Super + left button → compositor-managed window move.
+     * Consume the event entirely so the client does not see the click. */
+    if (button == BTN_LEFT) {
+        struct wlr_keyboard *kb = wlr_seat_get_keyboard(_state->seat);
+        uint32_t mods = kb ? wlr_keyboard_get_modifiers(kb) : 0;
+        if ((mods & WLR_MODIFIER_CTRL) && (mods & WLR_MODIFIER_LOGO)) {
+            if (view && !view.isMenu) {
+                [self focusView:view surface:surface];
+                [self beginMoveView:view cursor:_state->cursor];
+            }
+            /* Do NOT forward to client — button is consumed by compositor */
+            return;
+        }
+    }
+
+    /* Forward the button press to the focused client */
+    wlr_seat_pointer_notify_button(_state->seat, time, button,
+                                   (enum wl_pointer_button_state)state);
 
     if (!view) {
         [self focusView:nil surface:nil];
@@ -748,7 +831,6 @@ static int handle_logout_pipe(int fd, uint32_t mask, void *data)
                 wlr_xdg_toplevel_send_close(view.state->xdg_toplevel);
                 return;
             case AmbrosiaDecorationHitMinimize:
-                /* Minimise – hide scene node */
                 wlr_scene_node_set_enabled(&view.state->scene_tree->node, false);
                 return;
             case AmbrosiaDecorationHitMaximize:
@@ -763,7 +845,6 @@ static int handle_logout_pipe(int fd, uint32_t mask, void *data)
             case AmbrosiaDecorationHitResizeTopRight:
             case AmbrosiaDecorationHitResizeBottomLeft:
             case AmbrosiaDecorationHitResizeBottomRight: {
-                /* Map decoration hit to WLR edges */
                 uint32_t edges = 0;
                 if (hit == AmbrosiaDecorationHitResizeTop         ||
                     hit == AmbrosiaDecorationHitResizeTopLeft      ||

@@ -12,6 +12,7 @@ struct ambrosia_view_state {
     struct wlr_xdg_toplevel *xdg_toplevel;
     struct wlr_scene_tree   *scene_tree;
 
+    struct wl_listener surface_commit; /* fires initial configure (wlroots 0.18+) */
     struct wl_listener map;
     struct wl_listener unmap;
     struct wl_listener destroy;
@@ -36,7 +37,9 @@ struct ambrosia_view_state {
 @property (nonatomic) int x;
 @property (nonatomic) int y;
 @property (nonatomic, readonly) BOOL isMapped;
-@property (nonatomic, readonly) BOOL isMenu;     /**< YES → skip decorations */
+@property (nonatomic, readonly) BOOL isMenu;              /**< YES → skip decorations (menu/dock/desktop) */
+@property (nonatomic, readonly) BOOL isDockWindow;        /**< YES → position at bottom-centre of output */
+@property (nonatomic, readonly) BOOL isDesktopBackground; /**< YES → pin to output origin, behind all windows */
 
 - (instancetype)initWithToplevel:(struct wlr_xdg_toplevel *)toplevel
                       compositor:(AmbrosiaCompositor *)compositor;

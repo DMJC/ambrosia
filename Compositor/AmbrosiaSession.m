@@ -129,7 +129,10 @@ static int session_restart_timer(void *data)
         return NO;
     }
     if (pid == 0) {
-        /* Child */
+        /* Child: clear DISPLAY so GNUstep apps use WAYLAND_DISPLAY
+         * (pointing to this compositor's socket) rather than falling
+         * back to Xwayland on a host compositor.                      */
+        unsetenv("DISPLAY");
         execv(argv[0], argv);
         _exit(127);
     }
@@ -310,6 +313,12 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
 {
     AmbrosiaSession *session = [[AmbrosiaSession alloc] initWithEventLoop:loop];
 
+    /* Force gnustep-back to use the Wayland display server.  Without this,
+     * gnustep-back defaults to its X11 backend, causing apps to crash when
+     * DISPLAY is unset or to connect to Xwayland on the host compositor
+     * instead of our own WAYLAND_DISPLAY socket.                           */
+    NSArray<NSString *> *gnustepWaylandArgs = @[@"-GSBackend", @"back"];
+
     /* ---- AmbrosiaDock ---- */
     NSString *dockExec = findExecutable(candidatePaths(@"AmbrosiaDock.app",
                                                        @"AmbrosiaDock"));
@@ -318,7 +327,7 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
     AmbrosiaSessionProcess *dock =
         [session addProcessNamed:@"AmbrosiaDock"
                         execPath:dockExec
-                       arguments:nil];
+                       arguments:gnustepWaylandArgs];
     dock.restartDelaySecs = 2;
 
     /* ---- GFinder ---- */
@@ -329,7 +338,7 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
     AmbrosiaSessionProcess *finder =
         [session addProcessNamed:@"GFinder"
                         execPath:finderExec
-                       arguments:nil];
+                       arguments:gnustepWaylandArgs];
     finder.restartDelaySecs = 3; /* slightly longer delay for the file manager */
 
     return session;
