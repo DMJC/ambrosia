@@ -1,0 +1,9 @@
+
+{
+  CFBundleIdentifier = org.gnustep.ambrosiaprefs;
+  NSExecutable = AmbrosiaModule;
+  NSMainNibFile = "AmbrosiaModule.gorm";
+  NSPrefPaneIconFile = "Ambrosia.tiff";
+  NSPrefPaneIconLabel = Ambrosia;
+  NSPrincipalClass = AmbrosiaModule;
+}
