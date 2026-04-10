@@ -13,7 +13,8 @@ ambrosia-compositor_OBJC_FILES = \
 
 ambrosia-compositor_OBJCFLAGS = \
 	$(shell pkg-config --cflags wlroots-0.20 wayland-server xkbcommon) \
-	-DWLR_USE_UNSTABLE
+	-DWLR_USE_UNSTABLE \
+	-I$(CURDIR)
 
 ambrosia-compositor_LDFLAGS = \
 	$(shell pkg-config --libs wlroots-0.20 wayland-server xkbcommon) \

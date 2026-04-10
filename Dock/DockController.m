@@ -91,6 +91,10 @@ static NSString *const kPrefsItems       = @"items";
                             styleMask:NSWindowStyleMaskBorderless
                               backing:NSBackingStoreBuffered
                                 defer:NO];
+    /* Give the panel a stable, recognisable title so the Ambrosia compositor
+     * can identify it even if gnustep-back does not set the xdg_toplevel
+     * app_id (which is not guaranteed for all gnustep-back versions).       */
+    [_dockPanel setTitle:@"AmbrosiaDock"];
     _dockPanel.level           = NSStatusWindowLevel;
     _dockPanel.opaque          = NO;
     _dockPanel.backgroundColor = [NSColor clearColor];

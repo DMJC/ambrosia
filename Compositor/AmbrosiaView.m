@@ -106,11 +106,15 @@ static BOOL isMenuToplevel(struct wlr_xdg_toplevel *toplevel)
 
 /**
  * Returns YES if this toplevel is the AmbrosiaDock — also no decorations.
+ * We check both app_id and title because gnustep-back may not call
+ * xdg_toplevel_set_app_id on all platforms / build configurations.
  */
 static BOOL isDock(struct wlr_xdg_toplevel *toplevel)
 {
     const char *app_id = toplevel->app_id;
+    const char *title  = toplevel->title;
     if (app_id && strstr(app_id, "AmbrosiaDock") != NULL) return YES;
+    if (title  && strstr(title,  "AmbrosiaDock") != NULL) return YES;
     return NO;
 }
 
@@ -275,13 +279,11 @@ check_title:
     _isDesktopBackground = isDesktopToplevel(_state->xdg_toplevel);
     _isMenu              = isMenuToplevel(_state->xdg_toplevel) || _isDockWindow || _isDesktopBackground;
 
-    if (!_isMenu) {
-        /* Create server-side decoration for normal windows */
-        _decoration = [[AmbrosiaDecoration alloc]
-                       initWithRenderer:_compositor.state->renderer
-                              sceneTree:_state->scene_tree];
-        [self updateTitle];
-    }
+    wlr_log(WLR_INFO, "map: title='%s' app_id='%s' role=%s",
+            _state->xdg_toplevel->title  ?: "(nil)",
+            _state->xdg_toplevel->app_id ?: "(nil)",
+            _isDesktopBackground ? "desktop" : _isDockWindow ? "dock"
+                                 : _isMenu   ? "menu"        : "normal");
 
     /* ---- Desktop background ---- */
     if (_isDesktopBackground) {
@@ -313,18 +315,21 @@ check_title:
 
     /* ---- Menu toplevels ---- */
     if (_isMenu) {
-        /* GNUstep positions menus via request_move; start at origin and let
-         * the app reposition.  Focus so keyboard events reach the menu. */
-        [self moveTo:0 y:0];
+        /* Place at the top-left of the primary output.  GNUstep will follow up
+         * with request_move events to reach its desired screen position. */
+        struct wlr_output *output =
+            wlr_output_layout_get_center_output(_compositor.state->output_layout);
+        struct wlr_box ob = {0};
+        if (output) wlr_output_layout_get_box(_compositor.state->output_layout, output, &ob);
+        [self moveTo:ob.x y:ob.y];
         [_compositor focusView:self surface:self.surface];
         return;
     }
 
     /* ---- Normal windows: cascade ---- */
     static int cascade = 0;
-    NSEdgeInsets insets = [AmbrosiaDecoration frameInsets];
-    int startX = 60 + cascade * 30 - (int)insets.left;
-    int startY = 60 + cascade * 30 - (int)insets.top;
+    int startX = 60 + cascade * 30;
+    int startY = 60 + cascade * 30;
     cascade = (cascade + 1) % 8;
     [self moveTo:startX y:startY];
 
@@ -395,20 +400,9 @@ check_title:
 - (void)handleSetAppId
 {
     /* Re-classify all roles */
-    BOOL wasMenu = _isMenu;
     _isDockWindow        = isDock(_state->xdg_toplevel);
     _isDesktopBackground = isDesktopToplevel(_state->xdg_toplevel);
     _isMenu              = isMenuToplevel(_state->xdg_toplevel) || _isDockWindow || _isDesktopBackground;
-    if (wasMenu != _isMenu && _isMapped) {
-        if (_isMenu) {
-            _decoration = nil;
-        } else {
-            _decoration = [[AmbrosiaDecoration alloc]
-                           initWithRenderer:_compositor.state->renderer
-                                  sceneTree:_state->scene_tree];
-            [self updateTitle];
-        }
-    }
 }
 
 @end

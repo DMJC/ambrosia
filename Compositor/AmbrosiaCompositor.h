@@ -18,6 +18,9 @@
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_subcompositor.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
+#include <wlr/types/wlr_screencopy_v1.h>
+#include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/backend/session.h>
 
 @class AmbrosiaView;
@@ -45,7 +48,10 @@ struct ambrosia_compositor_state {
     struct wlr_data_device_manager *data_device_manager;
     struct wlr_xdg_shell        *xdg_shell;
     struct wlr_xdg_decoration_manager_v1 *decoration_manager;
-    struct wlr_seat             *seat;
+    struct wlr_layer_shell_v1        *layer_shell;
+    struct wlr_screencopy_manager_v1 *screencopy_manager;
+    struct wlr_xdg_output_manager_v1 *xdg_output_manager;
+    struct wlr_seat                  *seat;
     struct wlr_cursor           *cursor;
     struct wlr_xcursor_manager  *cursor_mgr;
     struct wlr_session          *wlr_session;
@@ -55,6 +61,7 @@ struct ambrosia_compositor_state {
     struct wl_listener new_xdg_toplevel;
     struct wl_listener new_xdg_popup;
     struct wl_listener new_toplevel_decoration;
+    struct wl_listener new_layer_surface;
     struct wl_listener cursor_motion;
     struct wl_listener cursor_motion_absolute;
     struct wl_listener cursor_button;
@@ -84,6 +91,7 @@ struct ambrosia_compositor_state {
 @property (readonly) struct ambrosia_compositor_state *state;
 @property (readonly) NSMutableArray<AmbrosiaView *>   *views;
 @property (readonly) NSMutableArray<AmbrosiaOutput *> *outputs;
+@property (readonly) NSMutableArray                   *layerSurfaces; /**< NSValue wrapping ambrosia_layer_surface* */
 @property (readonly, nullable) AmbrosiaView            *focusedView;
 @property (readonly)           AmbrosiaSession         *session;
 
@@ -119,6 +127,8 @@ struct ambrosia_compositor_state {
 - (void)handleNewXdgToplevel:(struct wlr_xdg_toplevel *)toplevel;
 - (void)handleNewXdgPopup:(struct wlr_xdg_popup *)popup;
 - (void)handleNewToplevelDecoration:(struct wlr_xdg_toplevel_decoration_v1 *)decoration;
+- (void)handleNewLayerSurface:(struct wlr_layer_surface_v1 *)surface;
+- (void)removeLayerSurface:(void *)ls; /**< Called from C destroy callback */
 - (void)handleCursorMotionTime:(uint32_t)time dx:(double)dx dy:(double)dy;
 - (void)handleCursorMotionAbsoluteTime:(uint32_t)time x:(double)x y:(double)y output:(struct wlr_output *)output;
 - (void)handleCursorButtonTime:(uint32_t)time button:(uint32_t)button state:(uint32_t)state;

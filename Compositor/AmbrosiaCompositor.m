@@ -178,6 +178,51 @@ static void handle_popup_destroy(struct wl_listener *listener, void *data)
 }
 
 /* --------------------------------------------------------------------------
+ * Per-layer-surface state: handles wlr-layer-shell-v1 surfaces (e.g. the
+ * GNUstep NSMacintoshMenuStyle menu bar at NSMainMenuWindowLevel).
+ * -------------------------------------------------------------------------- */
+
+struct ambrosia_layer_surface {
+    struct wlr_layer_surface_v1       *wlr_layer_surface;
+    struct wlr_scene_layer_surface_v1 *scene_layer;
+    struct wl_listener                 surface_commit;
+    struct wl_listener                 destroy;
+};
+
+static void handle_new_layer_surface(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_compositor_state *s =
+        wl_container_of(listener, s, new_layer_surface);
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)s->objc_compositor;
+    [c handleNewLayerSurface:(struct wlr_layer_surface_v1 *)data];
+}
+
+static void handle_layer_surface_commit(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_layer_surface *ls = wl_container_of(listener, ls, surface_commit);
+    if (!ls->wlr_layer_surface->initial_commit) return;
+
+    struct wlr_output *output = ls->wlr_layer_surface->output;
+    if (!output)
+        output = wlr_output_layout_get_center_output(gCompositor.state->output_layout);
+    if (!output) return;
+
+    struct wlr_box full_area = {0};
+    wlr_output_layout_get_box(gCompositor.state->output_layout, output, &full_area);
+    struct wlr_box usable_area = full_area;
+    wlr_scene_layer_surface_v1_configure(ls->scene_layer, &full_area, &usable_area);
+}
+
+static void handle_layer_surface_destroy(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_layer_surface *ls = wl_container_of(listener, ls, destroy);
+    [gCompositor removeLayerSurface:ls];
+    wl_list_remove(&ls->surface_commit.link);
+    wl_list_remove(&ls->destroy.link);
+    free(ls);
+}
+
+/* --------------------------------------------------------------------------
  * AmbrosiaCompositor
  * -------------------------------------------------------------------------- */
 
@@ -185,24 +230,27 @@ static void handle_popup_destroy(struct wl_listener *listener, void *data)
     struct ambrosia_compositor_state *_state;
     NSMutableArray<AmbrosiaView *>   *_views;
     NSMutableArray<AmbrosiaOutput *> *_outputs;
+    NSMutableArray                   *_layerSurfaces;
     AmbrosiaInput                    *_input;
     AmbrosiaView                     *_focusedView;
     AmbrosiaSession                  *_session;
     BOOL                              _running;
 }
 
-@synthesize state    = _state;
-@synthesize session  = _session;
-@synthesize views    = _views;
-@synthesize outputs  = _outputs;
+@synthesize state         = _state;
+@synthesize session       = _session;
+@synthesize views         = _views;
+@synthesize outputs       = _outputs;
+@synthesize layerSurfaces = _layerSurfaces;
 
 - (instancetype)init
 {
     self = [super init];
     if (!self) return nil;
 
-    _views   = [NSMutableArray array];
-    _outputs = [NSMutableArray array];
+    _views         = [NSMutableArray array];
+    _outputs       = [NSMutableArray array];
+    _layerSurfaces = [NSMutableArray array];
     _state   = calloc(1, sizeof(struct ambrosia_compositor_state));
     if (!_state) return nil;
 
@@ -299,6 +347,22 @@ static void handle_popup_destroy(struct wl_listener *listener, void *data)
     _state->decoration_manager = wlr_xdg_decoration_manager_v1_create(_state->display);
     wlr_log(WLR_DEBUG, "Decoration manager created");
 
+    /* Layer shell (wlr-layer-shell-v1) — used by GNUstep for the menu bar,
+     * desktop background, and screen saver windows.                        */
+    _state->layer_shell = wlr_layer_shell_v1_create(_state->display, 4);
+    wlr_log(WLR_DEBUG, "Layer shell created");
+
+    /* Screen copy (wlr-screencopy-unstable-v1) — enables grim and similar
+     * tools to capture frames from this compositor.                        */
+    _state->screencopy_manager = wlr_screencopy_manager_v1_create(_state->display);
+    wlr_log(WLR_DEBUG, "Screencopy manager created");
+
+    /* xdg-output-manager (zxdg_output_manager_v1) — lets clients query logical
+     * output geometry (position, size, name) from the compositor's output layout. */
+    _state->xdg_output_manager =
+        wlr_xdg_output_manager_v1_create(_state->display, _state->output_layout);
+    wlr_log(WLR_DEBUG, "XDG output manager created");
+
     /* Seat */
     _state->seat = wlr_seat_create(_state->display, "seat0");
     wlr_log(WLR_DEBUG, "Seat 'seat0' created");
@@ -322,6 +386,9 @@ static void handle_popup_destroy(struct wl_listener *listener, void *data)
     _state->new_toplevel_decoration.notify = handle_new_toplevel_decoration;
     wl_signal_add(&_state->decoration_manager->events.new_toplevel_decoration,
                   &_state->new_toplevel_decoration);
+
+    _state->new_layer_surface.notify = handle_new_layer_surface;
+    wl_signal_add(&_state->layer_shell->events.new_surface, &_state->new_layer_surface);
 
     _state->cursor_motion.notify = handle_cursor_motion;
     wl_signal_add(&_state->cursor->events.motion, &_state->cursor_motion);
@@ -674,7 +741,16 @@ static void handle_popup_destroy(struct wl_listener *listener, void *data)
         }
         wlr_cursor_set_xcursor(_state->cursor, _state->cursor_mgr, "default");
     } else {
-        wlr_seat_pointer_notify_clear_focus(_state->seat);
+        /* No xdg toplevel — check layer surfaces (e.g. GNUstep menu bar) */
+        double lsx = 0, lsy = 0;
+        struct wlr_surface *ls_surface =
+            [self layerSurfaceAtX:cx y:cy localX:&lsx localY:&lsy];
+        if (ls_surface) {
+            wlr_seat_pointer_notify_enter(_state->seat, ls_surface, lsx, lsy);
+            wlr_seat_pointer_notify_motion(_state->seat, time, lsx, lsy);
+        } else {
+            wlr_seat_pointer_notify_clear_focus(_state->seat);
+        }
         wlr_cursor_set_xcursor(_state->cursor, _state->cursor_mgr, "default");
     }
 }
@@ -755,15 +831,75 @@ static void handle_popup_destroy(struct wl_listener *listener, void *data)
 
 - (void)handleNewToplevelDecoration:(struct wlr_xdg_toplevel_decoration_v1 *)decoration
 {
-    /* Honour the client's preference for borderless / client-side windows
-     * (e.g. GNUstep menu panels, dock, desktop).  For every other window
-     * request server-side so Ambrosia draws the title bar and borders.   */
-    enum wlr_xdg_toplevel_decoration_v1_mode mode =
-        (decoration->requested_mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE)
-        ? WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
-        : WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
+    /* Compositor uses client-side decorations throughout: windows draw their
+     * own chrome (or none at all).  Tell every client to use CSD so GNUstep
+     * panels and borderless windows are never given an unwanted server frame. */
+    wlr_xdg_toplevel_decoration_v1_set_mode(decoration,
+        WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+}
 
-    wlr_xdg_toplevel_decoration_v1_set_mode(decoration, mode);
+- (void)handleNewLayerSurface:(struct wlr_layer_surface_v1 *)layer_surface
+{
+    wlr_log(WLR_INFO, "New layer surface: namespace='%s' layer=%d anchor=0x%x",
+            layer_surface->namespace ?: "(nil)",
+            (int)layer_surface->pending.layer,
+            (unsigned)layer_surface->pending.anchor);
+
+    /* Assign an output if the client did not specify one */
+    if (!layer_surface->output)
+        layer_surface->output = wlr_output_layout_get_center_output(_state->output_layout);
+
+    /* Add to scene graph */
+    struct wlr_scene_layer_surface_v1 *scene_layer =
+        wlr_scene_layer_surface_v1_create(&_state->scene->tree, layer_surface);
+
+    struct ambrosia_layer_surface *ls = calloc(1, sizeof(*ls));
+    ls->wlr_layer_surface = layer_surface;
+    ls->scene_layer       = scene_layer;
+
+    ls->surface_commit.notify = handle_layer_surface_commit;
+    wl_signal_add(&layer_surface->surface->events.commit, &ls->surface_commit);
+
+    ls->destroy.notify = handle_layer_surface_destroy;
+    wl_signal_add(&layer_surface->events.destroy, &ls->destroy);
+
+    [_layerSurfaces addObject:[NSValue valueWithPointer:ls]];
+}
+
+- (void)removeLayerSurface:(struct ambrosia_layer_surface *)ls
+{
+    for (NSUInteger i = 0; i < _layerSurfaces.count; i++) {
+        if ([[_layerSurfaces objectAtIndex:i] pointerValue] == ls) {
+            [_layerSurfaces removeObjectAtIndex:i];
+            return;
+        }
+    }
+}
+
+/** Hit-test all layer surfaces.  Returns the wlr_surface under (x,y) and
+ *  fills lx/ly with the surface-local coordinates, or returns NULL. */
+- (struct wlr_surface *)layerSurfaceAtX:(double)x y:(double)y
+                                 localX:(double *)lx
+                                 localY:(double *)ly
+{
+    for (NSValue *v in [_layerSurfaces reverseObjectEnumerator]) {
+        struct ambrosia_layer_surface *ls = [v pointerValue];
+        if (!ls->wlr_layer_surface->surface->mapped) continue;
+
+        double node_x = ls->scene_layer->tree->node.x;
+        double node_y = ls->scene_layer->tree->node.y;
+        double sub_x  = 0, sub_y = 0;
+        struct wlr_surface *found =
+            wlr_layer_surface_v1_surface_at(ls->wlr_layer_surface,
+                                            x - node_x, y - node_y,
+                                            &sub_x, &sub_y);
+        if (found) {
+            if (lx) *lx = sub_x;
+            if (ly) *ly = sub_y;
+            return found;
+        }
+    }
+    return NULL;
 }
 
 - (void)handleCursorMotionTime:(uint32_t)time dx:(double)dx dy:(double)dy
@@ -815,7 +951,15 @@ static void handle_popup_destroy(struct wl_listener *listener, void *data)
                                    (enum wl_pointer_button_state)state);
 
     if (!view) {
-        [self focusView:nil surface:nil];
+        /* Check if cursor is over a layer surface (e.g. GNUstep menu bar).
+         * If so, don't clear keyboard focus — the menu bar handles only
+         * pointer interaction and the application window keeps key focus. */
+        double lsx = 0, lsy = 0;
+        struct wlr_surface *ls_surface =
+            [self layerSurfaceAtX:cx y:cy localX:&lsx localY:&lsy];
+        if (!ls_surface) {
+            [self focusView:nil surface:nil];
+        }
         return;
     }
 
