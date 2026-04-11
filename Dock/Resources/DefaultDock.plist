@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//GNUstep//DTD plist 0.9//EN" "http://www.gnustep.org/plist-0_9.xml">
+<plist version="0.9">
+<array>
+    <!-- GFinder file manager -->
+    <dict>
+        <key>label</key><string>GFinder</string>
+        <key>bundleIdentifier</key><string>org.gnustep.GFinder</string>
+        <key>paths</key>
+        <array>
+            <string>/usr/GNUstep/Local/Applications/GFinder.app</string>
+            <string>/usr/GNUstep/System/Applications/GFinder.app</string>
+            <string>/usr/local/GNUstep/Local/Applications/GFinder.app</string>
+        </array>
+    </dict>
+    <!-- System Preferences -->
+    <dict>
+        <key>label</key><string>System Preferences</string>
+        <key>bundleIdentifier</key><string>org.gnustep.SystemPreferences</string>
+        <key>paths</key>
+        <array>
+            <string>/usr/GNUstep/Local/Applications/SystemPreferences.app</string>
+            <string>/usr/GNUstep/System/Applications/SystemPreferences.app</string>
+            <string>/usr/local/GNUstep/Local/Applications/SystemPreferences.app</string>
+        </array>
+    </dict>
+    <!-- Terminal -->
+    <dict>
+        <key>label</key><string>Terminal</string>
+        <key>bundleIdentifier</key><string>org.gnustep.Terminal</string>
+        <key>paths</key>
+        <array>
+            <string>/usr/GNUstep/Local/Applications/Terminal.app</string>
+            <string>/usr/GNUstep/System/Applications/Terminal.app</string>
+            <string>/usr/local/GNUstep/Local/Applications/Terminal.app</string>
+        </array>
+    </dict>
+    <!-- Text editor -->
+    <dict>
+        <key>label</key><string>TextEdit</string>
+        <key>bundleIdentifier</key><string>org.gnustep.TextEdit</string>
+        <key>paths</key>
+        <array>
+            <string>/usr/GNUstep/Local/Applications/TextEdit.app</string>
+            <string>/usr/GNUstep/System/Applications/TextEdit.app</string>
+            <string>/usr/local/GNUstep/Local/Applications/TextEdit.app</string>
+        </array>
+    </dict>
+</array>
+</plist>

@@ -319,6 +319,17 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
      * instead of our own WAYLAND_DISPLAY socket.                           */
     NSArray<NSString *> *gnustepWaylandArgs = @[@"-GSBackend", @"back"];
 
+    /* ---- MenuServer ---- */
+    NSString *menuServerExec = findExecutable(candidatePaths(@"MenuServer.app",
+                                                             @"MenuServer"));
+    if (!menuServerExec) menuServerExec = @"MenuServer";
+
+    AmbrosiaSessionProcess *menuServer =
+        [session addProcessNamed:@"MenuServer"
+                        execPath:menuServerExec
+                       arguments:gnustepWaylandArgs];
+    menuServer.restartDelaySecs = 2;
+
     /* ---- AmbrosiaDock ---- */
     NSString *dockExec = findExecutable(candidatePaths(@"AmbrosiaDock.app",
                                                        @"AmbrosiaDock"));

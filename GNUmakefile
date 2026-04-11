@@ -1,4 +1,4 @@
-# Root GNUmakefile — builds Compositor, Dock, and SystemPreferences pane.
+# Root GNUmakefile — builds Compositor, Dock, SystemPreferences, MenuServer, AmbrosiaMenus.
 #
 # Prerequisites:
 #   GNUstep make        (gnustep-make)
@@ -24,7 +24,7 @@
 
 include $(GNUSTEP_MAKEFILES)/common.make
 
-SUBPROJECTS = Compositor Dock SystemPreferences
+SUBPROJECTS = Compositor Dock SystemPreferences MenuServer AmbrosiaMenus
 
 include $(GNUSTEP_MAKEFILES)/aggregate.make
 
@@ -37,3 +37,5 @@ clean-all:
 	$(MAKE) -C Compositor clean
 	$(MAKE) -C Dock clean
 	$(MAKE) -C SystemPreferences clean
+	$(MAKE) -C MenuServer clean
+	$(MAKE) -C AmbrosiaMenus clean
