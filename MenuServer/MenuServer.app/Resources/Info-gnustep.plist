@@ -1,8 +1,0 @@
-{
-  NOTE = "Automatically generated, do not edit!";
-  NSExecutable = "MenuServer";
-  NSMainNibFile = "";
-  NSMainStoryboardFile = "";
-  GSMainMarkupFile = "";
-  NSPrincipalClass = "AppDelegate";
-}

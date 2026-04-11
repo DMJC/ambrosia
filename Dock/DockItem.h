@@ -5,16 +5,18 @@
 #import <AppKit/AppKit.h>
 
 typedef NS_ENUM(NSInteger, DockItemType) {
-    DockItemTypeApp = 0,
-    DockItemTypeSeparator,
-    DockItemTypeRunningApp,
+    DockItemTypeApp       = 0,  /**< Pinned application */
+    DockItemTypeSeparator = 1,  /**< Visual separator   */
+    DockItemTypeRunningApp = 2, /**< Transient running app (not pinned) */
+    DockItemTypeFolder    = 3,  /**< Folder shortcut    */
+    DockItemTypeRecycler  = 4,  /**< The recycler widget (always last, never persisted) */
 };
 
 @interface DockItem : NSObject <NSCoding, NSCopying>
 
 @property (nonatomic, copy)   NSString     *label;
 @property (nonatomic, copy)   NSString     *bundleIdentifier;
-@property (nonatomic, copy)   NSString     *launchPath;      /**< Absolute path to .app bundle */
+@property (nonatomic, copy)   NSString     *launchPath;      /**< Absolute path to .app bundle or folder */
 @property (nonatomic, strong) NSImage      *icon;
 @property (nonatomic)         DockItemType  itemType;
 @property (nonatomic)         BOOL          isRunning;

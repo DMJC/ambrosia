@@ -32,20 +32,27 @@
 /** Persist current item list and settings */
 - (void)savePreferences;
 
-/** Launch an app by its dock item */
+/** Launch an app or open a folder for the given dock item */
 - (void)launchItem:(DockItem *)item;
 
-/** Move item from index to index (from drag-and-drop) */
+/** Move item from index to index (from drag-and-drop reorder) */
 - (void)moveItemFromIndex:(NSInteger)fromIndex toIndex:(NSInteger)toIndex;
 
-/** Add a new .app bundle to the dock */
-- (void)addAppAtPath:(NSString *)path;
+/**
+ * Add a new item to the dock from a filesystem path.
+ * Handles .app bundles (DockItemTypeApp) and directories (DockItemTypeFolder).
+ * Silently ignores duplicates and system-internal apps.
+ */
+- (void)addItemAtPath:(NSString *)path;
 
-/** Remove an item; only removes from dock, does not terminate the app */
+/** Remove an item from the dock; does not terminate or delete anything on disk */
 - (void)removeItem:(DockItem *)item;
 
 /** Build and return the contextual menu for a dock item */
 - (NSMenu *)contextMenuForItem:(DockItem *)item;
+
+/** Index of the recycler item (always last); -1 if not present */
+- (NSInteger)recyclerIndex;
 
 /** Reposition the dock panel for the current screen and position setting */
 - (void)repositionDock;
