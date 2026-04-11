@@ -317,7 +317,7 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
      * gnustep-back defaults to its X11 backend, causing apps to crash when
      * DISPLAY is unset or to connect to Xwayland on the host compositor
      * instead of our own WAYLAND_DISPLAY socket.                           */
-    NSArray<NSString *> *gnustepWaylandArgs = @[@"-GSBackend", @"back"];
+    NSArray<NSString *> *gnustepWaylandArgs = @[@"-GSBackend", @"libgnustep-wayland"];
 
     /* ---- MenuServer ---- */
     NSString *menuServerExec = findExecutable(candidatePaths(@"MenuServer.app",

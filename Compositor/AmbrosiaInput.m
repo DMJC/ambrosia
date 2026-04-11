@@ -144,11 +144,13 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
             [_compositor saveSessionAndLogout];
             handled = YES;
         }
-        /* Ctrl+Alt+F1–F12 → switch VTY */
-        if ((modifiers & WLR_MODIFIER_CTRL) && (modifiers & WLR_MODIFIER_ALT)
-                && event->state == WL_KEYBOARD_KEY_STATE_PRESSED
-                && syms[i] >= XKB_KEY_F1 && syms[i] <= XKB_KEY_F12) {
-            unsigned vt = syms[i] - XKB_KEY_F1 + 1;
+        /* Ctrl+Alt+F1–F12 → switch VTY.
+         * xkb folds the Ctrl+Alt+Fn combo into XKB_KEY_XF86Switch_VT_N,
+         * so we match on that keysym rather than Fn + modifier flags. */
+        if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED
+                && syms[i] >= XKB_KEY_XF86Switch_VT_1
+                && syms[i] <= XKB_KEY_XF86Switch_VT_12) {
+            unsigned vt = syms[i] - XKB_KEY_XF86Switch_VT_1 + 1;
             struct wlr_session *session = _compositor.state->wlr_session;
             if (session) {
                 wlr_log(WLR_INFO, "Switching to VT %u", vt);
