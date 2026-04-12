@@ -94,9 +94,14 @@ static NSString * const kMenuItemChildren   = @"children";
  * @param client      A proxy to the app's MenuServerClientProtocol object.
  *                    Pass nil to suppress action callbacks.
  */
-- (oneway void)applicationDidActivate:(bycopy NSString *)appName
-                           menuItems:(bycopy NSArray *)menuItems
-                              client:(byref id<MenuServerClientProtocol>)client;
+/**
+ * Synchronous (no oneway): the bidirectional DO connection for the byref
+ * client proxy is only established during a two-way call.  Making this
+ * oneway prevents GNUstep from creating the reverse proxy channel.
+ */
+- (void)applicationDidActivate:(bycopy NSString *)appName
+                    menuItems:(bycopy NSArray *)menuItems
+                       client:(byref id<MenuServerClientProtocol>)client;
 
 /**
  * Called when a GNUstep application is no longer the frontmost application.

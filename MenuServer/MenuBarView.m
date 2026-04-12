@@ -90,7 +90,8 @@ static NSRect CentreStringRect(NSString *str, NSDictionary *attrs, NSRect bounds
     /* ---- Pre-computed hit-test rects (view coordinates) ---- */
     NSRect     _ambrosiaRect;     /* Ambrosia system-menu button    */
     NSRect     _appNameRect;      /* app-name label (non-clickable) */
-    NSMutableArray *_menuRects;   /* one NSValue(NSRect) per top-level menu */
+    NSMutableArray *_menuRects;   /* one NSValue(NSRect) per clickable top-level item */
+    NSMutableArray *_menuItemIndices; /* NSNumber: index into _activeMenuItems for each rect */
     NSRect     _clockRect;
     NSRect     _sessionRect;
 
@@ -106,8 +107,9 @@ static NSRect CentreStringRect(NSString *str, NSDictionary *attrs, NSRect bounds
     self = [super initWithFrame:frame];
     if (!self) return nil;
 
-    _menuRects     = [NSMutableArray array];
-    _pressedRegion = MenuBarRegionNone;
+    _menuRects        = [NSMutableArray array];
+    _menuItemIndices  = [NSMutableArray array];
+    _pressedRegion    = MenuBarRegionNone;
 
     [self _updateClockString];
     _clockTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
@@ -172,6 +174,7 @@ static NSRect CentreStringRect(NSString *str, NSDictionary *attrs, NSRect bounds
 
     /* Reset hit rects */
     [_menuRects removeAllObjects];
+    [_menuItemIndices removeAllObjects];
 
     /* ---- RIGHT SIDE: session button + clock ---- */
     /* Session button: "⏻" (U+23FB POWER SYMBOL) */
@@ -232,8 +235,9 @@ static NSRect CentreStringRect(NSString *str, NSDictionary *attrs, NSRect bounds
     }
 
     /* ---- Top-level menu items (from DO-registered app) ---- */
+    NSUInteger activeItemIndex = 0;
     for (NSDictionary *item in _activeMenuItems) {
-        if ([item[kMenuItemSeparator] boolValue]) continue;
+        if ([item[kMenuItemSeparator] boolValue]) { activeItemIndex++; continue; }
 
         NSString *title  = item[kMenuItemTitle] ?: @"";
         NSSize    titleSz = [title sizeWithAttributes:NormalTextAttrs()];
@@ -245,6 +249,9 @@ static NSRect CentreStringRect(NSString *str, NSDictionary *attrs, NSRect bounds
         NSInteger menuIdx = (NSInteger)_menuRects.count;
         NSRect itemRect = NSMakeRect(leftX, 0, itemW, H);
         [_menuRects addObject:[NSValue valueWithRect:itemRect]];
+        /* Record the actual _activeMenuItems index so _showAppMenuAtIndex:
+         * always gets the right descriptor even when separators are present. */
+        [_menuItemIndices addObject:@(activeItemIndex)];
 
         BOOL isPressed = (_pressedRegion == MenuBarRegionMenuItem + menuIdx);
         [self _drawButtonRect:itemRect
@@ -253,6 +260,7 @@ static NSRect CentreStringRect(NSString *str, NSDictionary *attrs, NSRect bounds
                     isPressed:isPressed];
 
         leftX += itemW + kItemGap;
+        activeItemIndex++;
     }
 
     /* ---- Bottom border highlight (1 px, subtle) ---- */
@@ -397,9 +405,14 @@ static NSRect CentreStringRect(NSString *str, NSDictionary *attrs, NSRect bounds
 
 - (void)_showAppMenuAtIndex:(NSInteger)index withEvent:(NSEvent *)event
 {
-    if (index < 0 || index >= (NSInteger)_activeMenuItems.count) return;
+    if (index < 0 || index >= (NSInteger)_menuItemIndices.count) return;
 
-    NSDictionary *topItem  = _activeMenuItems[(NSUInteger)index];
+    /* Translate rect-index → _activeMenuItems index (separators are skipped
+     * when building _menuRects, so the two arrays are not 1-to-1).         */
+    NSUInteger activeIdx = [_menuItemIndices[(NSUInteger)index] unsignedIntegerValue];
+    if (activeIdx >= _activeMenuItems.count) return;
+
+    NSDictionary *topItem  = _activeMenuItems[activeIdx];
     NSArray      *children = topItem[kMenuItemChildren];
     if (!children.count) return;
 

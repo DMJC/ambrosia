@@ -9,8 +9,10 @@ static const CGFloat kFallbackScreenH    = 1080.0;
     NSPanel      *_menuPanel;
     MenuBarView  *_menuBarView;
     NSConnection *_doConnection;
-    /* Weak proxy to the currently-active app's client object */
-    id<MenuServerClientProtocol> __weak _clientProxy;
+    /* Strong reference to the DO proxy for the active app's client.
+     * NSDistantObject is an NSProxy subclass and does NOT support ARC
+     * zeroing-weak storage; __weak would always yield nil.             */
+    id<MenuServerClientProtocol> _clientProxy;
     NSString     *_activeAppName;
     NSArray      *_activeMenuItems;
     id            _activateObserver;
@@ -154,9 +156,9 @@ static const CGFloat kFallbackScreenH    = 1080.0;
 /* ---------------------------------------------------------------------- */
 #pragma mark - MenuServerProtocol (DO, called by GNUstep apps)
 
-- (oneway void)applicationDidActivate:(bycopy NSString *)appName
-                           menuItems:(bycopy NSArray *)menuItems
-                              client:(byref id<MenuServerClientProtocol>)client
+- (void)applicationDidActivate:(bycopy NSString *)appName
+                   menuItems:(bycopy NSArray *)menuItems
+                      client:(byref id<MenuServerClientProtocol>)client
 {
     /* DO callbacks may arrive on a background thread; marshal to main. */
     NSString *nameCopy  = [appName copy];

@@ -7,60 +7,94 @@
 @implementation NSMenu (AmbrosiaMenus)
 
 /**
- * +load installs a swizzle on NSMenu -display.
+ * +load installs swizzles on three NSMenu methods that GNUstep uses to show
+ * the main menu window.
  *
- * -setGeometry / -_setGeometry only fire for the initial placement; GNUstep
- * also calls [menu display] (→ orderFrontRegardless) from -setMainMenu: and
- * from the app-activation path.  Without swizzling -display those paths
- * re-show the main menu window even after we close it in setGeometry.
+ * All three swizzles follow the same pattern:
+ *   • If this menu IS [NSApp mainMenu] → suppress (orderOut:)
+ *   • Otherwise → call through to the original implementation
  *
- * After method_exchangeImplementations:
- *   -display        → ambrosia_display body  (suppress main menu; call-through otherwise)
- *   -ambrosia_display → original display IMP (orderFrontRegardless etc.)
+ * IMPORTANT: The `setGeometry` / `_setGeometry` overrides use
+ * method_exchangeImplementations, NOT plain category methods.  A category
+ * method completely replaces the original, so any non-main-menu (popup,
+ * context, submenu) that relies on `_setGeometry` to position itself would
+ * get a silent no-op, which prevents popup menus from appearing.  By
+ * swizzling we can call through to the original for all non-main-menu cases.
+ *
+ * Swizzle table after +load:
+ *   -display             → ambrosia_display body   (call-through via ambrosia_display)
+ *   -ambrosia_display    → original display IMP
+ *   -_setGeometry        → ambrosia__setGeometry body
+ *   -ambrosia__setGeometry → original _setGeometry IMP
+ *   -setGeometry         → ambrosia_setGeometry body   (only if method exists)
+ *   -ambrosia_setGeometry → original setGeometry IMP
  */
 + (void)load
 {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         Class cls = [NSMenu class];
+
+        /* -display */
         Method origDisplay = class_getInstanceMethod(cls, @selector(display));
-        Method replDisplay = class_getInstanceMethod(cls,
-                                 @selector(ambrosia_display));
+        Method replDisplay = class_getInstanceMethod(cls, @selector(ambrosia_display));
         if (origDisplay && replDisplay)
             method_exchangeImplementations(origDisplay, replDisplay);
+
+        /* -_setGeometry (GNUstep private) */
+        Method origSetGeomPriv = class_getInstanceMethod(cls, @selector(_setGeometry));
+        Method replSetGeomPriv = class_getInstanceMethod(cls, @selector(ambrosia__setGeometry));
+        if (origSetGeomPriv && replSetGeomPriv)
+            method_exchangeImplementations(origSetGeomPriv, replSetGeomPriv);
+
+        /* -setGeometry (public alias; may not exist in all GNUstep versions) */
+        Method origSetGeomPub = class_getInstanceMethod(cls, @selector(setGeometry));
+        Method replSetGeomPub = class_getInstanceMethod(cls, @selector(ambrosia_setGeometry));
+        if (origSetGeomPub && replSetGeomPub)
+            method_exchangeImplementations(origSetGeomPub, replSetGeomPub);
     });
 }
 
-/* Called when -display is invoked on any NSMenu instance (after swizzle). */
+/* ---------------------------------------------------------------------- */
+#pragma mark - Swizzled method bodies
+
+/* After the exchange:
+ *   -display          → this body   (suppress main menu; call-through otherwise)
+ *   -ambrosia_display → original display IMP
+ */
 - (void)ambrosia_display
 {
     if (NSApp && [self isEqual:[NSApp mainMenu]]) {
-        /* Suppress: close the window instead of ordering it front. */
         [[self window] orderOut:nil];
         return;
     }
-    /* For all other menus (submenus, pop-ups) call the original display IMP,
-     * which is now registered under the ambrosia_display selector.          */
     [self ambrosia_display];
 }
 
-/*
- * Category overrides for the geometry methods.
- *
- * -_setGeometry is the GNUstep-private entry point for positioning the main
- * menu window.  -setGeometry is its public alias.  We replace both: for the
- * main menu we close the window; for any other menu we do nothing (submenus
- * are positioned by NSMenuView, not these methods).
+/* After the exchange:
+ *   -_setGeometry           → this body
+ *   -ambrosia__setGeometry  → original _setGeometry IMP
  */
-- (void)_setGeometry
+- (void)ambrosia__setGeometry
 {
-    [self setGeometry];
+    if (NSApp && [self isEqual:[NSApp mainMenu]]) {
+        [[self window] orderOut:nil];
+        return;
+    }
+    [self ambrosia__setGeometry];   /* call original — positions popup menus */
 }
 
-- (void)setGeometry
+/* After the exchange:
+ *   -setGeometry          → this body
+ *   -ambrosia_setGeometry → original setGeometry IMP
+ */
+- (void)ambrosia_setGeometry
 {
-    if (NSApp && [self isEqual:[NSApp mainMenu]])
+    if (NSApp && [self isEqual:[NSApp mainMenu]]) {
         [[self window] orderOut:nil];
+        return;
+    }
+    [self ambrosia_setGeometry];    /* call original — positions popup menus */
 }
 
 @end

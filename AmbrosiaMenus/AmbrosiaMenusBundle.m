@@ -13,6 +13,10 @@
      * NSMenuItem objects.  Rebuilt on every call to registerMenuWithServer.
      */
     NSMutableDictionary<NSString *, NSMenuItem *> *_itemTable;
+
+    /* Retry timer: fired when MenuServer wasn't available at first attempt. */
+    NSTimer *_retryTimer;
+    NSUInteger _retryCount;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -30,7 +34,8 @@
 {
     self = [super init];
     if (!self) return nil;
-    _itemTable = [NSMutableDictionary dictionary];
+    _itemTable  = [NSMutableDictionary dictionary];
+    _retryCount = 0;
     return self;
 }
 
@@ -84,19 +89,51 @@
         rootProxyForConnectionWithRegisteredName:kMenuServerConnectionName
                                             host:nil];
     if (!rawProxy) {
-        NSLog(@"AmbrosiaMenus: could not connect to MenuServer (%@) -- "
-              @"menu bar integration unavailable.", kMenuServerConnectionName);
         return nil;
     }
 
     [rawProxy setProtocolForProxy:@protocol(MenuServerProtocol)];
     _serverProxy = (id<MenuServerProtocol>)rawProxy;
+    _retryCount  = 0;
+    [_retryTimer invalidate];
+    _retryTimer  = nil;
+    NSLog(@"AmbrosiaMenus: connected to MenuServer (%@).",
+          kMenuServerConnectionName);
     return _serverProxy;
 }
 
 - (void)_invalidateProxy
 {
     _serverProxy = nil;
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Retry timer
+
+/**
+ * If MenuServer wasn't running when the app launched, schedule periodic
+ * retries so the bar populates as soon as the server comes up.
+ */
+- (void)_scheduleRetryIfNeeded
+{
+    if (_serverProxy || _retryTimer) return;          /* already connected or timer running */
+    if (_retryCount >= 20) return;                    /* give up after ~40 s */
+
+    _retryTimer = [NSTimer
+        scheduledTimerWithTimeInterval:2.0
+                                target:self
+                              selector:@selector(_retryTimerFired:)
+                              userInfo:nil
+                               repeats:NO];
+}
+
+- (void)_retryTimerFired:(NSTimer *)timer
+{
+    _retryTimer = nil;
+    _retryCount++;
+    NSLog(@"AmbrosiaMenus: retrying MenuServer connection (attempt %lu).",
+          (unsigned long)_retryCount);
+    [self registerMenuWithServer];
 }
 
 /* ---------------------------------------------------------------------- */
@@ -157,19 +194,28 @@
     if (!mainMenu) return;
 
     id<MenuServerProtocol> proxy = [self _serverProxy];
-    if (!proxy) return;
+    if (!proxy) {
+        NSLog(@"AmbrosiaMenus: MenuServer not available yet; scheduling retry.");
+        [self _scheduleRetryIfNeeded];
+        return;
+    }
 
     [_itemTable removeAllObjects];
 
     NSString *appName = [[NSProcessInfo processInfo] processName];
     NSArray  *items   = [self _descriptorsForMenu:mainMenu];
 
+    NSLog(@"AmbrosiaMenus: registering %lu top-level items for \"%@\".",
+          (unsigned long)items.count, appName);
+
     @try {
         [proxy applicationDidActivate:appName menuItems:items client:self];
+        NSLog(@"AmbrosiaMenus: registration succeeded.");
     } @catch (NSException *ex) {
         NSLog(@"AmbrosiaMenus: registration call failed (%@); "
               @"will retry on next activation.", ex.reason);
         [self _invalidateProxy];
+        [self _scheduleRetryIfNeeded];
     }
 }
 
