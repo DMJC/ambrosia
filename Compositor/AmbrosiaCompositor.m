@@ -22,6 +22,12 @@
 - (void)applyExclusiveZonesToBox:(struct wlr_box *)box
                        forOutput:(struct wlr_output *)output;
 - (void)recalculateUsableTop;
+/**
+ * Give keyboard focus to the topmost mapped, non-miniaturized, non-menu
+ * window other than @c excluded.  Clears focus if no candidate exists.
+ * Used after a window is minimized or closed via its decoration button.
+ */
+- (void)focusNextWindowExcluding:(AmbrosiaView *)excluded;
 @end
 
 /* --------------------------------------------------------------------------
@@ -613,19 +619,33 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     /*
      * Modal-dialog protection: if the currently focused app has a mapped
      * transient child window (xdg_toplevel->parent belonging to this app's
-     * Wayland client — e.g. an NSAlert panel), redirect focus to that dialog
-     * instead of moving to a different app.
+     * Wayland client — e.g. an NSAlert panel), redirect ALL focus changes
+     * back to that dialog — even if the new target is nil (empty desktop),
+     * a menu/panel surface, or a window belonging to a different app.
      *
-     * Without this, gnustep-back receives keyboard.leave and fires
+     * Without this, gnustep-back receives wl_keyboard.leave and fires
      * NSApplicationDidResignActiveNotification, which terminates the modal
      * session and closes the alert window.
+     *
+     * We check _focusedView here (not `view`) so the guard fires even when
+     * the new target is nil or a menu surface that bypasses the isMenu path.
      */
-    if (view && _focusedView && !view.isMenu) {
-        struct wl_client *fromClient = wl_resource_get_client(
+    if (_focusedView) {
+        struct wl_client *focusedClient = wl_resource_get_client(
             _focusedView.state->xdg_toplevel->base->resource);
-        struct wl_client *toClient = wl_resource_get_client(
-            view.state->xdg_toplevel->base->resource);
-        if (fromClient != toClient) {
+
+        /* Determine whether the destination belongs to the same client.
+         * Menu/panel surfaces (isMenu) don't hold keyboard focus and are
+         * transparent to this check; treat them as "no destination".        */
+        BOOL sameClient = NO;
+        if (view && !view.isMenu) {
+            struct wl_client *toClient = wl_resource_get_client(
+                view.state->xdg_toplevel->base->resource);
+            sameClient = (toClient == focusedClient);
+        }
+
+        if (!sameClient) {
+            /* Look for the topmost mapped transient belonging to this app. */
             AmbrosiaView *modal = nil;
             for (AmbrosiaView *candidate in _views) {
                 if (!candidate.isMapped) continue;
@@ -633,14 +653,14 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
                 if (!tp->parent) continue;
                 struct wl_client *parentClient =
                     wl_resource_get_client(tp->parent->base->resource);
-                if (parentClient == fromClient) {
+                if (parentClient == focusedClient) {
                     modal = candidate; /* last in list = topmost */
                 }
             }
             if (modal) {
                 wlr_log(WLR_DEBUG,
                     "focusView: redirecting to modal dialog '%s' "
-                    "(blocked cross-app focus change)",
+                    "(blocked focus change away from modal app)",
                     modal.state->xdg_toplevel->title ?: "(untitled)");
                 view    = modal;
                 surface = modal.surface;
@@ -1050,6 +1070,21 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     wlr_log(WLR_DEBUG, "usable_top updated: %d px", top);
 }
 
+- (void)focusNextWindowExcluding:(AmbrosiaView *)excluded
+{
+    /* Iterate views in reverse insertion order (topmost first) */
+    for (NSInteger i = (NSInteger)_views.count - 1; i >= 0; i--) {
+        AmbrosiaView *candidate = _views[(NSUInteger)i];
+        if (candidate == excluded)       continue;
+        if (!candidate.isMapped)         continue;
+        if (candidate.isMiniaturized)    continue;
+        if (candidate.isMenu)            continue;
+        [self focusView:candidate surface:candidate.surface];
+        return;
+    }
+    [self focusView:nil surface:nil];
+}
+
 /* ---------------------------------------------------------------------- */
 #pragma mark - Layer surface hit testing
 
@@ -1195,14 +1230,26 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
                 [self beginMoveView:view cursor:_state->cursor];
                 return;
             case AmbrosiaDecorationHitClose:
+                /* Ensure the window is focused (activated) before requesting
+                 * close so the client's performClose: handler receives it in
+                 * the right application-active state.                        */
+                [self focusView:view surface:surface];
                 wlr_xdg_toplevel_send_close(view.state->xdg_toplevel);
                 return;
             case AmbrosiaDecorationHitMinimize:
-                wlr_scene_node_set_enabled(&view.state->scene_tree->node, false);
+                /* Hide the window and transfer focus to the next available
+                 * window.  The XDG-shell protocol has no "minimized" state,
+                 * so the client is not notified; its surface continues
+                 * committing normally while the scene node is hidden.        */
+                [view miniaturize];
+                [self focusNextWindowExcluding:view];
                 return;
             case AmbrosiaDecorationHitMaximize:
-                wlr_xdg_toplevel_set_maximized(view.state->xdg_toplevel,
-                    !view.state->xdg_toplevel->current.maximized);
+                /* Focus the window, then toggle its maximized state.
+                 * toggleMaximize saves/restores position and resizes the
+                 * surface to fill the usable screen area.                    */
+                [self focusView:view surface:surface];
+                [view toggleMaximize];
                 return;
             case AmbrosiaDecorationHitResizeTop:
             case AmbrosiaDecorationHitResizeBottom:

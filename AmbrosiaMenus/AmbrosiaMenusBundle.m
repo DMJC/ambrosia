@@ -15,8 +15,8 @@
     NSMutableDictionary<NSString *, NSMenuItem *> *_itemTable;
 
     /* Retry timer: fired when MenuServer wasn't available at first attempt. */
-    NSTimer *_retryTimer;
-    NSUInteger _retryCount;
+    NSTimer    *_retryTimer;
+    NSUInteger  _retryCount;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -36,6 +36,26 @@
     if (!self) return nil;
     _itemTable  = [NSMutableDictionary dictionary];
     _retryCount = 0;
+
+    /*
+     * Observe kMenuItemSelectedNotification from NSDistributedNotificationCenter.
+     *
+     * When the user selects a menu item in the bar, MenuServer posts this
+     * notification with kMenuItemSelectedPIDKey set to the PID of the app that
+     * registered the menu.  We ignore notifications meant for other processes.
+     *
+     * This replaces the previous "byref DO proxy" callback, which required
+     * GNUstep to maintain a reverse connection back to our anonymous port — a
+     * connection torn down as soon as -applicationDidActivate:menuItems:pid:
+     * returned, so every callback silently failed.
+     */
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_menuItemSelected:)
+               name:kMenuItemSelectedNotification
+             object:nil
+ suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
+
     return self;
 }
 
@@ -49,6 +69,14 @@
  */
 + (void)load
 {
+    /* Do not register when the bundle is loaded inside MenuServer itself.
+     * MenuServer is both the DO server and the host process for this bundle;
+     * calling [proxy applicationDidActivate:…] from within the server process
+     * would be a synchronous intra-process DO call on the same thread — a
+     * guaranteed deadlock / abort.                                           */
+    NSString *procName = [[NSProcessInfo processInfo] processName];
+    if ([procName isEqualToString:@"MenuServer"]) return;
+
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
 
     /* Initial registration: fires after the app finishes launching and its
@@ -154,11 +182,7 @@
  * Recursively converts an NSMenu into the NSDictionary descriptor array
  * expected by MenuServerProtocol.  Assigns a UUID identifier to each
  * non-separator item and records the NSMenuItem in _itemTable so that
- * callbacks from the server can dispatch actions to the right target.
- *
- * Top-level items whose title equals the process name (the macOS-style
- * "application menu") are passed through so the user can access About,
- * Preferences, and Quit from the bar.
+ * the kMenuItemSelectedNotification handler can dispatch actions.
  */
 - (NSArray *)_descriptorsForMenu:(NSMenu *)menu
 {
@@ -185,9 +209,6 @@
             desc[kMenuItemChildren] =
                 [self _descriptorsForMenu:item.submenu];
 
-        /* Record the live item so performMenuItemWithIdentifier: can look it
-         * up.  Items with submenus are included because their action (if any)
-         * can still be triggered directly.                                    */
         _itemTable[identifier] = item;
 
         [result addObject:[desc copy]];
@@ -215,12 +236,13 @@
 
     NSString *appName = [[NSProcessInfo processInfo] processName];
     NSArray  *items   = [self _descriptorsForMenu:mainMenu];
+    NSNumber *pid     = @((int32_t)[[NSProcessInfo processInfo] processIdentifier]);
 
-    NSLog(@"AmbrosiaMenus: registering %lu top-level items for \"%@\".",
-          (unsigned long)items.count, appName);
+    NSLog(@"AmbrosiaMenus: registering %lu top-level items for \"%@\" (pid %@).",
+          (unsigned long)items.count, appName, pid);
 
     @try {
-        [proxy applicationDidActivate:appName menuItems:items client:self];
+        [proxy applicationDidActivate:appName menuItems:items pid:pid];
         NSLog(@"AmbrosiaMenus: registration succeeded.");
     } @catch (NSException *ex) {
         NSLog(@"AmbrosiaMenus: registration call failed (%@); "
@@ -245,14 +267,23 @@
 }
 
 /* ---------------------------------------------------------------------- */
-#pragma mark - MenuServerClientProtocol
+#pragma mark - Menu-item selection (NSDistributedNotificationCenter callback)
 
 /**
- * Called by MenuServer (on a DO thread) when the user selects a menu item.
- * Dispatches the item's action to its target on the main thread.
+ * Receives kMenuItemSelectedNotification posted by MenuServer.
+ * Ignores the notification when the PID doesn't match this process.
+ * Dispatches the item's action on the main thread.
  */
-- (oneway void)performMenuItemWithIdentifier:(bycopy NSString *)identifier
+- (void)_menuItemSelected:(NSNotification *)note
 {
+    NSNumber *pidNum = note.userInfo[kMenuItemSelectedPIDKey];
+    int32_t   myPID  = (int32_t)[[NSProcessInfo processInfo] processIdentifier];
+    if (!pidNum || [pidNum intValue] != myPID) return;
+
+    NSString *identifier = note.userInfo[kMenuItemSelectedIdentifierKey];
+    if (!identifier.length) return;
+
+    /* Dispatch on the main thread; the notification may arrive on any thread. */
     dispatch_async(dispatch_get_main_queue(), ^{
         NSMenuItem *item = self->_itemTable[identifier];
         if (!item) {

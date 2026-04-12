@@ -37,6 +37,7 @@ struct ambrosia_view_state {
 @property (nonatomic) int x;
 @property (nonatomic) int y;
 @property (nonatomic, readonly) BOOL isMapped;
+@property (nonatomic, readonly) BOOL isMiniaturized;      /**< YES → scene node hidden by minimize button */
 @property (nonatomic, readonly) BOOL isMenu;              /**< YES → skip decorations (menu/dock/desktop) */
 @property (nonatomic, readonly) BOOL isDockWindow;        /**< YES → position at bottom-centre of output */
 @property (nonatomic, readonly) BOOL isDesktopBackground; /**< YES → pin to output origin, behind all windows */
@@ -52,6 +53,26 @@ struct ambrosia_view_state {
 
 /** Move the scene tree to (x, y) */
 - (void)moveTo:(int)x y:(int)y;
+
+/**
+ * Miniaturize: hide the window scene node and record minimized state.
+ * The compositor should give keyboard focus to another window afterwards.
+ * There is no standard XDG-shell signal to inform the client; the window
+ * surface continues to commit normally while hidden.
+ */
+- (void)miniaturize;
+
+/**
+ * Deminiaturize: restore the window scene node and clear minimized state.
+ * The compositor should give keyboard focus back to this window afterwards.
+ */
+- (void)deminiaturize;
+
+/**
+ * Toggle maximize state (used by the maximize decoration button).
+ * Saves the current position on first maximize and restores it on unmaximize.
+ */
+- (void)toggleMaximize;
 
 /** Update title in the decoration (if any) */
 - (void)updateTitle;

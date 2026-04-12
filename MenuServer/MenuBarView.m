@@ -104,7 +104,6 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 
 @implementation MenuBarView {
     /* ---- Bar state ---- */
-    NSString  *_activeAppName;
     NSArray   *_activeMenuItems;   /* NSArray<NSDictionary*> from DO app */
     NSString  *_clockString;
     NSTimer   *_clockTimer;
@@ -175,7 +174,6 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     /* If a dropdown is open for an app menu, close it first. */
     if (_openTag >= MenuBarRegionMenuItem) [self _closeDropdown];
 
-    _activeAppName   = [appName copy];
     _activeMenuItems = [menuItems copy];
     [self setNeedsDisplay:YES];
 }
@@ -260,22 +258,6 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 
     [self _drawBarSepAtX:leftX];
     leftX += kSepWidth + kItemGap;
-
-    /* App name */
-    if (_activeAppName.length) {
-        NSSize   nameSz = [_activeAppName sizeWithAttributes:BoldAttrs()];
-        CGFloat  nameW  = MIN(nameSz.width + kItemPad * 2, 200.0);
-        _appNameRect = NSMakeRect(leftX, 0, nameW, kBarHeight);
-        [self _drawLabelInRect:_appNameRect label:_activeAppName attrs:BoldAttrs()];
-        leftX += nameW + kItemGap;
-
-        if (_activeMenuItems.count) {
-            [self _drawBarSepAtX:leftX];
-            leftX += kSepWidth + kItemGap;
-        }
-    } else {
-        _appNameRect = NSZeroRect;
-    }
 
     /* Top-level app menu items */
     NSUInteger activeItemIndex = 0;
@@ -475,9 +457,19 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
                  * Some actions (e.g. logout) call [NSAlert runModal] which is
                  * blocking; if the dropdown is still open the panel stays
                  * expanded and mouse-moved events continue to fire against
-                 * stale dropdown state while the alert is on screen.         */
+                 * stale dropdown state while the alert is on screen.
+                 *
+                 * Defer the activation to the next run-loop pass so that the
+                 * current Wayland pointer event (including the pending button-UP
+                 * that will fire when the user releases the mouse button) is
+                 * fully drained before the modal session starts.  Without this
+                 * the button-UP lands on the newly-visible alert at whatever
+                 * coordinates the pointer is at and can instantly dismiss it.  */
                 [self _closeDropdown];
-                [self _activateDropdownItem:item];
+                NSDictionary *deferred = item;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self _activateDropdownItem:deferred];
+                });
             }
             return;
         }

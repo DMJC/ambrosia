@@ -19,7 +19,7 @@
 #import <Foundation/Foundation.h>
 #import "MenuServerProtocol.h"
 
-@interface AmbrosiaMenusBundle : NSObject <MenuServerClientProtocol>
+@interface AmbrosiaMenusBundle : NSObject
 
 /** Returns the per-process singleton.  Created on first call. */
 + (instancetype)sharedBundle;

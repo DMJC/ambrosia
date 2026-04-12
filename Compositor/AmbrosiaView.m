@@ -147,9 +147,14 @@ check_title:
 @implementation AmbrosiaView {
     struct ambrosia_view_state *_state;
     BOOL _isMapped;
+    BOOL _isMiniaturized;
     BOOL _isMenu;
     BOOL _isDockWindow;
     BOOL _isDesktopBackground;
+
+    /* Pre-maximize restore position (surface origin, compositor space) */
+    int  _restoreX;
+    int  _restoreY;
 }
 
 @synthesize state               = _state;
@@ -158,6 +163,7 @@ check_title:
 @synthesize x                   = _x;
 @synthesize y                   = _y;
 @synthesize isMapped            = _isMapped;
+@synthesize isMiniaturized      = _isMiniaturized;
 @synthesize isMenu              = _isMenu;
 @synthesize isDockWindow        = _isDockWindow;
 @synthesize isDesktopBackground = _isDesktopBackground;
@@ -345,12 +351,37 @@ check_title:
 {
     _isMapped = NO;
     if (_compositor.focusedView == self) {
-        [_compositor focusView:nil surface:nil];
+        [_compositor focusNextWindowExcluding:self];
     }
 }
 
 - (void)handleDestroy
 {
+    /*
+     * Remove all Wayland listeners BEFORE releasing the ObjC object.
+     * Same ordering requirement as AmbrosiaOutput:
+     *   1. wl_list_remove while all signal owners (xdg_toplevel, wl_surface)
+     *      are still alive — we are inside xdg_toplevel::events::destroy so
+     *      both the toplevel and its backing wl_surface are valid here.
+     *   2. free / _state = NULL before removeView: so that if removeView:
+     *      drops the last retain and triggers dealloc on this call stack,
+     *      dealloc's "if (_state)" guard is already false and no second
+     *      wl_list_remove is attempted.
+     */
+    if (_state) {
+        wl_list_remove(&_state->surface_commit.link);
+        wl_list_remove(&_state->map.link);
+        wl_list_remove(&_state->unmap.link);
+        wl_list_remove(&_state->destroy.link);
+        wl_list_remove(&_state->request_move.link);
+        wl_list_remove(&_state->request_resize.link);
+        wl_list_remove(&_state->request_maximize.link);
+        wl_list_remove(&_state->request_fullscreen.link);
+        wl_list_remove(&_state->set_title.link);
+        wl_list_remove(&_state->set_app_id.link);
+        free(_state);
+        _state = NULL;
+    }
     [_compositor removeView:self];
 }
 
@@ -364,30 +395,85 @@ check_title:
     [_compositor beginResizeView:self cursor:_compositor.state->cursor edges:edges];
 }
 
-- (void)handleRequestMaximize
+/* ---------------------------------------------------------------------- */
+#pragma mark - Miniaturize / deminiaturize
+
+- (void)miniaturize
 {
-    /* Toggle maximise: send the compositor-chosen size */
-    BOOL doMax = _state->xdg_toplevel->requested.maximized;
-    if (doMax) {
-        /* Find the output the window is mostly on */
+    if (_isMiniaturized) return;
+    _isMiniaturized = YES;
+    /* Hide compositor-side scene node.  There is no standard XDG-shell state
+     * for "minimized", so the client is not notified; its surface continues
+     * to commit normally while invisible.                                   */
+    wlr_scene_node_set_enabled(&_state->scene_tree->node, false);
+}
+
+- (void)deminiaturize
+{
+    if (!_isMiniaturized) return;
+    _isMiniaturized = NO;
+    wlr_scene_node_set_enabled(&_state->scene_tree->node, true);
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Maximize helpers
+
+/**
+ * Shared maximize/unmaximize implementation used by both handleRequestMaximize
+ * (client-initiated) and toggleMaximize (decoration button).
+ *
+ * Coordinate math:
+ *   The decoration sub-tree sits at (-B, -T) relative to the surface scene
+ *   node.  For the titlebar to appear flush at the top of the usable area
+ *   the surface origin must therefore be at (output_x + B, usableTop + T).
+ *   Surface size = (output_width − 2B) × (output_height − usableTop − T − B).
+ */
+- (void)_setMaximized:(BOOL)maximize
+{
+    if (maximize) {
+        /* Save current surface position for later restore */
+        _restoreX = _x;
+        _restoreY = _y;
+
         struct wlr_output *output =
             wlr_output_layout_output_at(_compositor.state->output_layout,
                                         _x + 100, _y + 100);
-        if (!output) output = wlr_output_layout_get_center_output(_compositor.state->output_layout);
+        if (!output)
+            output = wlr_output_layout_get_center_output(
+                         _compositor.state->output_layout);
         if (output) {
-            struct wlr_box output_box;
-            wlr_output_layout_get_box(_compositor.state->output_layout, output, &output_box);
-            NSEdgeInsets insets = [AmbrosiaDecoration frameInsets];
-            int sw = output_box.width  - (int)(insets.left + insets.right);
-            int sh = output_box.height - (int)(insets.top  + insets.bottom);
-            wlr_xdg_toplevel_set_size(_state->xdg_toplevel, (uint32_t)sw, (uint32_t)sh);
-            [self moveTo:output_box.x y:output_box.y];
+            struct wlr_box ob;
+            wlr_output_layout_get_box(_compositor.state->output_layout,
+                                      output, &ob);
+            int B          = AMBROSIA_BORDER_WIDTH;
+            int T          = AMBROSIA_TITLEBAR_HEIGHT;
+            int usableTop  = _compositor.state->usable_top;
+            int sw = ob.width - B * 2;
+            int sh = ob.height - usableTop - T - B;
+            if (sw < 1) sw = 1;
+            if (sh < 1) sh = 1;
+            wlr_xdg_toplevel_set_size(_state->xdg_toplevel,
+                                      (uint32_t)sw, (uint32_t)sh);
+            [self moveTo:ob.x + B y:ob.y + usableTop + T];
         }
         wlr_xdg_toplevel_set_maximized(_state->xdg_toplevel, true);
     } else {
         wlr_xdg_toplevel_set_maximized(_state->xdg_toplevel, false);
+        /* size 0,0 lets the client choose its preferred unmaximized size */
+        wlr_xdg_toplevel_set_size(_state->xdg_toplevel, 0, 0);
+        [self moveTo:_restoreX y:_restoreY];
     }
     wlr_xdg_surface_schedule_configure(_state->xdg_toplevel->base);
+}
+
+- (void)toggleMaximize
+{
+    [self _setMaximized:!_state->xdg_toplevel->current.maximized];
+}
+
+- (void)handleRequestMaximize
+{
+    [self _setMaximized:_state->xdg_toplevel->requested.maximized];
 }
 
 - (void)handleRequestFullscreen

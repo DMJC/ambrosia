@@ -169,15 +169,18 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
             }
             handled = YES;
         }
-        /* Super+Q → quit compositor */
-        if (syms[i] == XKB_KEY_q && (modifiers & WLR_MODIFIER_LOGO)) {
-            [_compositor stop];
-            handled = YES;
-        }
         /* Alt+Tab → cycle windows */
         if (syms[i] == XKB_KEY_Tab && (modifiers & WLR_MODIFIER_ALT)
+                && !(modifiers & WLR_MODIFIER_LOGO)
                 && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
             [self cycleWindows];
+            handled = YES;
+        }
+        /* Super+Tab → cycle applications */
+        if (syms[i] == XKB_KEY_Tab && (modifiers & WLR_MODIFIER_LOGO)
+                && !(modifiers & WLR_MODIFIER_ALT)
+                && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+            [self cycleApplications];
             handled = YES;
         }
     }
@@ -206,6 +209,75 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
     AmbrosiaView *next = views[idx];
     if (next.isMapped)
         [_compositor focusView:next surface:next.surface];
+}
+
+/**
+ * Super+Tab: cycle keyboard focus across distinct applications.
+ *
+ * Applications are identified by their wl_client pointer — all windows
+ * belonging to one process share the same client.  We build an ordered list
+ * of unique clients (preserving the z-order of their topmost window), find
+ * the client after the currently focused one, and give focus to the topmost
+ * mapped, non-miniaturised window of that next client.
+ */
+- (void)cycleApplications
+{
+    NSArray<AmbrosiaView *> *views = _compositor.views;
+    if (views.count < 2) return;
+
+    /* Collect eligible views (mapped, non-menu, non-miniaturized). */
+    NSMutableArray<AmbrosiaView *> *eligible = [NSMutableArray array];
+    for (AmbrosiaView *v in views) {
+        if (!v.isMapped)      continue;
+        if (v.isMiniaturized) continue;
+        if (v.isMenu)         continue;
+        [eligible addObject:v];
+    }
+    if (eligible.count < 2) return;
+
+    /*
+     * Build an ordered list of unique wl_clients, preserving the z-order of
+     * the last (topmost) window seen for each client.  Iterating eligible in
+     * forward order means later entries overwrite earlier ones, so the final
+     * array entry for each client reflects its topmost window.
+     */
+    NSMutableOrderedSet *clientOrder = [NSMutableOrderedSet orderedSet];
+    NSMutableDictionary<NSValue *, AmbrosiaView *> *topmostForClient =
+        [NSMutableDictionary dictionary];
+
+    for (AmbrosiaView *v in eligible) {
+        struct wl_client *client =
+            wl_resource_get_client(v.state->xdg_toplevel->base->resource);
+        NSValue *key = [NSValue valueWithPointer:client];
+        [clientOrder addObject:key];           /* no-op if already present */
+        topmostForClient[key] = v;             /* keeps the last/topmost window */
+    }
+
+    if (clientOrder.count < 2) return;        /* all windows belong to one app */
+
+    /* Find the wl_client of the currently focused view. */
+    struct wl_client *focusedClient = NULL;
+    if (_compositor.focusedView) {
+        focusedClient = wl_resource_get_client(
+            _compositor.focusedView.state->xdg_toplevel->base->resource);
+    }
+
+    NSValue *focusedKey = focusedClient
+        ? [NSValue valueWithPointer:focusedClient] : nil;
+    NSUInteger currentIdx = focusedKey
+        ? [clientOrder indexOfObject:focusedKey] : NSNotFound;
+
+    /* Advance to the next client in the ordered set, wrapping around. */
+    NSUInteger nextIdx;
+    if (currentIdx == NSNotFound || currentIdx + 1 >= clientOrder.count)
+        nextIdx = 0;
+    else
+        nextIdx = currentIdx + 1;
+
+    NSValue *nextKey = clientOrder[nextIdx];
+    AmbrosiaView *target = topmostForClient[nextKey];
+    if (target)
+        [_compositor focusView:target surface:target.surface];
 }
 
 @end

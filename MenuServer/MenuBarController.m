@@ -1,6 +1,9 @@
 #import "MenuBarController.h"
 #import "MenuBarView.h"
 
+#include <signal.h>
+#include <errno.h>
+
 static const CGFloat kBarHeight          = 24.0;
 static const CGFloat kFallbackWidth      = 1920.0;
 static const CGFloat kFallbackScreenH    = 1080.0;
@@ -9,12 +12,10 @@ static const CGFloat kFallbackScreenH    = 1080.0;
     NSPanel      *_menuPanel;
     MenuBarView  *_menuBarView;
     NSConnection *_doConnection;
-    /* Strong reference to the DO proxy for the active app's client.
-     * NSDistantObject is an NSProxy subclass and does NOT support ARC
-     * zeroing-weak storage; __weak would always yield nil.             */
-    id<MenuServerClientProtocol> _clientProxy;
     NSString     *_activeAppName;
     NSArray      *_activeMenuItems;
+    /* PID of the DO-registered active app, or 0 if no app has registered. */
+    int32_t       _activeClientPID;
     id            _activateObserver;
     id            _deactivateObserver;
 }
@@ -115,7 +116,8 @@ static const CGFloat kFallbackScreenH    = 1080.0;
 
     /* GNUstep does not post activate/deactivate notifications.
      * Use DidLaunchApplication as a best-effort fallback: show the app name
-     * in the bar when it launches, unless it has already registered via DO. */
+     * in the bar when a new app launches, unless a DO-registered app is
+     * already providing menu data via -applicationDidActivate:menuItems:pid: */
     _activateObserver = [ws.notificationCenter
         addObserverForName:NSWorkspaceDidLaunchApplicationNotification
                     object:nil
@@ -123,13 +125,18 @@ static const CGFloat kFallbackScreenH    = 1080.0;
                 usingBlock:^(NSNotification *note) {
         __strong typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
+        /* If a DO-registered app is active, it owns the bar — do not
+         * override it with the workspace fallback.                      */
+        if (strongSelf->_activeClientPID != 0) return;
         NSString *name = note.userInfo[@"NSApplicationName"];
         if (name.length && ![name isEqualToString:strongSelf->_activeAppName]) {
-            [strongSelf _updateActiveApp:name menuItems:nil client:nil];
+            [strongSelf _updateActiveApp:name menuItems:nil pid:0];
         }
     }];
 
-    /* Clear the bar when the active app terminates. */
+    /* Clear the bar when the active app terminates.
+     * Match by PID first (reliable for DO-registered apps) then by name
+     * (fallback for workspace-only apps that never called DO).            */
     _deactivateObserver = [ws.notificationCenter
         addObserverForName:NSWorkspaceDidTerminateApplicationNotification
                     object:nil
@@ -137,20 +144,25 @@ static const CGFloat kFallbackScreenH    = 1080.0;
                 usingBlock:^(NSNotification *note) {
         __strong typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
+        NSNumber *pidNum = note.userInfo[@"NSApplicationProcessIdentifier"];
+        int32_t   terminatedPID = pidNum ? (int32_t)[pidNum intValue] : 0;
         NSString *name = note.userInfo[@"NSApplicationName"];
-        if ([name isEqualToString:strongSelf->_activeAppName]) {
-            [strongSelf _updateActiveApp:nil menuItems:nil client:nil];
+        BOOL matchesPID  = (terminatedPID != 0 &&
+                            terminatedPID == strongSelf->_activeClientPID);
+        BOOL matchesName = [name isEqualToString:strongSelf->_activeAppName];
+        if (matchesPID || matchesName) {
+            [strongSelf _updateActiveApp:nil menuItems:nil pid:0];
         }
     }];
 }
 
 - (void)_updateActiveApp:(NSString *)appName
                menuItems:(NSArray *)items
-                  client:(id<MenuServerClientProtocol>)client
+                     pid:(int32_t)pid
 {
     _activeAppName   = [appName copy];
     _activeMenuItems = [items copy];
-    _clientProxy     = client;           /* weak — released when app exits */
+    _activeClientPID = pid;
     [_menuBarView setActiveAppName:_activeAppName menuItems:_activeMenuItems];
 }
 
@@ -158,14 +170,24 @@ static const CGFloat kFallbackScreenH    = 1080.0;
 #pragma mark - MenuServerProtocol (DO, called by GNUstep apps)
 
 - (void)applicationDidActivate:(bycopy NSString *)appName
-                   menuItems:(bycopy NSArray *)menuItems
-                      client:(byref id<MenuServerClientProtocol>)client
+                     menuItems:(bycopy NSArray *)menuItems
+                           pid:(bycopy NSNumber *)pid
 {
     /* DO callbacks may arrive on a background thread; marshal to main. */
     NSString *nameCopy  = [appName copy];
     NSArray  *itemsCopy = [menuItems copy];
+    int32_t   pidValue  = (int32_t)[pid intValue];
     dispatch_async(dispatch_get_main_queue(), ^{
-        [self _updateActiveApp:nameCopy menuItems:itemsCopy client:client];
+        /* If the currently registered app's process is no longer alive (crash
+         * or SIGKILL — it never called deregisterFromServer), evict it so the
+         * new app's registration is always accepted.                          */
+        if (self->_activeClientPID != 0 &&
+            kill((pid_t)self->_activeClientPID, 0) != 0 && errno == ESRCH) {
+            NSLog(@"MenuServer: evicting stale registration for \"%@\" (pid %d — dead).",
+                  self->_activeAppName, self->_activeClientPID);
+            self->_activeClientPID = 0;
+        }
+        [self _updateActiveApp:nameCopy menuItems:itemsCopy pid:pidValue];
     });
 }
 
@@ -174,7 +196,7 @@ static const CGFloat kFallbackScreenH    = 1080.0;
     NSString *nameCopy = [appName copy];
     dispatch_async(dispatch_get_main_queue(), ^{
         if ([self->_activeAppName isEqualToString:nameCopy]) {
-            [self _updateActiveApp:nil menuItems:nil client:nil];
+            [self _updateActiveApp:nil menuItems:nil pid:0];
         }
     });
 }
@@ -183,20 +205,30 @@ static const CGFloat kFallbackScreenH    = 1080.0;
 #pragma mark - Menu-item action callback (invoked by MenuBarView)
 
 /**
- * Called when the user selects an item in a DO-registered app's menu.
- * Forwards the action to the app via its client proxy.
+ * Posts kMenuItemSelectedNotification to NSDistributedNotificationCenter.
+ *
+ * The notification is delivered to all GNUstep processes.  Each instance of
+ * AmbrosiaMenusBundle checks the kMenuItemSelectedPIDKey value against its
+ * own PID; only the matching process dispatches the menu action.
+ *
+ * This replaces the previous "byref DO proxy" approach, which required
+ * GNUstep to establish a reverse connection from the server back to the
+ * client's anonymous port — a connection that was torn down as soon as
+ * -applicationDidActivate:menuItems:pid: returned, before the stored proxy
+ * could ever be used.
  */
 - (void)performMenuItemWithIdentifier:(NSString *)identifier
 {
-    id<MenuServerClientProtocol> proxy = _clientProxy;
-    if (proxy && identifier.length) {
-        @try {
-            [proxy performMenuItemWithIdentifier:identifier];
-        } @catch (NSException *ex) {
-            NSLog(@"MenuServer: client DO call failed (%@); clearing proxy.", ex.reason);
-            _clientProxy = nil;
-        }
-    }
+    if (!identifier.length || _activeClientPID == 0) return;
+
+    [[NSDistributedNotificationCenter defaultCenter]
+        postNotificationName:kMenuItemSelectedNotification
+                      object:nil
+                    userInfo:@{
+                        kMenuItemSelectedPIDKey:        @(_activeClientPID),
+                        kMenuItemSelectedIdentifierKey: identifier,
+                    }
+          deliverImmediately:YES];
 }
 
 /* ---------------------------------------------------------------------- */

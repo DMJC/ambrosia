@@ -102,10 +102,25 @@ static void handle_output_destroy(struct wl_listener *listener, void *data)
 
 - (void)handleDestroy
 {
-    [_compositor.outputs removeObject:self];
+    /*
+     * Remove all Wayland listeners BEFORE releasing the ObjC object.
+     *
+     * Ordering matters:
+     *   1. wl_list_remove must happen while wlr_output is still alive
+     *      (we are inside its destroy signal handler, so it is valid here).
+     *   2. free/_state = NULL must happen before the compositor array
+     *      release, because removeObject: may drop the last retain and
+     *      trigger dealloc immediately on the same call stack.
+     *      With _state already NULL, dealloc's guard does nothing and the
+     *      double-wl_list_remove crash is avoided.
+     */
     wl_list_remove(&_state->frame.link);
     wl_list_remove(&_state->request_state.link);
     wl_list_remove(&_state->destroy.link);
+    free(_state);
+    _state = NULL;
+
+    [_compositor.outputs removeObject:self];
 }
 
 @end

@@ -134,6 +134,7 @@ struct ambrosia_compositor_state {
                           localX:(double *)lx
                           localY:(double *)ly;
 - (void)focusView:(AmbrosiaView *)view surface:(struct wlr_surface *)surface;
+- (void)focusNextWindowExcluding:(AmbrosiaView *)excluded;
 - (void)beginMoveView:(AmbrosiaView *)view cursor:(struct wlr_cursor *)cursor;
 - (void)beginResizeView:(AmbrosiaView *)view
                  cursor:(struct wlr_cursor *)cursor
