@@ -60,8 +60,19 @@
         [[AmbrosiaMenusBundle sharedBundle] registerMenuWithServer];
     }];
 
-    /* Re-register whenever the app regains focus (e.g. user switches back). */
+    /* Re-register whenever the app regains focus (e.g. user switches back).
+     * NSApplicationDidBecomeActiveNotification may only fire once in
+     * gnustep-back; NSWindowDidBecomeKeyNotification is more reliable because
+     * it fires every time the compositor delivers wlr_seat keyboard.enter to
+     * a surface, which gnustep-back translates into a key window change.    */
     [nc addObserverForName:NSApplicationDidBecomeActiveNotification
+                   object:nil
+                    queue:[NSOperationQueue mainQueue]
+               usingBlock:^(NSNotification *note) {
+        [[AmbrosiaMenusBundle sharedBundle] registerMenuWithServer];
+    }];
+
+    [nc addObserverForName:NSWindowDidBecomeKeyNotification
                    object:nil
                     queue:[NSOperationQueue mainQueue]
                usingBlock:^(NSNotification *note) {

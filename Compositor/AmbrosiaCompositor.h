@@ -43,6 +43,23 @@ struct ambrosia_compositor_state {
     struct wlr_scene            *scene;
     struct wlr_scene_output_layout *scene_layout;
     struct wlr_output_layout    *output_layout;
+
+    /*
+     * Scene sub-trees, created in ascending z-order so the renderer visits
+     * them background → bottom → windows → top → overlay.  This matches the
+     * wlr-layer-shell-v1 layer numbering and ensures layer-TOP surfaces
+     * (e.g. the Ambrosia menu bar) always render above regular windows.
+     */
+    struct wlr_scene_tree       *scene_layer_bg;       /* ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND */
+    struct wlr_scene_tree       *scene_layer_bottom;   /* ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM     */
+    struct wlr_scene_tree       *scene_layer_windows;  /* xdg-toplevel windows (tiling layer)  */
+    struct wlr_scene_tree       *scene_layer_top;      /* ZWLR_LAYER_SHELL_V1_LAYER_TOP        */
+    struct wlr_scene_tree       *scene_layer_overlay;  /* ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY    */
+
+    /* Usable screen area: top margin reserved by LAYER_TOP exclusive zones
+     * (e.g. 24 px while the Ambrosia menu bar is running).  Used to clamp
+     * window placement so windows cannot be dragged behind the bar.        */
+    int                          usable_top;
     struct wlr_compositor       *compositor;
     struct wlr_subcompositor    *subcompositor;
     struct wlr_data_device_manager *data_device_manager;

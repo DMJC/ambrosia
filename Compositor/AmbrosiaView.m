@@ -175,9 +175,11 @@ check_title:
     _state->xdg_toplevel = toplevel;
     _state->objc_view    = (__bridge void *)self;
 
-    /* Create scene tree for this view */
+    /* Create scene tree for this view inside scene_layer_windows.
+     * This sub-tree sits below scene_layer_top in z-order, so windows
+     * can never render above the menu bar regardless of raise calls.  */
     _state->scene_tree = wlr_scene_xdg_surface_create(
-        &compositor.state->scene->tree,
+        compositor.state->scene_layer_windows,
         toplevel->base);
     _state->scene_tree->node.data = (__bridge void *)self;
     toplevel->base->data = _state->scene_tree;
@@ -316,20 +318,23 @@ check_title:
     /* ---- Menu toplevels ---- */
     if (_isMenu) {
         /* Place at the top-left of the primary output.  GNUstep will follow up
-         * with request_move events to reach its desired screen position. */
+         * with request_move events to reach its desired screen position.
+         * Menus must NOT steal keyboard focus from the application window —
+         * the seat keyboard focus stays with the previously active toplevel. */
         struct wlr_output *output =
             wlr_output_layout_get_center_output(_compositor.state->output_layout);
         struct wlr_box ob = {0};
         if (output) wlr_output_layout_get_box(_compositor.state->output_layout, output, &ob);
         [self moveTo:ob.x y:ob.y];
-        [_compositor focusView:self surface:self.surface];
         return;
     }
 
-    /* ---- Normal windows: cascade ---- */
+    /* ---- Normal windows: cascade below the menu bar ---- */
     static int cascade = 0;
-    int startX = 60 + cascade * 30;
-    int startY = 60 + cascade * 30;
+    int usableTop = _compositor.state->usable_top;
+    /* Start windows below the menu bar (at least usableTop + 8 px margin) */
+    int startX = 60  + cascade * 30;
+    int startY = MAX(usableTop + 8, 50) + cascade * 30;
     cascade = (cascade + 1) % 8;
     [self moveTo:startX y:startY];
 

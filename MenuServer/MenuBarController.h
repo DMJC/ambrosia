@@ -36,4 +36,17 @@
 /** Post the AmbrosiaLogoutRequest notification (with confirmation alert). */
 - (void)logout;
 
+/* ---- Panel geometry (called by MenuBarView for inline dropdowns) ---- */
+
+/**
+ * Expand the menu bar panel downward by dropH pixels so the inline dropdown
+ * is visible within the same layer-shell surface.
+ */
+- (void)expandPanelByDropdownHeight:(CGFloat)dropH;
+
+/**
+ * Collapse the panel back to the standard 24-px bar height.
+ */
+- (void)contractPanelDropdown;
+
 @end

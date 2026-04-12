@@ -2,101 +2,129 @@
 #import "MenuBarController.h"
 #import "MenuServerProtocol.h"
 
-/* ---- Appearance constants ---- */
-static const CGFloat kBarPad        = 6.0;   /* outer left / right margin       */
-static const CGFloat kItemPad       = 6.0;   /* horizontal padding inside items */
-static const CGFloat kItemGap       = 2.0;   /* gap between adjacent items       */
-static const CGFloat kSepWidth      = 1.0;   /* vertical separator width         */
-static const CGFloat kSepInset      = 4.0;   /* vertical inset for separators    */
-static const CGFloat kFontSize      = 11.5;
-static const CGFloat kBoldFontSize  = 12.0;
-static const CGFloat kHighlightAlpha = 0.25; /* button-press background alpha    */
+/* ---- Bar geometry ---- */
+static const CGFloat kBarHeight      = 24.0;
+
+/* ---- Bar appearance ---- */
+static const CGFloat kBarPad         = 6.0;
+static const CGFloat kItemPad        = 6.0;
+static const CGFloat kItemGap        = 2.0;
+static const CGFloat kSepWidth       = 1.0;
+static const CGFloat kSepInset       = 4.0;
+static const CGFloat kFontSize       = 11.5;
+static const CGFloat kBoldFontSize   = 12.0;
+static const CGFloat kHighlightAlpha = 0.25;
+
+/* ---- Dropdown geometry ---- */
+static const CGFloat kDropItemH      = 22.0;   /* normal item row height          */
+static const CGFloat kDropSepH       = 8.0;    /* separator row height            */
+static const CGFloat kDropPadX       = 14.0;   /* horizontal text inset           */
+static const CGFloat kDropMinW       = 180.0;  /* minimum dropdown panel width    */
+static const CGFloat kDropExtraBot   = 4.0;    /* extra padding below last item   */
 
 /* ---- Hit-region tags ---- */
 typedef NS_ENUM(NSInteger, MenuBarRegion) {
     MenuBarRegionNone     = -1,
     MenuBarRegionAmbrosia =  0,
     MenuBarRegionSession  =  1,
-    MenuBarRegionMenuItem =  100, /* items >= 100, index = tag - 100 */
+    MenuBarRegionMenuItem =  100,  /* items >= 100; index = tag − 100 */
 };
 
-/* ---- Helpers ---- */
-static NSColor *BarBackgroundColor(void)
-{
-    /* Dark navy-grey, similar to a classic dark desktop bar. */
-    return [NSColor colorWithCalibratedRed:0.10
-                                     green:0.10
-                                      blue:0.16
-                                     alpha:1.0];
-}
+/* ---- NSDictionary keys for system-menu item descriptors ---- */
+static NSString * const kSysItemTitle    = @"sysTitle";
+static NSString * const kSysItemSel     = @"sysSel";     /* NSString selector name */
+static NSString * const kSysItemSep     = @"sysSep";     /* @YES = separator row  */
 
-static NSColor *BarHighlightColor(void)
+/* ---- Colour / font helpers ---- */
+static NSColor *BarBg(void)
+{
+    return [NSColor colorWithCalibratedRed:0.10 green:0.10 blue:0.16 alpha:1.0];
+}
+static NSColor *DropBg(void)
+{
+    return [NSColor colorWithCalibratedRed:0.13 green:0.13 blue:0.20 alpha:1.0];
+}
+static NSColor *DropBorder(void)
+{
+    return [NSColor colorWithCalibratedWhite:0.35 alpha:0.9];
+}
+static NSColor *BarHighlight(void)
 {
     return [NSColor colorWithCalibratedWhite:1.0 alpha:kHighlightAlpha];
 }
-
-static NSColor *BarSeparatorColor(void)
+static NSColor *DropHighlight(void)
+{
+    return [NSColor colorWithCalibratedRed:0.20 green:0.40 blue:0.80 alpha:0.85];
+}
+static NSColor *BarSep(void)
 {
     return [NSColor colorWithCalibratedWhite:0.40 alpha:0.8];
 }
-
-static NSDictionary *NormalTextAttrs(void)
+static NSDictionary *NormalAttrs(void)
 {
     return @{
-        NSForegroundColorAttributeName:
-            [NSColor colorWithCalibratedWhite:0.92 alpha:1.0],
-        NSFontAttributeName:
-            [NSFont systemFontOfSize:kFontSize],
+        NSForegroundColorAttributeName: [NSColor colorWithCalibratedWhite:0.92 alpha:1.0],
+        NSFontAttributeName: [NSFont systemFontOfSize:kFontSize],
+    };
+}
+static NSDictionary *BoldAttrs(void)
+{
+    return @{
+        NSForegroundColorAttributeName: [NSColor colorWithCalibratedWhite:1.0 alpha:1.0],
+        NSFontAttributeName: [NSFont boldSystemFontOfSize:kBoldFontSize],
+    };
+}
+static NSDictionary *DisabledAttrs(void)
+{
+    return @{
+        NSForegroundColorAttributeName: [NSColor colorWithCalibratedWhite:0.55 alpha:1.0],
+        NSFontAttributeName: [NSFont systemFontOfSize:kFontSize],
+    };
+}
+static NSDictionary *DropItemAttrs(BOOL highlighted)
+{
+    NSColor *fg = highlighted
+        ? [NSColor whiteColor]
+        : [NSColor colorWithCalibratedWhite:0.92 alpha:1.0];
+    return @{
+        NSForegroundColorAttributeName: fg,
+        NSFontAttributeName: [NSFont systemFontOfSize:kFontSize],
     };
 }
 
-static NSDictionary *BoldTextAttrs(void)
+/* Centre a string rect vertically inside a bar-item rect */
+static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 {
-    return @{
-        NSForegroundColorAttributeName:
-            [NSColor colorWithCalibratedWhite:1.0 alpha:1.0],
-        NSFontAttributeName:
-            [NSFont boldSystemFontOfSize:kBoldFontSize],
-    };
-}
-
-static NSDictionary *DimTextAttrs(void)
-{
-    return @{
-        NSForegroundColorAttributeName:
-            [NSColor colorWithCalibratedWhite:0.65 alpha:1.0],
-        NSFontAttributeName:
-            [NSFont systemFontOfSize:kFontSize],
-    };
-}
-
-/* Centre a string vertically in a rect. */
-static NSRect CentreStringRect(NSString *str, NSDictionary *attrs, NSRect bounds)
-{
-    NSSize sz = [str sizeWithAttributes:attrs];
-    CGFloat y = bounds.origin.y + (bounds.size.height - sz.height) * 0.5;
-    return NSMakeRect(bounds.origin.x, y, sz.width, sz.height);
+    NSSize sz = [s sizeWithAttributes:a];
+    CGFloat y = r.origin.y + (r.size.height - sz.height) * 0.5;
+    return NSMakeRect(r.origin.x, y, sz.width, sz.height);
 }
 
 /* ---------------------------------------------------------------------- */
 
 @implementation MenuBarView {
-    /* ---- State ---- */
+    /* ---- Bar state ---- */
     NSString  *_activeAppName;
-    NSArray   *_activeMenuItems;  /* NSArray<NSDictionary*> */
+    NSArray   *_activeMenuItems;   /* NSArray<NSDictionary*> from DO app */
     NSString  *_clockString;
     NSTimer   *_clockTimer;
 
-    /* ---- Pre-computed hit-test rects (view coordinates) ---- */
-    NSRect     _ambrosiaRect;     /* Ambrosia system-menu button    */
-    NSRect     _appNameRect;      /* app-name label (non-clickable) */
-    NSMutableArray *_menuRects;   /* one NSValue(NSRect) per clickable top-level item */
-    NSMutableArray *_menuItemIndices; /* NSNumber: index into _activeMenuItems for each rect */
-    NSRect     _clockRect;
-    NSRect     _sessionRect;
+    /* ---- Pre-computed bar hit rects (view coords, isFlipped=YES) ---- */
+    NSRect              _ambrosiaRect;
+    NSRect              _appNameRect;
+    NSMutableArray     *_menuRects;        /* NSValue(NSRect) per clickable top-level item */
+    NSMutableArray     *_menuItemIndices;  /* NSNumber: index into _activeMenuItems */
+    NSRect              _clockRect;
+    NSRect              _sessionRect;
+    NSInteger           _pressedRegion;    /* MenuBarRegion; -1 = none */
 
-    /* ---- Pressed-button tracking ---- */
-    NSInteger  _pressedRegion;    /* MenuBarRegion; -1 = none */
+    /* ---- Inline dropdown state ---- */
+    NSInteger           _openTag;          /* which header is open (MenuBarRegion); -1 = none */
+    NSArray            *_openDescriptors;  /* items for open dropdown; NSDictionary array */
+    NSMutableArray     *_dropdownRects;    /* NSValue(NSRect) per dropdown row (view coords) */
+    CGFloat             _dropdownX;        /* left edge of open dropdown */
+    CGFloat             _dropdownW;        /* width of open dropdown */
+    NSInteger           _hoveredIdx;       /* hovered item index (-1 = none) */
 }
 
 /* ---------------------------------------------------------------------- */
@@ -107,9 +135,12 @@ static NSRect CentreStringRect(NSString *str, NSDictionary *attrs, NSRect bounds
     self = [super initWithFrame:frame];
     if (!self) return nil;
 
-    _menuRects        = [NSMutableArray array];
-    _menuItemIndices  = [NSMutableArray array];
-    _pressedRegion    = MenuBarRegionNone;
+    _menuRects       = [NSMutableArray array];
+    _menuItemIndices = [NSMutableArray array];
+    _dropdownRects   = [NSMutableArray array];
+    _pressedRegion   = MenuBarRegionNone;
+    _openTag         = MenuBarRegionNone;
+    _hoveredIdx      = -1;
 
     [self _updateClockString];
     _clockTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
@@ -127,11 +158,24 @@ static NSRect CentreStringRect(NSString *str, NSDictionary *attrs, NSRect bounds
 }
 
 /* ---------------------------------------------------------------------- */
+#pragma mark - Coordinate system
+
+/**
+ * Use a top-left origin so the bar occupies y=0…kBarHeight and the
+ * dropdown (when expanded) occupies y=kBarHeight…kBarHeight+dropH.
+ * This is the natural direction for a menu that drops downward.
+ */
+- (BOOL)isFlipped { return YES; }
+
+/* ---------------------------------------------------------------------- */
 #pragma mark - Public API
 
 - (void)setActiveAppName:(NSString *)appName menuItems:(NSArray *)menuItems
 {
-    _activeAppName  = [appName copy];
+    /* If a dropdown is open for an app menu, close it first. */
+    if (_openTag >= MenuBarRegionMenuItem) [self _closeDropdown];
+
+    _activeAppName   = [appName copy];
     _activeMenuItems = [menuItems copy];
     [self setNeedsDisplay:YES];
 }
@@ -149,198 +193,337 @@ static NSRect CentreStringRect(NSString *str, NSDictionary *attrs, NSRect bounds
 - (void)_tickClock:(NSTimer *)timer
 {
     [self _updateClockString];
-    /* Only redraw the clock region to avoid full-bar flicker */
     [self setNeedsDisplayInRect:_clockRect];
 }
 
 /* ---------------------------------------------------------------------- */
 #pragma mark - Drawing
 
-- (BOOL)isFlipped { return NO; }   /* Keep GNUstep bottom-left origin */
-
 - (void)drawRect:(NSRect)dirtyRect
 {
-    NSRect bounds = self.bounds;
-    CGFloat W = bounds.size.width;
-    CGFloat H = bounds.size.height;
+    NSRect  bounds = self.bounds;
+    CGFloat W      = bounds.size.width;
 
-    /* ---- Background ---- */
-    [BarBackgroundColor() set];
-    NSRectFill(bounds);
+    /* Erase the entire view to transparent first.  The panel is non-opaque
+     * (backgroundColor = clearColor) so the area outside the bar strip and
+     * dropdown box will be fully transparent rather than showing the default
+     * grey window background.                                               */
+    NSRectFillUsingOperation(bounds, NSCompositeClear);
 
-    /* ---- Layout state ---- */
-    CGFloat leftX  = kBarPad;
-    CGFloat rightX = W - kBarPad;
+    /* ================================================================
+     * BAR SECTION  (y = 0 … kBarHeight, isFlipped so y increases down)
+     * ================================================================ */
 
-    /* Reset hit rects */
+    NSRect barBounds = NSMakeRect(0, 0, W, kBarHeight);
+    [BarBg() set];
+    NSRectFill(barBounds);
+
     [_menuRects removeAllObjects];
     [_menuItemIndices removeAllObjects];
 
-    /* ---- RIGHT SIDE: session button + clock ---- */
-    /* Session button: "⏻" (U+23FB POWER SYMBOL) */
+    CGFloat leftX  = kBarPad;
+    CGFloat rightX = W - kBarPad;
+
+    /* ---- RIGHT SIDE ---- */
     NSString *sessionStr = @"\u23FB";
-    NSSize sessionSz = [sessionStr sizeWithAttributes:NormalTextAttrs()];
+    NSSize sessionSz = [sessionStr sizeWithAttributes:NormalAttrs()];
     CGFloat sessionW = sessionSz.width + kItemPad * 2;
-    _sessionRect = NSMakeRect(rightX - sessionW, 0, sessionW, H);
-    [self _drawButtonRect:_sessionRect
-                   label:sessionStr
-                    attrs:NormalTextAttrs()
-               isPressed:(_pressedRegion == MenuBarRegionSession)];
+    _sessionRect = NSMakeRect(rightX - sessionW, 0, sessionW, kBarHeight);
+    [self _drawBarButton:_sessionRect
+                  label:sessionStr
+                  attrs:NormalAttrs()
+              isPressed:(_pressedRegion == MenuBarRegionSession)
+                isOpen:(_openTag == MenuBarRegionSession)];
     rightX -= sessionW + kItemGap;
 
-    /* Vertical separator */
-    [self _drawVerticalSeparatorAtX:rightX];
+    [self _drawBarSepAtX:rightX];
     rightX -= kSepWidth + kItemGap;
 
-    /* Clock */
     NSString *clock = _clockString ?: @"--:--:--";
-    NSSize clockSz  = [clock sizeWithAttributes:NormalTextAttrs()];
+    NSSize clockSz  = [clock sizeWithAttributes:NormalAttrs()];
     CGFloat clockW  = clockSz.width + kItemPad * 2;
-    _clockRect = NSMakeRect(rightX - clockW, 0, clockW, H);
-    /* Clock is non-interactive: draw label only */
-    [self _drawLabelInRect:_clockRect label:clock attrs:NormalTextAttrs()];
+    _clockRect = NSMakeRect(rightX - clockW, 0, clockW, kBarHeight);
+    [self _drawLabelInRect:_clockRect label:clock attrs:NormalAttrs()];
     rightX -= clockW + kItemGap;
 
     /* ---- LEFT SIDE: Ambrosia button ---- */
-    NSString *ambrosiaStr  = @"  Ambrosia  ";
-    NSSize    ambrosiaSz   = [ambrosiaStr sizeWithAttributes:BoldTextAttrs()];
-    CGFloat   ambrosiaW    = ambrosiaSz.width;
-    _ambrosiaRect = NSMakeRect(leftX, 0, ambrosiaW, H);
-    [self _drawButtonRect:_ambrosiaRect
-                   label:ambrosiaStr
-                    attrs:BoldTextAttrs()
-               isPressed:(_pressedRegion == MenuBarRegionAmbrosia)];
-    leftX += ambrosiaW + kItemGap;
+    NSString *ambStr = @"  Ambrosia  ";
+    NSSize    ambSz  = [ambStr sizeWithAttributes:BoldAttrs()];
+    CGFloat   ambW   = ambSz.width;
+    _ambrosiaRect = NSMakeRect(leftX, 0, ambW, kBarHeight);
+    [self _drawBarButton:_ambrosiaRect
+                  label:ambStr
+                  attrs:BoldAttrs()
+              isPressed:(_pressedRegion == MenuBarRegionAmbrosia)
+                isOpen:(_openTag == MenuBarRegionAmbrosia)];
+    leftX += ambW + kItemGap;
 
-    /* Vertical separator after Ambrosia */
-    [self _drawVerticalSeparatorAtX:leftX];
+    [self _drawBarSepAtX:leftX];
     leftX += kSepWidth + kItemGap;
 
-    /* ---- App name (non-clickable, capped to 200 px) ---- */
+    /* App name */
     if (_activeAppName.length) {
-        NSString *nameStr = _activeAppName;
-        NSSize    nameSz  = [nameStr sizeWithAttributes:BoldTextAttrs()];
-        CGFloat   nameW   = MIN(nameSz.width + kItemPad * 2, 200.0);
-        _appNameRect = NSMakeRect(leftX, 0, nameW, H);
-        [self _drawLabelInRect:_appNameRect label:nameStr attrs:BoldTextAttrs()];
+        NSSize   nameSz = [_activeAppName sizeWithAttributes:BoldAttrs()];
+        CGFloat  nameW  = MIN(nameSz.width + kItemPad * 2, 200.0);
+        _appNameRect = NSMakeRect(leftX, 0, nameW, kBarHeight);
+        [self _drawLabelInRect:_appNameRect label:_activeAppName attrs:BoldAttrs()];
         leftX += nameW + kItemGap;
 
-        /* Separator after app name (only if we have menu items) */
         if (_activeMenuItems.count) {
-            [self _drawVerticalSeparatorAtX:leftX];
+            [self _drawBarSepAtX:leftX];
             leftX += kSepWidth + kItemGap;
         }
     } else {
         _appNameRect = NSZeroRect;
     }
 
-    /* ---- Top-level menu items (from DO-registered app) ---- */
+    /* Top-level app menu items */
     NSUInteger activeItemIndex = 0;
     for (NSDictionary *item in _activeMenuItems) {
         if ([item[kMenuItemSeparator] boolValue]) { activeItemIndex++; continue; }
 
-        NSString *title  = item[kMenuItemTitle] ?: @"";
-        NSSize    titleSz = [title sizeWithAttributes:NormalTextAttrs()];
-        CGFloat   itemW   = titleSz.width + kItemPad * 2 + 8; /* +8 for arrow ▾ */
+        NSString *title   = item[kMenuItemTitle] ?: @"";
+        NSSize    titleSz = [title sizeWithAttributes:NormalAttrs()];
+        CGFloat   itemW   = titleSz.width + kItemPad * 2 + 8;
 
-        /* Stop if we would overlap the clock/session area */
         if (leftX + itemW + kBarPad > rightX) break;
 
         NSInteger menuIdx = (NSInteger)_menuRects.count;
-        NSRect itemRect = NSMakeRect(leftX, 0, itemW, H);
+        NSRect itemRect = NSMakeRect(leftX, 0, itemW, kBarHeight);
         [_menuRects addObject:[NSValue valueWithRect:itemRect]];
-        /* Record the actual _activeMenuItems index so _showAppMenuAtIndex:
-         * always gets the right descriptor even when separators are present. */
         [_menuItemIndices addObject:@(activeItemIndex)];
 
         BOOL isPressed = (_pressedRegion == MenuBarRegionMenuItem + menuIdx);
-        [self _drawButtonRect:itemRect
-                        label:[title stringByAppendingString:@" \u25BE"] /* ▾ */
-                        attrs:NormalTextAttrs()
-                    isPressed:isPressed];
+        BOOL isOpen    = (_openTag       == MenuBarRegionMenuItem + menuIdx);
+        NSString *label = [title stringByAppendingString:@" \u25BE"];
+        [self _drawBarButton:itemRect
+                       label:label
+                       attrs:NormalAttrs()
+                   isPressed:isPressed
+                      isOpen:isOpen];
 
         leftX += itemW + kItemGap;
         activeItemIndex++;
     }
 
-    /* ---- Bottom border highlight (1 px, subtle) ---- */
+    /* Bottom border */
     [[NSColor colorWithCalibratedWhite:0.0 alpha:0.4] set];
-    NSRectFill(NSMakeRect(0, 0, W, 1.0));
+    NSRectFill(NSMakeRect(0, kBarHeight - 1.0, W, 1.0));
 
+    /* ================================================================
+     * DROPDOWN SECTION  (y = kBarHeight … kBarHeight+dropH)
+     * Only drawn when a menu is open.
+     * ================================================================ */
+    if (_openTag == MenuBarRegionNone || !_openDescriptors.count) {
+        (void)dirtyRect;
+        return;
+    }
+
+    [self _drawDropdown];
     (void)dirtyRect;
 }
 
-/* ---- Drawing helpers ---- */
+/* ---- Bar drawing helpers ---- */
 
-- (void)_drawButtonRect:(NSRect)rect
-                  label:(NSString *)label
-                  attrs:(NSDictionary *)attrs
-              isPressed:(BOOL)pressed
+- (void)_drawBarButton:(NSRect)rect
+                 label:(NSString *)label
+                 attrs:(NSDictionary *)attrs
+             isPressed:(BOOL)pressed
+                isOpen:(BOOL)open
 {
-    if (pressed) {
-        [BarHighlightColor() set];
+    if (pressed || open) {
+        [BarHighlight() set];
         NSRectFillUsingOperation(rect, NSCompositeSourceOver);
     }
     [self _drawLabelInRect:rect label:label attrs:attrs];
 }
 
-- (void)_drawLabelInRect:(NSRect)rect
-                   label:(NSString *)label
-                   attrs:(NSDictionary *)attrs
+- (void)_drawLabelInRect:(NSRect)rect label:(NSString *)label attrs:(NSDictionary *)attrs
 {
-    NSRect textRect = CentreStringRect(label, attrs, rect);
-    /* Clamp to the button rect so long titles don't bleed */
-    textRect.size.width = MIN(textRect.size.width, rect.size.width);
-    [label drawInRect:textRect withAttributes:attrs];
+    NSRect tr = CentreInRect(label, attrs, rect);
+    tr.size.width = MIN(tr.size.width, rect.size.width);
+    [label drawInRect:tr withAttributes:attrs];
 }
 
-- (void)_drawVerticalSeparatorAtX:(CGFloat)x
+- (void)_drawBarSepAtX:(CGFloat)x
 {
-    CGFloat H = self.bounds.size.height;
-    [BarSeparatorColor() set];
+    [BarSep() set];
     NSBezierPath *line = [NSBezierPath bezierPath];
     [line moveToPoint:NSMakePoint(x + 0.5, kSepInset)];
-    [line lineToPoint:NSMakePoint(x + 0.5, H - kSepInset)];
+    [line lineToPoint:NSMakePoint(x + 0.5, kBarHeight - kSepInset)];
     [line setLineWidth:kSepWidth];
     [line stroke];
 }
 
+/* ---- Dropdown drawing ---- */
+
+- (void)_drawDropdown
+{
+    [_dropdownRects removeAllObjects];
+
+    /* Calculate dropdown width */
+    CGFloat maxTitleW = kDropMinW - kDropPadX * 2;
+    for (NSDictionary *item in _openDescriptors) {
+        if ([item[kSysItemSep] boolValue] || [item[kMenuItemSeparator] boolValue]) continue;
+        NSString *title = item[kSysItemTitle] ?: item[kMenuItemTitle] ?: @"";
+        NSSize sz = [title sizeWithAttributes:NormalAttrs()];
+        if (sz.width > maxTitleW) maxTitleW = sz.width;
+    }
+    _dropdownW = MAX(kDropMinW, maxTitleW + kDropPadX * 2 + 20.0);
+
+    /* Clamp to screen width */
+    CGFloat W = self.bounds.size.width;
+    if (_dropdownX + _dropdownW > W - 4.0)
+        _dropdownX = MAX(4.0, W - _dropdownW - 4.0);
+
+    /* Background */
+    CGFloat y = kBarHeight;
+    CGFloat totalH = [self _dropdownTotalHeight];
+    NSRect dropBounds = NSMakeRect(_dropdownX, y, _dropdownW, totalH);
+    [DropBg() set];
+    NSRectFill(dropBounds);
+    [DropBorder() set];
+    NSFrameRect(dropBounds);
+
+    /* Items */
+    NSUInteger idx = 0;
+    for (NSDictionary *item in _openDescriptors) {
+        BOOL isSep = [item[kSysItemSep] boolValue] || [item[kMenuItemSeparator] boolValue];
+        if (isSep) {
+            CGFloat rowH = kDropSepH;
+            NSRect rowRect = NSMakeRect(_dropdownX, y, _dropdownW, rowH);
+            [_dropdownRects addObject:[NSValue valueWithRect:rowRect]];
+
+            /* Draw separator line */
+            CGFloat lineY = y + rowH * 0.5;
+            [[NSColor colorWithCalibratedWhite:0.45 alpha:0.8] set];
+            NSBezierPath *line = [NSBezierPath bezierPath];
+            [line moveToPoint:NSMakePoint(_dropdownX + kDropPadX,       lineY + 0.5)];
+            [line lineToPoint:NSMakePoint(_dropdownX + _dropdownW - kDropPadX, lineY + 0.5)];
+            [line setLineWidth:1.0];
+            [line stroke];
+
+            y += rowH;
+        } else {
+            BOOL enabled = item[kMenuItemEnabled]
+                           ? [item[kMenuItemEnabled] boolValue] : YES;
+            BOOL hovered = (_hoveredIdx == (NSInteger)idx);
+            CGFloat rowH = kDropItemH;
+            NSRect rowRect = NSMakeRect(_dropdownX, y, _dropdownW, rowH);
+            [_dropdownRects addObject:[NSValue valueWithRect:rowRect]];
+
+            if (hovered) {
+                [DropHighlight() set];
+                NSRectFill(rowRect);
+            }
+
+            NSString *title = item[kSysItemTitle] ?: item[kMenuItemTitle] ?: @"";
+            NSDictionary *attrs = enabled
+                                  ? DropItemAttrs(hovered)
+                                  : DisabledAttrs();
+            NSSize sz = [title sizeWithAttributes:attrs];
+            CGFloat textY = y + (rowH - sz.height) * 0.5;
+            [title drawAtPoint:NSMakePoint(_dropdownX + kDropPadX, textY)
+                withAttributes:attrs];
+
+            /* Key equivalent (right-aligned) */
+            NSString *keyEquiv = item[kMenuItemKeyEquiv];
+            if (keyEquiv.length) {
+                NSString *hint = [@"\u2318" stringByAppendingString:keyEquiv.uppercaseString];
+                NSDictionary *hintAttrs = DisabledAttrs();
+                NSSize hintSz = [hint sizeWithAttributes:hintAttrs];
+                CGFloat hintX = _dropdownX + _dropdownW - hintSz.width - kDropPadX;
+                [hint drawAtPoint:NSMakePoint(hintX, textY) withAttributes:hintAttrs];
+            }
+
+            y += rowH;
+        }
+        idx++;
+    }
+
+    /* Bottom padding */
+    y += kDropExtraBot;
+}
+
+- (CGFloat)_dropdownTotalHeight
+{
+    CGFloat h = 0;
+    for (NSDictionary *item in _openDescriptors) {
+        BOOL isSep = [item[kSysItemSep] boolValue] || [item[kMenuItemSeparator] boolValue];
+        h += isSep ? kDropSepH : kDropItemH;
+    }
+    return h + kDropExtraBot;
+}
+
 /* ---------------------------------------------------------------------- */
-#pragma mark - Mouse events
+#pragma mark - Mouse handling
 
 - (void)mouseDown:(NSEvent *)event
 {
-    NSPoint   pt     = [self convertPoint:[event locationInWindow] fromView:nil];
-    NSInteger region = [self _regionForPoint:pt];
+    NSPoint pt = [self convertPoint:[event locationInWindow] fromView:nil];
+
+    /* ---- Click inside an open dropdown ---- */
+    if (_openTag != MenuBarRegionNone) {
+        NSInteger hitIdx = [self _dropdownIndexForPoint:pt];
+        if (hitIdx >= 0) {
+            NSDictionary *item = _openDescriptors[(NSUInteger)hitIdx];
+            BOOL isSep = [item[kSysItemSep] boolValue] || [item[kMenuItemSeparator] boolValue];
+            BOOL enabled = item[kMenuItemEnabled]
+                           ? [item[kMenuItemEnabled] boolValue] : YES;
+            if (!isSep && enabled) {
+                /* Close (and contract the panel) BEFORE activating the item.
+                 * Some actions (e.g. logout) call [NSAlert runModal] which is
+                 * blocking; if the dropdown is still open the panel stays
+                 * expanded and mouse-moved events continue to fire against
+                 * stale dropdown state while the alert is on screen.         */
+                [self _closeDropdown];
+                [self _activateDropdownItem:item];
+            }
+            return;
+        }
+        /* Click outside the dropdown → close it */
+        [self _closeDropdown];
+        /* Fall through: if the click also hit a bar region, handle it. */
+    }
+
+    /* ---- Click in bar ---- */
+    NSInteger region = [self _barRegionForPoint:pt];
     if (region == MenuBarRegionNone) return;
 
-    /* Highlight the item immediately for visual feedback. */
     _pressedRegion = region;
     [self setNeedsDisplay:YES];
-
-    /* All interactive regions display a pop-up menu.
-     * -popUpContextMenu:withEvent:forView: expects a mouseDown event and runs
-     * its own internal tracking loop until the mouse button is released.
-     * Calling it here (on mouseDown) means the menu tracks the mouse drag and
-     * fires the selected action on mouseUp — exactly standard menu-bar
-     * behaviour.  The call blocks until the menu is dismissed.               */
-    [self _activateRegion:region event:event];
-
-    /* Menu dismissed — clear the highlight. */
+    [self _toggleDropdownForRegion:region];
     _pressedRegion = MenuBarRegionNone;
     [self setNeedsDisplay:YES];
 }
 
-- (void)mouseUp:(NSEvent *)event
+- (void)mouseMoved:(NSEvent *)event
 {
-    /* All menu interactions are handled inside mouseDown's blocking
-     * popUpContextMenu: call.  Just clear any residual highlight state.     */
-    _pressedRegion = MenuBarRegionNone;
-    [self setNeedsDisplay:YES];
+    if (_openTag == MenuBarRegionNone) return;
+    NSPoint pt  = [self convertPoint:[event locationInWindow] fromView:nil];
+    NSInteger i = [self _dropdownIndexForPoint:pt];
+    if (i != _hoveredIdx) {
+        _hoveredIdx = i;
+        [self setNeedsDisplayInRect:[self _dropdownBoundsRect]];
+    }
 }
 
-- (NSInteger)_regionForPoint:(NSPoint)pt
+- (void)mouseExited:(NSEvent *)event
 {
+    if (_hoveredIdx != -1) {
+        _hoveredIdx = -1;
+        [self setNeedsDisplayInRect:[self _dropdownBoundsRect]];
+    }
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Hit testing
+
+- (NSInteger)_barRegionForPoint:(NSPoint)pt
+{
+    /* Only test within the bar strip */
+    if (pt.y < 0 || pt.y > kBarHeight) return MenuBarRegionNone;
+
     if (NSPointInRect(pt, _ambrosiaRect)) return MenuBarRegionAmbrosia;
     if (NSPointInRect(pt, _sessionRect))  return MenuBarRegionSession;
     for (NSUInteger i = 0; i < _menuRects.count; i++) {
@@ -350,104 +533,147 @@ static NSRect CentreStringRect(NSString *str, NSDictionary *attrs, NSRect bounds
     return MenuBarRegionNone;
 }
 
-- (void)_activateRegion:(NSInteger)region event:(NSEvent *)event
+- (NSInteger)_dropdownIndexForPoint:(NSPoint)pt
 {
+    for (NSUInteger i = 0; i < _dropdownRects.count; i++) {
+        NSRect r = [[_dropdownRects objectAtIndex:i] rectValue];
+        if (NSPointInRect(pt, r)) return (NSInteger)i;
+    }
+    return -1;
+}
+
+- (NSRect)_dropdownBoundsRect
+{
+    CGFloat dropH = [self _dropdownTotalHeight];
+    return NSMakeRect(_dropdownX, kBarHeight, _dropdownW, dropH);
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Dropdown open / close
+
+/**
+ * Toggle the dropdown for the given bar region.  If the same region is
+ * already open, close it; otherwise open the new one.
+ */
+- (void)_toggleDropdownForRegion:(NSInteger)region
+{
+    if (_openTag == region) {
+        [self _closeDropdown];
+        return;
+    }
+    /* Close any previously open dropdown first (without panel resize yet). */
+    if (_openTag != MenuBarRegionNone) {
+        _openTag         = MenuBarRegionNone;
+        _openDescriptors = nil;
+        [_dropdownRects removeAllObjects];
+        _hoveredIdx = -1;
+        /* Panel is already expanded; we'll resize it below. */
+        [_controller contractPanelDropdown];
+    }
+
+    NSArray *descriptors = nil;
+    CGFloat openX = 0;
+
     if (region == MenuBarRegionAmbrosia) {
-        [self _showAmbrosiaMenuWithEvent:event];
+        descriptors = [self _systemDescriptorsForAmbrosia];
+        openX = _ambrosiaRect.origin.x;
     } else if (region == MenuBarRegionSession) {
-        [self _showSessionMenuWithEvent:event];
+        descriptors = [self _systemDescriptorsForSession];
+        openX = _sessionRect.origin.x;
     } else if (region >= MenuBarRegionMenuItem) {
         NSInteger idx = region - MenuBarRegionMenuItem;
-        [self _showAppMenuAtIndex:idx withEvent:event];
-    }
-}
-
-/* ---------------------------------------------------------------------- */
-#pragma mark - Pop-up menus
-
-- (void)_showAmbrosiaMenuWithEvent:(NSEvent *)event
-{
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Ambrosia"];
-
-    NSMenuItem *about = (NSMenuItem *)[menu addItemWithTitle:@"About Ambrosia…"
-                                                      action:@selector(_doAbout:)
-                                               keyEquivalent:@""];
-    about.target = self;
-
-    [menu addItem:[NSMenuItem separatorItem]];
-
-    NSMenuItem *prefs = (NSMenuItem *)[menu addItemWithTitle:@"System Preferences…"
-                                                      action:@selector(_doPreferences:)
-                                               keyEquivalent:@","];
-    prefs.target = self;
-
-    [menu addItem:[NSMenuItem separatorItem]];
-
-    NSMenuItem *logout = (NSMenuItem *)[menu addItemWithTitle:@"Log Out…"
-                                                       action:@selector(_doLogout:)
-                                                keyEquivalent:@""];
-    logout.target = self;
-
-    [NSMenu popUpContextMenu:menu withEvent:event forView:self];
-}
-
-- (void)_showSessionMenuWithEvent:(NSEvent *)event
-{
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Session"];
-
-    NSMenuItem *logout = (NSMenuItem *)[menu addItemWithTitle:@"Log Out…"
-                                                       action:@selector(_doLogout:)
-                                                keyEquivalent:@""];
-    logout.target = self;
-
-    [NSMenu popUpContextMenu:menu withEvent:event forView:self];
-}
-
-- (void)_showAppMenuAtIndex:(NSInteger)index withEvent:(NSEvent *)event
-{
-    if (index < 0 || index >= (NSInteger)_menuItemIndices.count) return;
-
-    /* Translate rect-index → _activeMenuItems index (separators are skipped
-     * when building _menuRects, so the two arrays are not 1-to-1).         */
-    NSUInteger activeIdx = [_menuItemIndices[(NSUInteger)index] unsignedIntegerValue];
-    if (activeIdx >= _activeMenuItems.count) return;
-
-    NSDictionary *topItem  = _activeMenuItems[activeIdx];
-    NSArray      *children = topItem[kMenuItemChildren];
-    if (!children.count) return;
-
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:topItem[kMenuItemTitle] ?: @""];
-
-    for (NSDictionary *child in children) {
-        if ([child[kMenuItemSeparator] boolValue]) {
-            [menu addItem:[NSMenuItem separatorItem]];
-            continue;
+        if (idx < (NSInteger)_menuItemIndices.count) {
+            NSUInteger activeIdx = [_menuItemIndices[(NSUInteger)idx] unsignedIntegerValue];
+            if (activeIdx < _activeMenuItems.count) {
+                NSDictionary *topItem = _activeMenuItems[activeIdx];
+                descriptors = topItem[kMenuItemChildren];
+                NSRect r = [[_menuRects objectAtIndex:(NSUInteger)idx] rectValue];
+                openX = r.origin.x;
+            }
         }
-
-        NSString *title    = child[kMenuItemTitle]   ?: @"(untitled)";
-        NSString *keyEquiv = child[kMenuItemKeyEquiv] ?: @"";
-        BOOL      enabled  = child[kMenuItemEnabled]
-                             ? [child[kMenuItemEnabled] boolValue]
-                             : YES;
-
-        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title
-                                                      action:@selector(_doAppMenuAction:)
-                                               keyEquivalent:keyEquiv];
-        item.enabled            = enabled;
-        item.representedObject  = child[kMenuItemIdentifier];
-        item.target             = self;
-        [menu addItem:item];
     }
 
-    [NSMenu popUpContextMenu:menu withEvent:event forView:self];
+    if (!descriptors.count) return;
+
+    _openTag         = region;
+    _openDescriptors = descriptors;
+    _dropdownX       = openX;
+    _hoveredIdx      = -1;
+
+    CGFloat dropH = [self _dropdownTotalHeight];
+    [_controller expandPanelByDropdownHeight:dropH];
+
+    /* Enable mouse-moved events so hover tracking works */
+    [self.window setAcceptsMouseMovedEvents:YES];
+
+    [self setNeedsDisplay:YES];
+}
+
+- (void)_closeDropdown
+{
+    if (_openTag == MenuBarRegionNone) return;
+    _openTag         = MenuBarRegionNone;
+    _openDescriptors = nil;
+    [_dropdownRects removeAllObjects];
+    _hoveredIdx = -1;
+    [_controller contractPanelDropdown];
+    [self setNeedsDisplay:YES];
 }
 
 /* ---------------------------------------------------------------------- */
-#pragma mark - Menu action handlers
+#pragma mark - Dropdown item activation
 
-- (void)_doAbout:(id)sender       { [_controller showAbout]; }
-- (void)_doPreferences:(id)sender { [_controller openSystemPreferences]; }
-- (void)_doLogout:(id)sender      { [_controller logout]; }
+- (void)_activateDropdownItem:(NSDictionary *)item
+{
+    /* System-menu items carry a selector name */
+    NSString *selName = item[kSysItemSel];
+    if (selName.length) {
+        SEL sel = NSSelectorFromString(selName);
+        if ([self respondsToSelector:sel]) {
+            /* performSelector with id return — cast suppresses ARC warning */
+            IMP imp = [self methodForSelector:sel];
+            ((void (*)(id, SEL))imp)(self, sel);
+        }
+        return;
+    }
+
+    /* App-menu items carry a kMenuItemIdentifier */
+    NSString *identifier = item[kMenuItemIdentifier];
+    if (identifier.length) {
+        [_controller performMenuItemWithIdentifier:identifier];
+    }
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - System-menu descriptor builders
+
+- (NSArray *)_systemDescriptorsForAmbrosia
+{
+    return @[
+        @{ kSysItemTitle: @"About Ambrosia\u2026",       kSysItemSel: @"_doAbout" },
+        @{ kSysItemSep: @YES },
+        @{ kSysItemTitle: @"System Preferences\u2026",   kSysItemSel: @"_doPreferences" },
+        @{ kSysItemSep: @YES },
+        @{ kSysItemTitle: @"Log Out\u2026",              kSysItemSel: @"_doLogout" },
+    ];
+}
+
+- (NSArray *)_systemDescriptorsForSession
+{
+    return @[
+        @{ kSysItemTitle: @"Log Out\u2026",              kSysItemSel: @"_doLogout" },
+    ];
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - System-menu action targets (called via _activateDropdownItem:)
+
+- (void)_doAbout       { [_controller showAbout]; }
+- (void)_doPreferences { [_controller openSystemPreferences]; }
+- (void)_doLogout      { [_controller logout]; }
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - App-menu action handlers (kept for compatibility)
 
 - (void)_doAppMenuAction:(NSMenuItem *)sender
 {

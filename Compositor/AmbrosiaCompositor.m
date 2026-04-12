@@ -16,6 +16,14 @@
 #include <fcntl.h>
 #include <signal.h>
 
+/* Forward-declare private methods called from static C callbacks before the
+ * @implementation block is visible to the compiler.                       */
+@interface AmbrosiaCompositor (PrivateCallbacks)
+- (void)applyExclusiveZonesToBox:(struct wlr_box *)box
+                       forOutput:(struct wlr_output *)output;
+- (void)recalculateUsableTop;
+@end
+
 /* --------------------------------------------------------------------------
  * Module-level weak back-reference so static C callbacks can reach ObjC.
  * Only one compositor instance exists per process.
@@ -209,8 +217,17 @@ static void handle_layer_surface_commit(struct wl_listener *listener, void *data
 
     struct wlr_box full_area = {0};
     wlr_output_layout_get_box(gCompositor.state->output_layout, output, &full_area);
+
+    /* Build usable_area by applying exclusive zones from all LAYER_TOP/BOTTOM
+     * surfaces on this output.  This causes the compositor to place new windows
+     * inside the reserved region (below the menu bar, etc.).                   */
     struct wlr_box usable_area = full_area;
+    [gCompositor applyExclusiveZonesToBox:&usable_area forOutput:output];
+
     wlr_scene_layer_surface_v1_configure(ls->scene_layer, &full_area, &usable_area);
+
+    /* Recompute the top margin so window-move clamping stays accurate */
+    [gCompositor recalculateUsableTop];
 }
 
 static void handle_layer_surface_destroy(struct wl_listener *listener, void *data)
@@ -220,6 +237,7 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     wl_list_remove(&ls->surface_commit.link);
     wl_list_remove(&ls->destroy.link);
     free(ls);
+    [gCompositor recalculateUsableTop];
 }
 
 /* --------------------------------------------------------------------------
@@ -337,7 +355,23 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     _state->output_layout = wlr_output_layout_create(_state->display);
     _state->scene         = wlr_scene_create();
     _state->scene_layout  = wlr_scene_attach_output_layout(_state->scene, _state->output_layout);
-    wlr_log(WLR_DEBUG, "Scene graph initialised");
+
+    /*
+     * Create scene sub-trees in ascending z-order.  wlroots renders a tree's
+     * children in creation order (first = bottom, last = top), so the order
+     * below gives:  background < bottom < windows < top < overlay.
+     *
+     * Regular app windows are added to scene_layer_windows.
+     * wlr_scene_node_raise_to_top() on a window only moves it within that
+     * sub-tree, so it can never rise above scene_layer_top (the menu bar).
+     */
+    _state->scene_layer_bg      = wlr_scene_tree_create(&_state->scene->tree);
+    _state->scene_layer_bottom  = wlr_scene_tree_create(&_state->scene->tree);
+    _state->scene_layer_windows = wlr_scene_tree_create(&_state->scene->tree);
+    _state->scene_layer_top     = wlr_scene_tree_create(&_state->scene->tree);
+    _state->scene_layer_overlay = wlr_scene_tree_create(&_state->scene->tree);
+    _state->usable_top = 0;
+    wlr_log(WLR_DEBUG, "Scene graph initialised (layered sub-trees created)");
 
     /* XDG shell (version 3) */
     _state->xdg_shell = wlr_xdg_shell_create(_state->display, 3);
@@ -576,6 +610,47 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
 {
     if (_focusedView == view) return;
 
+    /*
+     * Modal-dialog protection: if the currently focused app has a mapped
+     * transient child window (xdg_toplevel->parent belonging to this app's
+     * Wayland client — e.g. an NSAlert panel), redirect focus to that dialog
+     * instead of moving to a different app.
+     *
+     * Without this, gnustep-back receives keyboard.leave and fires
+     * NSApplicationDidResignActiveNotification, which terminates the modal
+     * session and closes the alert window.
+     */
+    if (view && _focusedView && !view.isMenu) {
+        struct wl_client *fromClient = wl_resource_get_client(
+            _focusedView.state->xdg_toplevel->base->resource);
+        struct wl_client *toClient = wl_resource_get_client(
+            view.state->xdg_toplevel->base->resource);
+        if (fromClient != toClient) {
+            AmbrosiaView *modal = nil;
+            for (AmbrosiaView *candidate in _views) {
+                if (!candidate.isMapped) continue;
+                struct wlr_xdg_toplevel *tp = candidate.state->xdg_toplevel;
+                if (!tp->parent) continue;
+                struct wl_client *parentClient =
+                    wl_resource_get_client(tp->parent->base->resource);
+                if (parentClient == fromClient) {
+                    modal = candidate; /* last in list = topmost */
+                }
+            }
+            if (modal) {
+                wlr_log(WLR_DEBUG,
+                    "focusView: redirecting to modal dialog '%s' "
+                    "(blocked cross-app focus change)",
+                    modal.state->xdg_toplevel->title ?: "(untitled)");
+                view    = modal;
+                surface = modal.surface;
+            }
+        }
+    }
+
+    /* Re-check: redirect may have landed on the already-focused view */
+    if (_focusedView == view) return;
+
     if (view) {
         const char *title   = view.state->xdg_toplevel->title   ?: "(untitled)";
         const char *app_id  = view.state->xdg_toplevel->app_id  ?: "(unknown)";
@@ -670,7 +745,13 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
 
     if (_state->cursor_mode == AmbrosiaCursorModeMove) {
         AmbrosiaView *grabbed = _focusedView;
-        if (grabbed) [grabbed moveTo:(int)(cx - _state->grab_x) y:(int)(cy - _state->grab_y)];
+        if (grabbed) {
+            int new_x = (int)(cx - _state->grab_x);
+            int new_y = (int)(cy - _state->grab_y);
+            /* Clamp so window title bar cannot be dragged above the menu bar */
+            if (new_y < _state->usable_top) new_y = _state->usable_top;
+            [grabbed moveTo:new_x y:new_y];
+        }
         return;
     }
 
@@ -705,7 +786,27 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         return;
     }
 
-    /* Passthrough – update focus and cursor image */
+    /* Passthrough – update focus and cursor image.
+     *
+     * Hit-test in visual z-order (highest first):
+     *   1. LAYER_OVERLAY / LAYER_TOP surfaces (e.g. the menu bar)
+     *   2. xdg-toplevel windows
+     *   3. LAYER_BOTTOM / LAYER_BACKGROUND surfaces
+     *
+     * This ensures the menu bar always receives pointer events even when
+     * a window's geometry overlaps its coordinate range.               */
+    {
+        double lsx = 0, lsy = 0;
+        struct wlr_surface *top_ls =
+            [self topLayerSurfaceAtX:cx y:cy localX:&lsx localY:&lsy];
+        if (top_ls) {
+            wlr_seat_pointer_notify_enter(_state->seat, top_ls, lsx, lsy);
+            wlr_seat_pointer_notify_motion(_state->seat, time, lsx, lsy);
+            wlr_cursor_set_xcursor(_state->cursor, _state->cursor_mgr, "default");
+            return;
+        }
+    }
+
     struct wlr_surface *surface = NULL;
     double sx = 0, sy = 0;
     AmbrosiaView *view = [self viewAtX:cx y:cy surface:&surface localX:&sx localY:&sy];
@@ -741,7 +842,7 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         }
         wlr_cursor_set_xcursor(_state->cursor, _state->cursor_mgr, "default");
     } else {
-        /* No xdg toplevel — check layer surfaces (e.g. GNUstep menu bar) */
+        /* No xdg toplevel at this position — check lower layer surfaces */
         double lsx = 0, lsy = 0;
         struct wlr_surface *ls_surface =
             [self layerSurfaceAtX:cx y:cy localX:&lsx localY:&lsy];
@@ -849,9 +950,21 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     if (!layer_surface->output)
         layer_surface->output = wlr_output_layout_get_center_output(_state->output_layout);
 
-    /* Add to scene graph */
+    /* Select the scene sub-tree that matches the requested layer.
+     * This guarantees TOP surfaces (the menu bar) always render above
+     * regular xdg-toplevel windows in scene_layer_windows.             */
+    struct wlr_scene_tree *parent_tree;
+    switch ((int)layer_surface->pending.layer) {
+        case ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND: parent_tree = _state->scene_layer_bg;      break;
+        case ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM:     parent_tree = _state->scene_layer_bottom;   break;
+        case ZWLR_LAYER_SHELL_V1_LAYER_TOP:        parent_tree = _state->scene_layer_top;      break;
+        case ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY:    parent_tree = _state->scene_layer_overlay;  break;
+        default:                                   parent_tree = _state->scene_layer_top;      break;
+    }
+
+    /* Add to the correct scene sub-tree */
     struct wlr_scene_layer_surface_v1 *scene_layer =
-        wlr_scene_layer_surface_v1_create(&_state->scene->tree, layer_surface);
+        wlr_scene_layer_surface_v1_create(parent_tree, layer_surface);
 
     struct ambrosia_layer_surface *ls = calloc(1, sizeof(*ls));
     ls->wlr_layer_surface = layer_surface;
@@ -874,6 +987,103 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
             return;
         }
     }
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Exclusive zone and usable area
+
+/**
+ * Apply exclusive zones from all mapped LAYER_TOP and LAYER_BOTTOM surfaces
+ * on the given output, shrinking *box inward accordingly.  Passed as the
+ * usable_area to wlr_scene_layer_surface_v1_configure so that the compositor
+ * reports a correct usable area to clients via xdg-output.
+ */
+- (void)applyExclusiveZonesToBox:(struct wlr_box *)box
+                       forOutput:(struct wlr_output *)output
+{
+    for (NSValue *v in _layerSurfaces) {
+        struct ambrosia_layer_surface *ls = [v pointerValue];
+        struct wlr_layer_surface_v1 *wls  = ls->wlr_layer_surface;
+        if (wls->output != output) continue;
+
+        int ez = wls->current.exclusive_zone;
+        if (ez <= 0) continue;
+
+        uint32_t layer  = (uint32_t)wls->current.layer;
+        if (layer != ZWLR_LAYER_SHELL_V1_LAYER_TOP &&
+            layer != ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM) continue;
+
+        uint32_t anchor = wls->current.anchor;
+        if (anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP) {
+            box->y      += ez;
+            box->height -= ez;
+        } else if (anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM) {
+            box->height -= ez;
+        } else if (anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT) {
+            box->x     += ez;
+            box->width -= ez;
+        } else if (anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT) {
+            box->width -= ez;
+        }
+    }
+}
+
+/**
+ * Recompute _state->usable_top from the exclusive zones of all currently
+ * mapped LAYER_TOP surfaces anchored to the top edge.  Called after every
+ * layer-surface map/configure/destroy event.
+ */
+- (void)recalculateUsableTop
+{
+    int top = 0;
+    for (NSValue *v in _layerSurfaces) {
+        struct ambrosia_layer_surface *ls = [v pointerValue];
+        struct wlr_layer_surface_v1 *wls  = ls->wlr_layer_surface;
+        if ((uint32_t)wls->current.layer != ZWLR_LAYER_SHELL_V1_LAYER_TOP) continue;
+        int ez = wls->current.exclusive_zone;
+        if (ez <= 0) continue;
+        if (wls->current.anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP) {
+            if (ez > top) top = ez;
+        }
+    }
+    _state->usable_top = top;
+    wlr_log(WLR_DEBUG, "usable_top updated: %d px", top);
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Layer surface hit testing
+
+/**
+ * Hit-test ONLY LAYER_TOP and LAYER_OVERLAY surfaces.
+ * Used in pointer routing so the menu bar always captures input first,
+ * matching its visual z-position above regular windows.
+ */
+- (struct wlr_surface *)topLayerSurfaceAtX:(double)x y:(double)y
+                                    localX:(double *)lx
+                                    localY:(double *)ly
+{
+    for (NSValue *v in [_layerSurfaces reverseObjectEnumerator]) {
+        struct ambrosia_layer_surface *ls = [v pointerValue];
+        struct wlr_layer_surface_v1 *wls  = ls->wlr_layer_surface;
+        if (!wls->surface->mapped) continue;
+
+        uint32_t layer = (uint32_t)wls->current.layer;
+        if (layer != ZWLR_LAYER_SHELL_V1_LAYER_TOP &&
+            layer != ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY) continue;
+
+        double node_x = ls->scene_layer->tree->node.x;
+        double node_y = ls->scene_layer->tree->node.y;
+        double sub_x = 0, sub_y = 0;
+        struct wlr_surface *found =
+            wlr_layer_surface_v1_surface_at(wls, x - node_x, y - node_y,
+                                            &sub_x, &sub_y);
+        if (found) {
+            if (lx) *lx = sub_x;
+            if (ly) *ly = sub_y;
+            return found;
+        }
+    }
+    return NULL;
 }
 
 /** Hit-test all layer surfaces.  Returns the wlr_surface under (x,y) and
@@ -926,6 +1136,19 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
 
     double cx = _state->cursor->x;
     double cy = _state->cursor->y;
+
+    /* Buttons on LAYER_TOP/OVERLAY surfaces (e.g. menu bar) are forwarded
+     * directly; they do not focus or raise any window.                    */
+    {
+        double lsx = 0, lsy = 0;
+        struct wlr_surface *top_ls =
+            [self topLayerSurfaceAtX:cx y:cy localX:&lsx localY:&lsy];
+        if (top_ls) {
+            wlr_seat_pointer_notify_button(_state->seat, time, button,
+                                           (enum wl_pointer_button_state)state);
+            return;
+        }
+    }
 
     struct wlr_surface *surface = NULL;
     double sx = 0, sy = 0;
@@ -1011,8 +1234,12 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         }
     }
 
-    /* Click on surface – focus and pass event */
-    [self focusView:view surface:surface];
+    /* Click on surface – focus and pass event.
+     * Menu/panel toplevels (isMenu) must not steal keyboard focus; the
+     * owning application window already holds it.                       */
+    if (!view.isMenu) {
+        [self focusView:view surface:surface];
+    }
 }
 
 - (void)handleCursorAxisTime:(uint32_t)time

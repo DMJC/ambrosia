@@ -69,10 +69,11 @@ static const CGFloat kFallbackScreenH    = 1080.0;
     /* Window level NSMainMenuWindowLevel (= 20) causes gnustep-back to
      * create a wlr-layer-shell surface at ZWLR_LAYER_SHELL_V1_LAYER_TOP
      * with the namespace "gnustep-mainmenu".                             */
-    _menuPanel.level    = NSMainMenuWindowLevel;
-    _menuPanel.title    = @"AmbrosiaMenuServer";
-    _menuPanel.opaque   = YES;
-    _menuPanel.hasShadow = NO;
+    _menuPanel.level           = NSMainMenuWindowLevel;
+    _menuPanel.title           = @"AmbrosiaMenuServer";
+    _menuPanel.opaque          = NO;
+    _menuPanel.backgroundColor = [NSColor clearColor];
+    _menuPanel.hasShadow       = NO;
     /* Prevent the panel from stealing keyboard focus from app windows. */
     [_menuPanel setBecomesKeyOnlyIfNeeded:YES];
 
@@ -231,6 +232,37 @@ static const CGFloat kFallbackScreenH    = 1080.0;
     }
     NSLog(@"MenuServer: SystemPreferences.app not found in standard locations.");
 }
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Panel geometry (called by MenuBarView)
+
+- (void)expandPanelByDropdownHeight:(CGFloat)dropH
+{
+    /* Grow the panel downward (decrease origin.y, increase height).
+     * The layer-shell compositor keeps the top edge anchored at the top of
+     * the screen; gnustep-back will update the wlr_layer_surface_v1 size.  */
+    NSRect f = _menuPanel.frame;
+    f.origin.y    -= dropH;
+    f.size.height += dropH;
+    [_menuPanel setFrame:f display:YES animate:NO];
+}
+
+- (void)contractPanelDropdown
+{
+    /* Restore to the standard kBarHeight-pixel bar. */
+    NSScreen *screen = [NSScreen mainScreen];
+    NSRect sf = screen ? screen.frame : NSZeroRect;
+    if (sf.size.width  < 32) sf.size.width  = kFallbackWidth;
+    if (sf.size.height < 32) sf.size.height = kFallbackScreenH;
+
+    NSRect barRect = NSMakeRect(sf.origin.x,
+                                sf.origin.y + sf.size.height - kBarHeight,
+                                sf.size.width,
+                                kBarHeight);
+    [_menuPanel setFrame:barRect display:YES animate:NO];
+}
+
+/* ---------------------------------------------------------------------- */
 
 - (void)logout
 {
