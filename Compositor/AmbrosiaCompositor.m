@@ -679,6 +679,14 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         wlr_log(WLR_DEBUG, "Focus cleared");
     }
 
+    /* Capture the previous app's wl_client before updating _focusedView so we
+     * can detect an application change after the new focus is established.    */
+    struct wl_client *prevClient = NULL;
+    if (_focusedView) {
+        prevClient = wl_resource_get_client(
+            _focusedView.state->xdg_toplevel->base->resource);
+    }
+
     /* Unfocus previous */
     if (_focusedView) {
         _focusedView.decoration.focused = NO;
@@ -720,6 +728,31 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         ? [NSString stringWithUTF8String:view.state->xdg_toplevel->title]
         : @"";
     [view.decoration updateWithWidth:geo.width height:geo.height title:title];
+
+    /* Notify apps when the active APPLICATION changes (different wl_client).
+     *
+     * gnustep-back does not reliably translate wl_keyboard.enter into
+     * NSWindowDidBecomeKeyNotification for surfaces that are already mapped
+     * (e.g. Super+Tab cycling between existing apps), so AmbrosiaMenusBundle
+     * relies on this distributed notification as the primary trigger for
+     * re-registering the focused app's menus with MenuServer.
+     *
+     * The notification name "AmbrosiaApplicationActivated" with userInfo key
+     * "pid" matches kAmbrosiaApplicationActivatedNotification /
+     * kAmbrosiaActivatedPIDKey in AmbrosiaMenus/MenuServerProtocol.h.        */
+    struct wl_client *newClient = wl_resource_get_client(
+        view.state->xdg_toplevel->base->resource);
+    if (newClient != prevClient) {
+        pid_t newPid = 0;
+        wl_client_get_credentials(newClient, &newPid, NULL, NULL);
+        if (newPid > 0) {
+            [[NSDistributedNotificationCenter defaultCenter]
+                postNotificationName:@"AmbrosiaApplicationActivated"
+                              object:nil
+                            userInfo:@{ @"pid": @((int32_t)newPid) }
+                  deliverImmediately:YES];
+        }
+    }
 }
 
 /* ---------------------------------------------------------------------- */

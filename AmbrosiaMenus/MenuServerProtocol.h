@@ -52,6 +52,23 @@ static NSString * const kMenuItemSelectedNotification  = @"AmbrosiaMenuItemSelec
 static NSString * const kMenuItemSelectedPIDKey        = @"clientPID";
 static NSString * const kMenuItemSelectedIdentifierKey = @"identifier";
 
+/* ---- Compositor focus notification (NSDistributedNotificationCenter) ----
+ *
+ * The Ambrosia compositor posts this notification on NSDistributedNotificationCenter
+ * whenever keyboard focus moves to a different application (wl_client).  The
+ * userInfo carries:
+ *
+ *   kAmbrosiaActivatedPIDKey  NSNumber (int32) — PID of the newly active app
+ *
+ * Each GNUstep app loaded with AmbrosiaMenusBundle observes this and calls
+ * -registerMenuWithServer when the PID matches its own.  This is a belt-and-
+ * suspenders path for when gnustep-back does not reliably translate
+ * wl_keyboard.enter into NSWindowDidBecomeKeyNotification for already-mapped
+ * surfaces (e.g. Super+Tab cycling between existing apps).
+ * ------------------------------------------------------------------ */
+static NSString * const kAmbrosiaApplicationActivatedNotification = @"AmbrosiaApplicationActivated";
+static NSString * const kAmbrosiaActivatedPIDKey                  = @"pid";
+
 /* ------------------------------------------------------------------ */
 #pragma mark - Server-side protocol (vended by MenuServer)
 

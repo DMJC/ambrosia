@@ -56,6 +56,22 @@
              object:nil
  suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
 
+    /*
+     * Observe kAmbrosiaApplicationActivatedNotification from the compositor.
+     *
+     * gnustep-back does not reliably translate wl_keyboard.enter into
+     * NSWindowDidBecomeKeyNotification for surfaces that are already mapped
+     * (e.g. when the user cycles between existing apps with Super+Tab).  The
+     * compositor posts this notification whenever keyboard focus moves to a
+     * different wl_client; we re-register our menus if the PID matches ours.
+     */
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_compositorDidActivateApp:)
+               name:kAmbrosiaApplicationActivatedNotification
+             object:nil
+ suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
+
     return self;
 }
 
@@ -264,6 +280,23 @@
         NSLog(@"AmbrosiaMenus: deregister call failed (%@).", ex.reason);
     }
     [self _invalidateProxy];
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Compositor focus notification (NSDistributedNotificationCenter callback)
+
+/**
+ * Receives kAmbrosiaApplicationActivatedNotification posted by the compositor.
+ * Re-registers menus when the compositor reports that our process is now the
+ * frontmost application — belt-and-suspenders for the unreliable gnustep-back
+ * NSWindowDidBecomeKeyNotification path on already-mapped surfaces.
+ */
+- (void)_compositorDidActivateApp:(NSNotification *)note
+{
+    NSNumber *pidNum = note.userInfo[kAmbrosiaActivatedPIDKey];
+    int32_t myPID = (int32_t)[[NSProcessInfo processInfo] processIdentifier];
+    if (!pidNum || [pidNum intValue] != myPID) return;
+    [self registerMenuWithServer];
 }
 
 /* ---------------------------------------------------------------------- */
