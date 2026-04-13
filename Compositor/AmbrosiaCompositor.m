@@ -895,10 +895,44 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         struct wlr_surface *top_ls =
             [self topLayerSurfaceAtX:cx y:cy localX:&lsx localY:&lsy];
         if (top_ls) {
-            wlr_seat_pointer_notify_enter(_state->seat, top_ls, lsx, lsy);
-            wlr_seat_pointer_notify_motion(_state->seat, time, lsx, lsy);
-            wlr_cursor_set_xcursor(_state->cursor, _state->cursor_mgr, "default");
-            return;
+            /*
+             * GNUstep's Wayland backend conflates wl_pointer.enter with
+             * key-window activation.  If a non-menu xdg-toplevel from the
+             * same Wayland client as this layer surface is keyboard-focused
+             * (e.g. an NSAlert modal shown by the MenuServer process), do
+             * NOT deliver wl_pointer.enter to the bar.  Doing so would make
+             * the bar panel key, fire NSApplicationDidResignActiveNotification
+             * in the client, and terminate the modal session — closing the
+             * alert before the user can interact with it.
+             *
+             * When this guard fires the pointer falls through to normal
+             * xdg-toplevel hit-testing so the alert itself can still receive
+             * pointer events.
+             */
+            BOOL skipLayerPointer = NO;
+            if (_focusedView && !_focusedView.isMenu) {
+                struct wl_client *focusedClient = wl_resource_get_client(
+                    _focusedView.state->xdg_toplevel->base->resource);
+                for (NSValue *v in _layerSurfaces) {
+                    struct ambrosia_layer_surface *ls = [v pointerValue];
+                    if (!ls->wlr_layer_surface->surface->mapped) continue;
+                    uint32_t layer = (uint32_t)ls->wlr_layer_surface->current.layer;
+                    if (layer != ZWLR_LAYER_SHELL_V1_LAYER_TOP &&
+                        layer != ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY) continue;
+                    struct wl_client *lsClient = wl_resource_get_client(
+                        ls->wlr_layer_surface->resource);
+                    if (lsClient == focusedClient) {
+                        skipLayerPointer = YES;
+                        break;
+                    }
+                }
+            }
+            if (!skipLayerPointer) {
+                wlr_seat_pointer_notify_enter(_state->seat, top_ls, lsx, lsy);
+                wlr_seat_pointer_notify_motion(_state->seat, time, lsx, lsy);
+                wlr_cursor_set_xcursor(_state->cursor, _state->cursor_mgr, "default");
+                return;
+            }
         }
     }
 
