@@ -1,8 +1,10 @@
 #import "DockController.h"
 #import "DockView.h"
 #import "DockItem.h"
+#import "ForceQuitController.h"
 
 #include <dirent.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -40,6 +42,7 @@ static BOOL IsSystemInternalApp(NSString *name, NSString *path)
     id _workspaceObserver;
     BOOL _autoHide;
     BOOL _showRunningDots;
+    ForceQuitController *_forceQuitController;
 }
 
 @synthesize dockPanel       = _dockPanel;
@@ -76,6 +79,7 @@ static BOOL IsSystemInternalApp(NSString *name, NSString *path)
     if (_workspaceObserver)
         [[NSWorkspace sharedWorkspace].notificationCenter
          removeObserver:_workspaceObserver];
+    [[NSDistributedNotificationCenter defaultCenter] removeObserver:self];
 }
 
 /* ---------------------------------------------------------------------- */
@@ -87,6 +91,7 @@ static BOOL IsSystemInternalApp(NSString *name, NSString *path)
     [self createDockPanel];
     [self repositionDock];
     [self observeRunningApps];
+    [self observeForceQuitRequests];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)note
@@ -388,6 +393,46 @@ static BOOL IsSystemInternalApp(NSString *name, NSString *path)
     }];
 }
 
+- (void)observeForceQuitRequests
+{
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_handleForceQuitRequest:)
+               name:@"AmbrosiaForceQuitRequest"
+             object:nil];
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_handleSessionWillQuit:)
+               name:@"AmbrosiaSessionWillQuit"
+             object:nil];
+}
+
+- (void)_handleSessionWillQuit:(NSNotification *)note
+{
+    [self savePreferences];
+    [NSApp terminate:nil];
+}
+
+- (void)_handleForceQuitRequest:(NSNotification *)note
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self showForceQuitPanel];
+    });
+}
+
+- (void)showForceQuitPanel
+{
+    NSMutableArray<DockItem *> *running = [NSMutableArray array];
+    for (DockItem *item in _items) {
+        if (item.isRunning && item.pid > 0)
+            [running addObject:item];
+    }
+    if (!_forceQuitController)
+        _forceQuitController = [[ForceQuitController alloc] init];
+    [_forceQuitController updateWithItems:running];
+    [_forceQuitController showPanel];
+}
+
 - (void)seedRunningAppsFromProc
 {
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -474,8 +519,11 @@ static BOOL IsSystemInternalApp(NSString *name, NSString *path)
             [item.label isEqualToString:appName])              { matched = item; break; }
     }
 
+    NSInteger pid = [info[@"NSApplicationProcessIdentifier"] integerValue];
+
     if (matched) {
         matched.isRunning = launched;
+        matched.pid       = launched ? pid : 0;
         dispatch_async(dispatch_get_main_queue(), ^{
             [self->_dockView setNeedsDisplay:YES];
         });
@@ -493,6 +541,7 @@ static BOOL IsSystemInternalApp(NSString *name, NSString *path)
         item.launchPath       = appPath;
         item.bundleIdentifier = bundleID;
         item.isRunning        = YES;
+        item.pid              = pid;
         item.keepInDock       = NO;
         [item reloadIcon];
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -531,6 +580,25 @@ static BOOL IsSystemInternalApp(NSString *name, NSString *path)
         [[NSWorkspace sharedWorkspace] openFile:item.launchPath];
         return;
     }
+
+    /* If the application is already running, raise its existing windows
+     * instead of spawning a second instance. */
+    if (item.isRunning) {
+        NSMutableDictionary *info = [NSMutableDictionary dictionary];
+        if (item.bundleIdentifier.length)
+            info[@"bundleIdentifier"] = item.bundleIdentifier;
+        if (item.launchPath.length)
+            info[@"launchPath"] = item.launchPath;
+        if (item.label.length)
+            info[@"appName"] = item.label;
+        [[NSDistributedNotificationCenter defaultCenter]
+            postNotificationName:@"AmbrosiaActivateApplication"
+                          object:nil
+                        userInfo:info
+              deliverImmediately:YES];
+        return;
+    }
+
     [[NSWorkspace sharedWorkspace] launchApplication:item.launchPath];
 }
 
@@ -636,13 +704,21 @@ static BOOL IsSystemInternalApp(NSString *name, NSString *path)
         activateItem.target = self;
         [menu addItem:activateItem];
 
-        NSMenuItem *quitItem =
-            [[NSMenuItem alloc] initWithTitle:@"Quit"
-                                       action:@selector(quitApp:)
+        NSMenuItem *closeItem =
+            [[NSMenuItem alloc] initWithTitle:@"Close"
+                                       action:@selector(closeApp:)
                                 keyEquivalent:@""];
-        quitItem.representedObject = item;
-        quitItem.target = self;
-        [menu addItem:quitItem];
+        closeItem.representedObject = item;
+        closeItem.target = self;
+        [menu addItem:closeItem];
+
+        NSMenuItem *killItem =
+            [[NSMenuItem alloc] initWithTitle:@"Kill"
+                                       action:@selector(killApp:)
+                                keyEquivalent:@""];
+        killItem.representedObject = item;
+        killItem.target = self;
+        [menu addItem:killItem];
         [menu addItem:[NSMenuItem separatorItem]];
     } else {
         NSString *openTitle = (item.itemType == DockItemTypeFolder) ? @"Open" : @"Open";
@@ -681,15 +757,19 @@ static BOOL IsSystemInternalApp(NSString *name, NSString *path)
 
 - (void)activateApp:(NSMenuItem *)sender
 {
-    DockItem *item = sender.representedObject;
-    if (item.launchPath)
-        [[NSWorkspace sharedWorkspace] launchApplication:item.launchPath];
+    [self launchItem:sender.representedObject];
 }
 
-- (void)quitApp:(NSMenuItem *)sender
+- (void)closeApp:(NSMenuItem *)sender
 {
     DockItem *item = sender.representedObject;
-    if (item.runningApp) [item.runningApp terminate];
+    if (item.pid > 0) kill((pid_t)item.pid, SIGTERM);
+}
+
+- (void)killApp:(NSMenuItem *)sender
+{
+    DockItem *item = sender.representedObject;
+    if (item.pid > 0) kill((pid_t)item.pid, SIGKILL);
 }
 
 - (void)openApp:(NSMenuItem *)sender

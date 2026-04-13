@@ -7,7 +7,8 @@ AmbrosiaDock_OBJC_FILES = \
 	AppDelegate.m \
 	DockController.m \
 	DockView.m \
-	DockItem.m
+	DockItem.m \
+	ForceQuitController.m
 
 AmbrosiaDock_OBJCFLAGS  = -fobjc-arc
 AmbrosiaDock_LDFLAGS    =

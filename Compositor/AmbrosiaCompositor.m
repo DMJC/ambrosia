@@ -28,6 +28,8 @@
  * Used after a window is minimized or closed via its decoration button.
  */
 - (void)focusNextWindowExcluding:(AmbrosiaView *)excluded;
+/** Called from handle_activate_pipe on the wl_event_loop thread. */
+- (void)_focusApplicationFromActivateRequest;
 @end
 
 /* --------------------------------------------------------------------------
@@ -164,6 +166,16 @@ static int handle_logout_pipe(int fd, uint32_t mask, void *data)
     return 0;
 }
 
+/* Activate pipe watcher — called on the compositor's wl_event_loop thread */
+static int handle_activate_pipe(int fd, uint32_t mask, void *data)
+{
+    char byte;
+    (void)read(fd, &byte, 1); /* drain */
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)data;
+    [c _focusApplicationFromActivateRequest];
+    return 0;
+}
+
 /* --------------------------------------------------------------------------
  * Per-popup state: wlroots 0.18+ requires the compositor to send a configure
  * in response to initial_commit for popups just as it does for toplevels.
@@ -259,6 +271,13 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     AmbrosiaView                     *_focusedView;
     AmbrosiaSession                  *_session;
     BOOL                              _running;
+
+    /* Pending activate request — written by the notification thread,
+     * consumed by the compositor's wl_event_loop thread.              */
+    NSString *_pendingActivateBundleID;
+    NSString *_pendingActivateLaunchPath;
+    NSString *_pendingActivateAppName;
+    NSLock   *_activateLock;
 }
 
 @synthesize state         = _state;
@@ -275,6 +294,7 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     _views         = [NSMutableArray array];
     _outputs       = [NSMutableArray array];
     _layerSurfaces = [NSMutableArray array];
+    _activateLock  = [[NSLock alloc] init];
     _state   = calloc(1, sizeof(struct ambrosia_compositor_state));
     if (!_state) return nil;
 
@@ -477,6 +497,26 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         handle_logout_pipe,
         (__bridge void *)self);
 
+    /* Activate self-pipe: background NSRunLoop thread → wl_event_loop */
+    if (pipe(_state->activate_pipe) != 0) {
+        wlr_log(WLR_ERROR, "Failed to create activate pipe: %s", strerror(errno));
+        if (error) *error = [NSError errorWithDomain:@"AmbrosiaCompositor"
+                                                code:6
+                                            userInfo:@{NSLocalizedDescriptionKey:@"Failed to create activate pipe"}];
+        return NO;
+    }
+    for (int i = 0; i < 2; i++) {
+        fcntl(_state->activate_pipe[i], F_SETFD, FD_CLOEXEC);
+        fcntl(_state->activate_pipe[i], F_SETFL,
+              fcntl(_state->activate_pipe[i], F_GETFL) | O_NONBLOCK);
+    }
+    _state->activate_source = wl_event_loop_add_fd(
+        _state->event_loop,
+        _state->activate_pipe[0],
+        WL_EVENT_READABLE,
+        handle_activate_pipe,
+        (__bridge void *)self);
+
     wlr_log(WLR_INFO, "Ambrosia: compositor setup complete");
     return YES;
 }
@@ -507,9 +547,9 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     [_session start];
 
     /* Background thread: pumps NSRunLoop so NSDistributedNotificationCenter
-     * can deliver "AmbrosiaLogoutRequest" notifications.  On arrival the
-     * handler writes one byte to logout_pipe[1]; handle_logout_pipe() on the
-     * wl_event_loop thread calls saveSessionAndLogout from there.          */
+     * can deliver "AmbrosiaLogoutRequest" and "AmbrosiaActivateApplication"
+     * notifications.  Handlers write one byte to the corresponding self-pipe;
+     * the wl_event_loop thread wakes up and processes the request there.    */
     NSThread *notifThread = [[NSThread alloc]
         initWithTarget:self
               selector:@selector(_runNotificationListener)
@@ -528,10 +568,22 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     }
     close(_state->logout_pipe[0]);
     close(_state->logout_pipe[1]);
+    if (_state->activate_source) {
+        wl_event_source_remove(_state->activate_source);
+        _state->activate_source = NULL;
+    }
+    close(_state->activate_pipe[0]);
+    close(_state->activate_pipe[1]);
 
+    /* Tear down all Wayland client connections first.  This causes gnustep-back
+     * inside each session process to receive a connection error, which unblocks
+     * any pending Wayland call and lets the app's NSRunLoop drain and exit
+     * cleanly.  Only then do we send SIGTERM and wait — avoiding a deadlock
+     * where a process is blocked on a Wayland round-trip that will never
+     * complete because the event loop has already stopped.                   */
+    wl_display_destroy_clients(_state->display);
     [_session stop];
     _session = nil;
-    wl_display_destroy_clients(_state->display);
     wlr_xcursor_manager_destroy(_state->cursor_mgr);
     wlr_cursor_destroy(_state->cursor);
     wlr_output_layout_destroy(_state->output_layout);
@@ -1383,7 +1435,13 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
            selector:@selector(_handleLogoutNotification:)
                name:@"AmbrosiaLogoutRequest"
              object:nil];
-    wlr_log(WLR_DEBUG, "Notification listener running (AmbrosiaLogoutRequest)");
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_handleActivateApplicationNotification:)
+               name:@"AmbrosiaActivateApplication"
+             object:nil];
+    wlr_log(WLR_DEBUG,
+        "Notification listener running (AmbrosiaLogoutRequest, AmbrosiaActivateApplication)");
     /* Runs until the process exits; the observer keeps the loop alive. */
     [[NSRunLoop currentRunLoop] run];
 }
@@ -1394,6 +1452,99 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     /* Write one byte to wake up the wl_event_loop on the main thread. */
     char byte = 1;
     (void)write(_state->logout_pipe[1], &byte, 1);
+}
+
+- (void)_handleActivateApplicationNotification:(NSNotification *)note
+{
+    NSDictionary *info = note.userInfo;
+    wlr_log(WLR_DEBUG, "AmbrosiaActivateApplication: bundleID=%s",
+            [info[@"bundleIdentifier"] UTF8String] ?: "(nil)");
+    [_activateLock lock];
+    _pendingActivateBundleID   = info[@"bundleIdentifier"];
+    _pendingActivateLaunchPath = info[@"launchPath"];
+    _pendingActivateAppName    = info[@"appName"];
+    [_activateLock unlock];
+    char byte = 1;
+    (void)write(_state->activate_pipe[1], &byte, 1);
+}
+
+/**
+ * Called on the wl_event_loop thread when the activate pipe becomes readable.
+ * Finds the topmost mapped window belonging to the requested application and
+ * gives it keyboard focus, deminiaturizing it first if necessary.
+ */
+- (void)_focusApplicationFromActivateRequest
+{
+    [_activateLock lock];
+    NSString *bundleID   = _pendingActivateBundleID;
+    NSString *launchPath = _pendingActivateLaunchPath;
+    NSString *appName    = _pendingActivateAppName;
+    _pendingActivateBundleID   = nil;
+    _pendingActivateLaunchPath = nil;
+    _pendingActivateAppName    = nil;
+    [_activateLock unlock];
+
+    /* Derive a short app name from launchPath (/path/to/MyApp.app → "MyApp") */
+    NSString *pathBaseName = launchPath.length
+        ? [[launchPath lastPathComponent] stringByDeletingPathExtension]
+        : nil;
+
+    wlr_log(WLR_DEBUG,
+        "_focusApplicationFromActivateRequest bundleID=%s appName=%s path=%s",
+        bundleID.UTF8String ?: "-",
+        appName.UTF8String  ?: "-",
+        launchPath.UTF8String ?: "-");
+
+    /* Search _views in reverse (topmost first).  Prefer non-miniaturized
+     * windows; keep a miniaturized fallback in case all windows are hidden. */
+    AmbrosiaView *target            = nil;
+    AmbrosiaView *miniaturizedFallback = nil;
+
+    for (NSInteger i = (NSInteger)_views.count - 1; i >= 0; i--) {
+        AmbrosiaView *v = _views[(NSUInteger)i];
+        if (!v.isMapped)         continue;
+        if (v.isMenu)            continue;
+        if (v.isDockWindow)      continue;
+        if (v.isDesktopBackground) continue;
+
+        const char *rawAppId = v.state->xdg_toplevel->app_id;
+        if (!rawAppId)           continue;
+        NSString *appId = [NSString stringWithUTF8String:rawAppId];
+
+        BOOL match = NO;
+        /* 1. Exact bundle identifier match */
+        if (!match && bundleID.length)
+            match = [appId isEqualToString:bundleID];
+        /* 2. Bundle ID ends with the app_id (e.g. "org.gnustep.GCalc" ↔ "GCalc") */
+        if (!match && bundleID.length)
+            match = [bundleID hasSuffix:appId];
+        /* 3. Exact app name match */
+        if (!match && appName.length)
+            match = [appId isEqualToString:appName];
+        /* 4. Base name from .app path */
+        if (!match && pathBaseName.length)
+            match = [appId isEqualToString:pathBaseName];
+        /* 5. Case-insensitive substring (broadest fallback) */
+        if (!match && appName.length)
+            match = ([appId rangeOfString:appName
+                                  options:NSCaseInsensitiveSearch].location != NSNotFound);
+
+        if (match) {
+            if (!v.isMiniaturized) { target = v; break; }
+            if (!miniaturizedFallback) miniaturizedFallback = v;
+        }
+    }
+
+    if (!target) target = miniaturizedFallback;
+
+    if (target) {
+        wlr_log(WLR_INFO, "Activating existing window for app_id='%s'",
+                target.state->xdg_toplevel->app_id ?: "(nil)");
+        if (target.isMiniaturized) [target deminiaturize];
+        [self focusView:target surface:target.surface];
+    } else {
+        wlr_log(WLR_DEBUG, "_focusApplicationFromActivateRequest: no matching window found");
+    }
 }
 
 - (void)saveSessionAndLogout
@@ -1446,6 +1597,17 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         wlr_log(WLR_ERROR, "Failed to save session: %s",
                 err ? [[err localizedDescription] UTF8String] : "write error");
     }
+
+    /* Notify all session processes that the compositor is about to stop.
+     * Posting before wl_display_terminate gives Dock, MenuServer, and any
+     * other GNUstep clients a chance to run applicationWillTerminate: (save
+     * prefs, invalidate DO connections, etc.) while the Wayland event loop
+     * is still processing their surface-destroy / unmap protocol messages. */
+    [[NSDistributedNotificationCenter defaultCenter]
+        postNotificationName:@"AmbrosiaSessionWillQuit"
+                      object:nil
+                    userInfo:nil
+          deliverImmediately:YES];
 
     [self stop];
 }

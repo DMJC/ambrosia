@@ -44,6 +44,7 @@
     copy->_itemType         = _itemType;
     copy->_isRunning        = _isRunning;
     copy->_keepInDock       = _keepInDock;
+    copy->_pid              = _pid;
     return copy;
 }
 

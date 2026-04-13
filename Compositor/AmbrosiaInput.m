@@ -183,6 +183,17 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
             [self cycleApplications];
             handled = YES;
         }
+        /* Ctrl+Super+Esc → Force Quit dialog */
+        if (syms[i] == XKB_KEY_Escape
+                && (modifiers & WLR_MODIFIER_CTRL) && (modifiers & WLR_MODIFIER_LOGO)
+                && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+            [[NSDistributedNotificationCenter defaultCenter]
+                postNotificationName:@"AmbrosiaForceQuitRequest"
+                              object:nil
+                            userInfo:nil
+                  deliverImmediately:YES];
+            handled = YES;
+        }
     }
 
     if (!handled) {

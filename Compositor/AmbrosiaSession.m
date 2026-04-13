@@ -1,6 +1,7 @@
 #import "AmbrosiaSession.h"
 
 #include <wlr/util/log.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <signal.h>
 #include <unistd.h>
@@ -133,6 +134,13 @@ static int session_restart_timer(void *data)
          * (pointing to this compositor's socket) rather than falling
          * back to Xwayland on a host compositor.                      */
         unsetenv("DISPLAY");
+
+        /* Ensure this child terminates when the compositor (parent) exits
+         * for any reason — including crashes and SIGKILL.  Without this,
+         * children are reparented to init and keep running after the
+         * compositor process is gone.                                   */
+        prctl(PR_SET_PDEATHSIG, SIGTERM);
+
         execv(argv[0], argv);
         _exit(127);
     }
@@ -146,11 +154,25 @@ static int session_restart_timer(void *data)
 - (void)terminate
 {
     if (_pid <= 0) return;
-    kill(_pid, SIGTERM);
-    /* Reap synchronously so we don't leave a zombie */
-    waitpid(_pid, NULL, 0);
-    wlr_log(WLR_INFO, "session: terminated '%s' pid=%d", [_name UTF8String], _pid);
-    _pid = 0;
+    pid_t pid = _pid;
+    _pid = 0; /* clear before any wait so SIGCHLD won't race to restart */
+
+    kill(pid, SIGTERM);
+
+    /* Poll for up to 5 s; fall back to SIGKILL if the process doesn't exit. */
+    for (int i = 0; i < 50; i++) {
+        usleep(100000); /* 100 ms */
+        if (waitpid(pid, NULL, WNOHANG) != 0)
+            goto done; /* reaped, or error (already gone) */
+    }
+    wlr_log(WLR_ERROR,
+            "session: '%s' pid=%d did not exit after 5 s — sending SIGKILL",
+            [_name UTF8String], pid);
+    kill(pid, SIGKILL);
+    waitpid(pid, NULL, 0);
+
+done:
+    wlr_log(WLR_INFO, "session: terminated '%s' pid=%d", [_name UTF8String], pid);
 }
 
 /**
@@ -183,6 +205,7 @@ static int session_restart_timer(void *data)
     struct wl_event_loop       *_loop;
     struct wl_event_source     *_sigchldSource;
     NSMutableArray<AmbrosiaSessionProcess *> *_processes;
+    BOOL                        _stopping;
 }
 
 @synthesize processes = _processes;
@@ -232,6 +255,7 @@ static int session_restart_timer(void *data)
 
 - (void)stop
 {
+    _stopping = YES;
     for (AmbrosiaSessionProcess *proc in _processes) {
         [proc terminate];
     }
@@ -251,12 +275,19 @@ static int session_restart_timer(void *data)
             if (proc.pid != pid) continue;
 
             proc.pid = 0;
-            wlr_log(WLR_INFO,
-                    "session: '%s' (pid %d) exited (%s %d) — scheduling restart",
-                    [proc.name UTF8String], pid,
-                    normal ? "exit" : "signal", code);
 
-            [proc armRestartTimerOnLoop:_loop];
+            if (_stopping) {
+                wlr_log(WLR_INFO,
+                        "session: '%s' (pid %d) exited (%s %d) — session stopping, no restart",
+                        [proc.name UTF8String], pid,
+                        normal ? "exit" : "signal", code);
+            } else {
+                wlr_log(WLR_INFO,
+                        "session: '%s' (pid %d) exited (%s %d) — scheduling restart",
+                        [proc.name UTF8String], pid,
+                        normal ? "exit" : "signal", code);
+                [proc armRestartTimerOnLoop:_loop];
+            }
             break;
         }
     }

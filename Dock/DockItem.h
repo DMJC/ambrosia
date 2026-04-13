@@ -21,6 +21,7 @@ typedef NS_ENUM(NSInteger, DockItemType) {
 @property (nonatomic)         DockItemType  itemType;
 @property (nonatomic)         BOOL          isRunning;
 @property (nonatomic)         BOOL          keepInDock;       /**< Persisted slot */
+@property (nonatomic)         NSInteger     pid;             /**< Process ID while running; 0 if unknown */
 @property (nonatomic, weak)   NSRunningApplication *runningApp;
 
 /** Load the icon from the bundle at launchPath */

@@ -99,6 +99,12 @@ struct ambrosia_compositor_state {
     int                  logout_pipe[2];
     struct wl_event_source *logout_source;
 
+    /* Activate self-pipe: background notification thread → wl_event_loop
+     * Written when an "AmbrosiaActivateApplication" notification arrives so
+     * the Wayland focus change happens on the compositor's main thread.      */
+    int                  activate_pipe[2];
+    struct wl_event_source *activate_source;
+
     /* Back-reference (not retained – ObjC object owns this struct) */
     void               *objc_compositor;
 };
