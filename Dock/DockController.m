@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 static NSString *const kPrefsIconSize    = @"iconSize";
 static NSString *const kPrefsZoomFactor  = @"zoomFactor";
@@ -34,6 +35,30 @@ static BOOL IsSystemInternalApp(NSString *name, NSString *path)
     return NO;
 }
 
+/* Returns YES only when pid exists and is not a zombie. */
+static BOOL IsLiveNonZombieProcess(pid_t pid)
+{
+    if (pid <= 0) return NO;
+    if (kill(pid, 0) != 0) return NO;
+
+    char statPath[64];
+    snprintf(statPath, sizeof(statPath), "/proc/%d/stat", (int)pid);
+    FILE *f = fopen(statPath, "r");
+    if (!f) return YES; /* If /proc is unavailable, fall back to kill(0) result. */
+
+    char buf[512];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (n == 0) return YES;
+    buf[n] = '\0';
+
+    /* /proc/<pid>/stat format: pid (comm) state ... ; parse state char */
+    char *endComm = strrchr(buf, ')');
+    if (!endComm || *(endComm + 1) == '\0') return YES;
+    char state = *(endComm + 2); /* skip ") " */
+    return state != 'Z';
+}
+
 /* ---------------------------------------------------------------------- */
 
 @implementation DockController {
@@ -43,6 +68,7 @@ static BOOL IsSystemInternalApp(NSString *name, NSString *path)
     BOOL _autoHide;
     BOOL _showRunningDots;
     ForceQuitController *_forceQuitController;
+    NSTimer *_runningAppsSweepTimer;
 }
 
 @synthesize dockPanel       = _dockPanel;
@@ -76,6 +102,9 @@ static BOOL IsSystemInternalApp(NSString *name, NSString *path)
 
 - (void)dealloc
 {
+    [_runningAppsSweepTimer invalidate];
+    _runningAppsSweepTimer = nil;
+
     if (_workspaceObserver)
         [[NSWorkspace sharedWorkspace].notificationCenter
          removeObserver:_workspaceObserver];
@@ -377,6 +406,16 @@ static BOOL IsSystemInternalApp(NSString *name, NSString *path)
 {
     [self seedRunningAppsFromProc];
 
+    /* Some force-quit paths can leave a dead app as a zombie until its parent
+     * reaps it. NSWorkspace may not emit a terminate notification in that
+     * state, so periodically reconcile dock running-state against /proc. */
+    _runningAppsSweepTimer =
+        [NSTimer scheduledTimerWithTimeInterval:1.0
+                                         target:self
+                                       selector:@selector(reconcileRunningApps)
+                                       userInfo:nil
+                                        repeats:YES];
+
     NSWorkspace *ws = [NSWorkspace sharedWorkspace];
     __weak typeof(self) weakSelf = self;
 
@@ -391,6 +430,29 @@ static BOOL IsSystemInternalApp(NSString *name, NSString *path)
                                    usingBlock:^(NSNotification *n) {
         [weakSelf syncRunningAppFromUserInfo:n.userInfo launched:NO];
     }];
+}
+
+- (void)reconcileRunningApps
+{
+    BOOL changed = NO;
+    for (DockItem *item in [_items copy]) {
+        if (!item.isRunning || item.pid <= 0) continue;
+        if (IsLiveNonZombieProcess((pid_t)item.pid)) continue;
+
+        if (item.keepInDock) {
+            item.isRunning = NO;
+            item.pid = 0;
+        } else if (item.itemType != DockItemTypeRecycler) {
+            [_items removeObject:item];
+            changed = YES;
+        }
+        changed = YES;
+    }
+
+    if (changed) {
+        [self repositionDock];
+        [_dockView reloadItems];
+    }
 }
 
 - (void)observeForceQuitRequests
