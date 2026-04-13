@@ -686,37 +686,27 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         struct wl_client *focusedClient = wl_resource_get_client(
             _focusedView.state->xdg_toplevel->base->resource);
 
-        /* Determine whether the destination belongs to the same client.
-         * Menu/panel surfaces (isMenu) don't hold keyboard focus and are
-         * transparent to this check; treat them as "no destination".        */
-        BOOL sameClient = NO;
-        if (view && !view.isMenu) {
-            struct wl_client *toClient = wl_resource_get_client(
-                view.state->xdg_toplevel->base->resource);
-            sameClient = (toClient == focusedClient);
+        /* Look for the topmost mapped transient belonging to the focused app.
+         * If one exists, it owns input until it is dismissed. */
+        AmbrosiaView *modal = nil;
+        for (AmbrosiaView *candidate in _views) {
+            if (!candidate.isMapped) continue;
+            struct wlr_xdg_toplevel *tp = candidate.state->xdg_toplevel;
+            if (!tp->parent) continue;
+            struct wl_client *parentClient =
+                wl_resource_get_client(tp->parent->base->resource);
+            if (parentClient == focusedClient) {
+                modal = candidate; /* last in list = topmost */
+            }
         }
 
-        if (!sameClient) {
-            /* Look for the topmost mapped transient belonging to this app. */
-            AmbrosiaView *modal = nil;
-            for (AmbrosiaView *candidate in _views) {
-                if (!candidate.isMapped) continue;
-                struct wlr_xdg_toplevel *tp = candidate.state->xdg_toplevel;
-                if (!tp->parent) continue;
-                struct wl_client *parentClient =
-                    wl_resource_get_client(tp->parent->base->resource);
-                if (parentClient == focusedClient) {
-                    modal = candidate; /* last in list = topmost */
-                }
-            }
-            if (modal) {
-                wlr_log(WLR_DEBUG,
-                    "focusView: redirecting to modal dialog '%s' "
-                    "(blocked focus change away from modal app)",
-                    modal.state->xdg_toplevel->title ?: "(untitled)");
-                view    = modal;
-                surface = modal.surface;
-            }
+        if (modal && view != modal) {
+            wlr_log(WLR_DEBUG,
+                "focusView: redirecting to modal dialog '%s' "
+                "(blocked focus change while modal is active)",
+                modal.state->xdg_toplevel->title ?: "(untitled)");
+            view    = modal;
+            surface = modal.surface;
         }
     }
 
