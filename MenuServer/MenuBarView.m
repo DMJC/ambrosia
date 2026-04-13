@@ -459,15 +459,16 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
                  * expanded and mouse-moved events continue to fire against
                  * stale dropdown state while the alert is on screen.
                  *
-                 * Defer the activation to the next run-loop pass so that the
-                 * current Wayland pointer event (including the pending button-UP
-                 * that will fire when the user releases the mouse button) is
-                 * fully drained before the modal session starts.  Without this
-                 * the button-UP lands on the newly-visible alert at whatever
-                 * coordinates the pointer is at and can instantly dismiss it.  */
+                 * Use a short delay (not only dispatch_async) so the full
+                 * click sequence is drained, including button-UP. Otherwise
+                 * button-UP can land on the just-opened alert and immediately
+                 * trigger the default button, closing the alert before the
+                 * user can interact with it.                                 */
                 [self _closeDropdown];
                 NSDictionary *deferred = item;
-                dispatch_async(dispatch_get_main_queue(), ^{
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                             (int64_t)(0.18 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
                     [self _activateDropdownItem:deferred];
                 });
             }
