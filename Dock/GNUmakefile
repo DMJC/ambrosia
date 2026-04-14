@@ -15,6 +15,6 @@ AmbrosiaDock_LDFLAGS    =
 
 AmbrosiaDock_PRINCIPAL_CLASS = AppDelegate
 
-AmbrosiaDock_RESOURCE_FILES = Resources/DefaultDock.plist
+AmbrosiaDock_RESOURCE_FILES = Resources/DefaultDock.plist Resources/DockPreferences.plist
 
 include $(GNUSTEP_MAKEFILES)/application.make

@@ -1,20 +1,22 @@
-#ifndef AMBROSIA_PREFS_MODULE_H
-#define AMBROSIA_PREFS_MODULE_H
+#ifndef AMBROSIA_MODULE_H
+#define AMBROSIA_MODULE_H
 
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
 #import <PreferencePanes/PreferencePanes.h>
 
 /**
- * AmbrosiaPrefsModule — GNUstep PreferencePane bundle for configuring
+ * AmbrosiaModule — GNUstep PreferencePane bundle for configuring
  * the Ambrosia Wayland compositor and dock.
  *
  * Sections:
  *   • Compositor  – transparency, decoration theme, compositor flags
  *   • Dock        – icon size, zoom factor, position, auto-hide, items
  */
-@interface AmbrosiaPrefsModule : NSPreferencePane
-
+@interface AmbrosiaModule : NSPreferencePane
+{
+  BOOL loaded;
+}
 /* Compositor settings outlets */
 @property (nonatomic, strong) IBOutlet NSSlider       *transparencySlider;
 @property (nonatomic, strong) IBOutlet NSTextField    *transparencyLabel;
@@ -64,4 +66,4 @@
 
 @end
 
-#endif /* AMBROSIA_PREFS_MODULE_H */
+#endif /* AMBROSIA_MODULE_H */

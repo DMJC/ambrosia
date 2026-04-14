@@ -1,0 +1,57 @@
+{
+    "## Comment" = "Do NOT change this file, Gorm maintains it";
+    FirstResponder = {
+	Actions = (
+	    "closeMainWindow:",
+	    "nextButtAction:",
+	    "prevButtAction:",
+	    "runInfoPanel:",
+	    "showAllButtAction:"
+	);
+	Super = NSObject;
+    };
+    AmbrosiaPrefsModule = {
+	Actions = (
+	    "transparencyChanged:",
+	    "toggleDecorations:",
+	    "decorationThemeChanged:",
+	    "toggleBlur:",
+	    "titlebarColorChanged:",
+	    "borderColorChanged:",
+	    "buttonColorsChanged:",
+	    "iconSizeChanged:",
+	    "zoomFactorChanged:",
+	    "dockPositionChanged:",
+	    "toggleAutoHide:",
+	    "toggleRunningIndicator:",
+	    "addDockItem:",
+	    "removeDockItem:",
+	    "applyChanges:",
+	    "revertChanges:"
+	);
+	Outlets = (
+	    "transparencySlider",
+	    "transparencyLabel",
+	    "enableDecorationsCheck",
+	    "decorationThemePopUp",
+	    "enableBlurCheck",
+	    "titlebarColorWell",
+	    "borderColorWell",
+	    "buttonCloseColorWell",
+	    "buttonMinColorWell",
+	    "buttonMaxColorWell",
+	    "iconSizeSlider",
+	    "iconSizeLabel",
+	    "zoomFactorSlider",
+	    "zoomFactorLabel",
+	    "positionControl",
+	    "autoHideCheck",
+	    "showRunningIndicatorCheck",
+	    "dockItemsTable",
+	    "addItemButton",
+	    "removeItemButton",
+	    "tabView"
+	);
+	Super = NSPreferencePane;
+    };
+}

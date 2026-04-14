@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//GNUstep//DTD plist 0.9//EN" "http://www.gnustep.org/plist-0_9.xml">
+<plist version="0.9">
+<dict>
+    <key>iconSize</key><real>48</real>
+    <key>zoomFactor</key><real>1.7</real>
+    <key>dockPosition</key><string>bottom</string>
+    <key>autoHide</key><false/>
+    <key>showRunningDots</key><true/>
+</dict>
+</plist>

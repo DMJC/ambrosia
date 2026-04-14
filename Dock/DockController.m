@@ -121,6 +121,8 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
     [self repositionDock];
     [self observeRunningApps];
     [self observeForceQuitRequests];
+    /* Persist initial state so the preferences file always exists on disk. */
+    [self savePreferences];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)note
@@ -226,20 +228,43 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
 /* ---------------------------------------------------------------------- */
 #pragma mark - Preferences
 
+/** Load the bundled DockPreferences.plist and return it, or an empty dict. */
+- (NSDictionary *)_bundledDefaultPreferences
+{
+    NSString *path = [[NSBundle mainBundle] pathForResource:@"DockPreferences"
+                                                     ofType:@"plist"];
+    NSDictionary *d = path ? [NSDictionary dictionaryWithContentsOfFile:path] : nil;
+    return d ?: @{};
+}
+
 - (void)loadPreferences
 {
+    /* Read bundled defaults first, then overlay the user's saved prefs. */
+    NSDictionary *defaults = [self _bundledDefaultPreferences];
+
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:_preferencesPath];
     if (!prefs) {
+        /* Apply defaults from the bundled plist before loading default items. */
+        _iconSize        = [defaults[kPrefsIconSize]   doubleValue] ?: 48.0;
+        _zoomFactor      = [defaults[kPrefsZoomFactor] doubleValue] ?: 1.7;
+        _dockPosition    = defaults[kPrefsPosition] ?: @"bottom";
+        _autoHide        = [defaults[kPrefsAutoHide]   boolValue];
+        _showRunningDots = defaults[kPrefsShowDots]
+                           ? [defaults[kPrefsShowDots] boolValue] : YES;
         [self loadDefaultItems];
         return;
     }
 
-    _iconSize        = [prefs[kPrefsIconSize]   doubleValue] ?: 48.0;
-    _zoomFactor      = [prefs[kPrefsZoomFactor] doubleValue] ?: 1.7;
-    _dockPosition    = prefs[kPrefsPosition] ?: @"bottom";
+    _iconSize        = [prefs[kPrefsIconSize]   doubleValue]
+                       ?: ([defaults[kPrefsIconSize]   doubleValue] ?: 48.0);
+    _zoomFactor      = [prefs[kPrefsZoomFactor] doubleValue]
+                       ?: ([defaults[kPrefsZoomFactor] doubleValue] ?: 1.7);
+    _dockPosition    = prefs[kPrefsPosition]  ?: defaults[kPrefsPosition]  ?: @"bottom";
     _autoHide        = [prefs[kPrefsAutoHide]   boolValue];
     _showRunningDots = prefs[kPrefsShowDots]
-                       ? [prefs[kPrefsShowDots] boolValue] : YES;
+                       ? [prefs[kPrefsShowDots] boolValue]
+                       : (defaults[kPrefsShowDots]
+                          ? [defaults[kPrefsShowDots] boolValue] : YES);
 
     NSArray *rawItems = prefs[kPrefsItems];
     if (rawItems) {
