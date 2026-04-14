@@ -12,6 +12,26 @@ static NSString *const kCompPrefsChanged = @"AmbrosiaCompositorPrefsChanged";
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *dockItems;
 @end
 
+/* ---------------------------------------------------------------------- */
+/* Flipped view: y=0 at top, so rows can be appended downward naturally.  */
+
+@interface GNFlippedView : NSView
+@end
+@implementation GNFlippedView
+- (BOOL)isFlipped { return YES; }
+@end
+
+/* Layout constants for the preference pane UI */
+#define MV_MARGIN   16      /* left/right margin inside a tab */
+#define MV_LBL_W   172      /* fixed label column width */
+#define MV_CTRL_X  196      /* MV_MARGIN + MV_LBL_W + 8 */
+#define MV_ROW_H    22      /* standard row height */
+#define MV_ROW_GAP  10      /* vertical gap between rows */
+#define MV_VAL_W    65      /* width of slider value labels */
+#define MV_TAB_W   520      /* initial content-view width (NSTabView resizes it) */
+/* Slider width: fills from CTRL_X to the right margin, room for the value label */
+#define MV_SLD_W  (MV_TAB_W - MV_CTRL_X - MV_VAL_W - 8 - MV_MARGIN)
+
 @implementation AmbrosiaModule {
     NSString            *_compPrefsPath;
     NSString            *_dockPrefsPath;
@@ -47,7 +67,321 @@ static BOOL SavePlist(NSMutableDictionary *dict, NSString *path)
 }
 
 /* ---------------------------------------------------------------------- */
+#pragma mark - UI construction helpers
+/*
+ * GNUstep does not implement the NSLayoutAnchor / Auto Layout anchor API.
+ * All layout uses explicit frames and autoresizing masks (see constants above).
+ */
+
+static NSTextField *MakeLabel(NSString *text)
+{
+    NSTextField *f = [[NSTextField alloc] initWithFrame:NSZeroRect];
+    f.stringValue     = text;
+    f.editable        = NO;
+    f.bordered        = NO;
+    f.drawsBackground = NO;
+    return f;
+}
+
+static NSTextField *MakeValueLabel(void)
+{
+    NSTextField *f = [[NSTextField alloc] initWithFrame:NSZeroRect];
+    f.editable        = NO;
+    f.bordered        = NO;
+    f.drawsBackground = NO;
+    f.alignment       = NSTextAlignmentRight;
+    return f;
+}
+
+static NSButton *MakeCheckbox(NSString *title)
+{
+    NSButton *b = [[NSButton alloc] initWithFrame:NSZeroRect];
+    [b setButtonType:NSSwitchButton];
+    b.title = title;
+    b.state = NSControlStateValueOff;
+    return b;
+}
+
+static NSColorWell *MakeColorWell(void)
+{
+    return [[NSColorWell alloc] initWithFrame:NSMakeRect(0, 0, 44, 22)];
+}
+
+static NSButton *MakePushButton(NSString *title)
+{
+    NSButton *b = [[NSButton alloc] initWithFrame:NSZeroRect];
+    [b setButtonType:NSMomentaryPushInButton];
+    b.bezelStyle = NSRoundedBezelStyle;
+    b.title      = title;
+    return b;
+}
+
+/* Add a label + slider + value-label row to |tab| at y, return next y */
+- (CGFloat)addSliderRow:(NSView *)tab
+                  label:(NSString *)labelText
+                 slider:(NSSlider *)slider
+             valueLabel:(NSTextField *)valLabel
+                    atY:(CGFloat)y
+{
+    NSTextField *lbl = MakeLabel(labelText);
+    lbl.frame = NSMakeRect(MV_MARGIN, y, MV_LBL_W, MV_ROW_H);
+
+    slider.frame = NSMakeRect(MV_CTRL_X, y, MV_SLD_W, MV_ROW_H);
+    slider.autoresizingMask = NSViewWidthSizable;
+
+    valLabel.frame = NSMakeRect(MV_TAB_W - MV_VAL_W - MV_MARGIN, y, MV_VAL_W, MV_ROW_H);
+    valLabel.autoresizingMask = NSViewMinXMargin;
+
+    [tab addSubview:lbl];
+    [tab addSubview:slider];
+    [tab addSubview:valLabel];
+    return y + MV_ROW_H + MV_ROW_GAP;
+}
+
+/* Add a label + fixed control row to |tab| at y, return next y */
+- (CGFloat)addLabeledRow:(NSView *)tab
+                   label:(NSString *)labelText
+                 control:(NSView *)control
+              controlWidth:(CGFloat)cw
+                     atY:(CGFloat)y
+{
+    NSTextField *lbl = MakeLabel(labelText);
+    lbl.frame = NSMakeRect(MV_MARGIN, y, MV_LBL_W, MV_ROW_H);
+    control.frame = NSMakeRect(MV_CTRL_X, y, cw, MV_ROW_H);
+    [tab addSubview:lbl];
+    [tab addSubview:control];
+    return y + MV_ROW_H + MV_ROW_GAP;
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Build UI programmatically
+
+- (NSView *)buildCompositorTab
+{
+    NSView *tab = [[GNFlippedView alloc] initWithFrame:NSMakeRect(0, 0, MV_TAB_W, 400)];
+    tab.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+    CGFloat y = MV_MARGIN;
+
+    /* Transparency */
+    _transparencySlider = [[NSSlider alloc] initWithFrame:NSZeroRect];
+    _transparencySlider.minValue = 0.5;
+    _transparencySlider.maxValue = 1.0;
+    [_transparencySlider setTarget:self];
+    [_transparencySlider setAction:@selector(transparencyChanged:)];
+    _transparencyLabel = MakeValueLabel();
+    y = [self addSliderRow:tab
+                     label:@"Window Transparency:"
+                    slider:_transparencySlider
+                valueLabel:_transparencyLabel
+                       atY:y];
+
+    /* Decoration theme */
+    _decorationThemePopUp = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [_decorationThemePopUp setTarget:self];
+    [_decorationThemePopUp setAction:@selector(decorationThemeChanged:)];
+    y = [self addLabeledRow:tab
+                      label:@"Decoration Theme:"
+                    control:_decorationThemePopUp
+               controlWidth:180
+                        atY:y];
+
+    /* Checkboxes */
+    _enableDecorationsCheck = MakeCheckbox(@"Server-side Decorations");
+    _enableDecorationsCheck.frame = NSMakeRect(MV_MARGIN, y,
+                                               MV_TAB_W - MV_MARGIN * 2, MV_ROW_H);
+    _enableDecorationsCheck.autoresizingMask = NSViewWidthSizable;
+    [_enableDecorationsCheck setTarget:self];
+    [_enableDecorationsCheck setAction:@selector(toggleDecorations:)];
+    [tab addSubview:_enableDecorationsCheck];
+    y += MV_ROW_H + MV_ROW_GAP;
+
+    _enableBlurCheck = MakeCheckbox(@"Enable Blur");
+    _enableBlurCheck.frame = NSMakeRect(MV_MARGIN, y,
+                                        MV_TAB_W - MV_MARGIN * 2, MV_ROW_H);
+    _enableBlurCheck.autoresizingMask = NSViewWidthSizable;
+    [_enableBlurCheck setTarget:self];
+    [_enableBlurCheck setAction:@selector(toggleBlur:)];
+    [tab addSubview:_enableBlurCheck];
+    y += MV_ROW_H + MV_ROW_GAP;
+
+    /* Color wells */
+    _titlebarColorWell = MakeColorWell();
+    [_titlebarColorWell setTarget:self];
+    [_titlebarColorWell setAction:@selector(titlebarColorChanged:)];
+    y = [self addLabeledRow:tab label:@"Titlebar Color:"
+                    control:_titlebarColorWell controlWidth:44 atY:y];
+
+    _borderColorWell = MakeColorWell();
+    [_borderColorWell setTarget:self];
+    [_borderColorWell setAction:@selector(borderColorChanged:)];
+    y = [self addLabeledRow:tab label:@"Border Color:"
+                    control:_borderColorWell controlWidth:44 atY:y];
+
+    /* Button colours — label + three wells side by side */
+    NSTextField *btnLbl = MakeLabel(@"Button Colors (×/−/+):");
+    btnLbl.frame = NSMakeRect(MV_MARGIN, y, MV_LBL_W, MV_ROW_H);
+    [tab addSubview:btnLbl];
+
+    _buttonCloseColorWell = MakeColorWell();
+    _buttonMinColorWell   = MakeColorWell();
+    _buttonMaxColorWell   = MakeColorWell();
+    [_buttonCloseColorWell setTarget:self]; [_buttonCloseColorWell setAction:@selector(buttonColorsChanged:)];
+    [_buttonMinColorWell   setTarget:self]; [_buttonMinColorWell   setAction:@selector(buttonColorsChanged:)];
+    [_buttonMaxColorWell   setTarget:self]; [_buttonMaxColorWell   setAction:@selector(buttonColorsChanged:)];
+
+    _buttonCloseColorWell.frame = NSMakeRect(MV_CTRL_X,          y, 44, MV_ROW_H);
+    _buttonMinColorWell.frame   = NSMakeRect(MV_CTRL_X + 48,     y, 44, MV_ROW_H);
+    _buttonMaxColorWell.frame   = NSMakeRect(MV_CTRL_X + 96,     y, 44, MV_ROW_H);
+    [tab addSubview:_buttonCloseColorWell];
+    [tab addSubview:_buttonMinColorWell];
+    [tab addSubview:_buttonMaxColorWell];
+
+    return tab;
+}
+
+- (NSView *)buildDockTab
+{
+    NSView *tab = [[GNFlippedView alloc] initWithFrame:NSMakeRect(0, 0, MV_TAB_W, 400)];
+    tab.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+    CGFloat y = MV_MARGIN;
+
+    /* Icon size */
+    _iconSizeSlider = [[NSSlider alloc] initWithFrame:NSZeroRect];
+    _iconSizeSlider.minValue = 16;
+    _iconSizeSlider.maxValue = 128;
+    [_iconSizeSlider setTarget:self];
+    [_iconSizeSlider setAction:@selector(iconSizeChanged:)];
+    _iconSizeLabel = MakeValueLabel();
+    y = [self addSliderRow:tab label:@"Icon Size:"
+                    slider:_iconSizeSlider valueLabel:_iconSizeLabel atY:y];
+
+    /* Zoom factor */
+    _zoomFactorSlider = [[NSSlider alloc] initWithFrame:NSZeroRect];
+    _zoomFactorSlider.minValue = 1.0;
+    _zoomFactorSlider.maxValue = 3.0;
+    [_zoomFactorSlider setTarget:self];
+    [_zoomFactorSlider setAction:@selector(zoomFactorChanged:)];
+    _zoomFactorLabel = MakeValueLabel();
+    y = [self addSliderRow:tab label:@"Zoom Factor:"
+                    slider:_zoomFactorSlider valueLabel:_zoomFactorLabel atY:y];
+
+    /* Dock position */
+    _positionControl = [[NSSegmentedControl alloc] initWithFrame:NSZeroRect];
+    _positionControl.segmentCount = 3;
+    [_positionControl setLabel:@"Bottom" forSegment:0];
+    [_positionControl setLabel:@"Left"   forSegment:1];
+    [_positionControl setLabel:@"Right"  forSegment:2];
+    [_positionControl setTarget:self];
+    [_positionControl setAction:@selector(dockPositionChanged:)];
+    y = [self addLabeledRow:tab label:@"Position:"
+                    control:_positionControl controlWidth:210 atY:y];
+
+    /* Checkboxes */
+    _autoHideCheck = MakeCheckbox(@"Auto-hide Dock");
+    _autoHideCheck.frame = NSMakeRect(MV_MARGIN, y,
+                                      MV_TAB_W - MV_MARGIN * 2, MV_ROW_H);
+    _autoHideCheck.autoresizingMask = NSViewWidthSizable;
+    [_autoHideCheck setTarget:self];
+    [_autoHideCheck setAction:@selector(toggleAutoHide:)];
+    [tab addSubview:_autoHideCheck];
+    y += MV_ROW_H + MV_ROW_GAP;
+
+    _showRunningIndicatorCheck = MakeCheckbox(@"Show Running Indicators");
+    _showRunningIndicatorCheck.frame = NSMakeRect(MV_MARGIN, y,
+                                                  MV_TAB_W - MV_MARGIN * 2, MV_ROW_H);
+    _showRunningIndicatorCheck.autoresizingMask = NSViewWidthSizable;
+    [_showRunningIndicatorCheck setTarget:self];
+    [_showRunningIndicatorCheck setAction:@selector(toggleRunningIndicator:)];
+    [tab addSubview:_showRunningIndicatorCheck];
+    y += MV_ROW_H + MV_ROW_GAP;
+
+    /* Dock items label */
+    NSTextField *itemsLbl = MakeLabel(@"Dock Items:");
+    itemsLbl.frame = NSMakeRect(MV_MARGIN, y, 200, MV_ROW_H);
+    [tab addSubview:itemsLbl];
+    y += MV_ROW_H + 4;
+
+    /* Dock items table */
+    _dockItemsTable = [[NSTableView alloc] initWithFrame:NSZeroRect];
+    NSTableColumn *labelCol = [[NSTableColumn alloc] initWithIdentifier:@"label"];
+    labelCol.title = @"Name";
+    labelCol.width = 150;
+    NSTableColumn *pathCol = [[NSTableColumn alloc] initWithIdentifier:@"path"];
+    pathCol.title = @"Path";
+    [_dockItemsTable addTableColumn:labelCol];
+    [_dockItemsTable addTableColumn:pathCol];
+
+    CGFloat tableH = 120;
+    NSScrollView *tableScroll = [[NSScrollView alloc]
+        initWithFrame:NSMakeRect(MV_MARGIN, y,
+                                 MV_TAB_W - MV_MARGIN * 2, tableH)];
+    tableScroll.autoresizingMask = NSViewWidthSizable;
+    tableScroll.hasVerticalScroller   = YES;
+    tableScroll.hasHorizontalScroller = NO;
+    tableScroll.documentView = _dockItemsTable;
+    [tab addSubview:tableScroll];
+    y += tableH + MV_ROW_GAP;
+
+    /* Add / Remove buttons */
+    _addItemButton    = MakePushButton(@"+");
+    _removeItemButton = MakePushButton(@"−");
+    _addItemButton.frame    = NSMakeRect(MV_MARGIN,      y, 32, 28);
+    _removeItemButton.frame = NSMakeRect(MV_MARGIN + 36, y, 32, 28);
+    [_addItemButton    setTarget:self]; [_addItemButton    setAction:@selector(addDockItem:)];
+    [_removeItemButton setTarget:self]; [_removeItemButton setAction:@selector(removeDockItem:)];
+    [tab addSubview:_addItemButton];
+    [tab addSubview:_removeItemButton];
+
+    return tab;
+}
+
+/* ---------------------------------------------------------------------- */
 #pragma mark - NSPreferencePane lifecycle
+
+- (NSView *)loadMainView
+{
+    /* Build the entire UI in code — the .gorm is a stub with no connections. */
+    const CGFloat W = 540, H = 480;
+    const CGFloat btnH = 36, btnW = 80, gap = 8;
+
+    NSView *mainContainer = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, W, H)];
+    mainContainer.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+    /* Tab view — sits above the button bar */
+    CGFloat tabH = H - btnH - gap * 2;
+    _tabView = [[NSTabView alloc] initWithFrame:NSMakeRect(0, btnH + gap, W, tabH)];
+    _tabView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+    NSTabViewItem *compItem = [[NSTabViewItem alloc] initWithIdentifier:@"compositor"];
+    compItem.label = @"Compositor";
+    compItem.view  = [self buildCompositorTab];
+    [_tabView addTabViewItem:compItem];
+
+    NSTabViewItem *dockItem = [[NSTabViewItem alloc] initWithIdentifier:@"dock"];
+    dockItem.label = @"Dock";
+    dockItem.view  = [self buildDockTab];
+    [_tabView addTabViewItem:dockItem];
+
+    /* Apply / Revert buttons — bottom-right */
+    NSButton *applyBtn  = MakePushButton(@"Apply");
+    NSButton *revertBtn = MakePushButton(@"Revert");
+    applyBtn.frame  = NSMakeRect(W - gap - btnW,              gap, btnW, btnH - gap);
+    revertBtn.frame = NSMakeRect(W - gap - btnW * 2 - gap,    gap, btnW, btnH - gap);
+    applyBtn.autoresizingMask  = NSViewMinXMargin;
+    revertBtn.autoresizingMask = NSViewMinXMargin;
+    [applyBtn  setTarget:self]; [applyBtn  setAction:@selector(applyChanges:)];
+    [revertBtn setTarget:self]; [revertBtn setAction:@selector(revertChanges:)];
+
+    [mainContainer addSubview:_tabView];
+    [mainContainer addSubview:applyBtn];
+    [mainContainer addSubview:revertBtn];
+
+    [self setMainView:mainContainer];
+    [self mainViewDidLoad];
+    return mainContainer;
+}
 
 - (instancetype)initWithBundle:(NSBundle *)bundle
 {

@@ -10,7 +10,7 @@
 	);
 	Super = NSObject;
     };
-    AmbrosiaPrefsModule = {
+    AmbrosiaModule = {
 	Actions = (
 	    "transparencyChanged:",
 	    "toggleDecorations:",
