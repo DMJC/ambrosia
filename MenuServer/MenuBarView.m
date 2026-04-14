@@ -1,6 +1,7 @@
 #import "MenuBarView.h"
 #import "MenuBarController.h"
 #import "MenuServerProtocol.h"
+#import <GNUstepGUI/GSTheme.h>
 
 /* ---- Bar geometry ---- */
 static const CGFloat kBarHeight      = 24.0;
@@ -11,8 +12,6 @@ static const CGFloat kItemPad        = 6.0;
 static const CGFloat kItemGap        = 2.0;
 static const CGFloat kSepWidth       = 1.0;
 static const CGFloat kSepInset       = 4.0;
-static const CGFloat kFontSize       = 11.5;
-static const CGFloat kBoldFontSize   = 12.0;
 static const CGFloat kHighlightAlpha = 0.25;
 
 /* ---- Dropdown geometry ---- */
@@ -35,60 +34,76 @@ static NSString * const kSysItemTitle    = @"sysTitle";
 static NSString * const kSysItemSel     = @"sysSel";     /* NSString selector name */
 static NSString * const kSysItemSep     = @"sysSep";     /* @YES = separator row  */
 
-/* ---- Colour / font helpers ---- */
+/* ---- Colour helpers — sourced from the active GNUstep theme ---- */
 static NSColor *BarBg(void)
 {
-    return [NSColor colorWithCalibratedRed:0.10 green:0.10 blue:0.16 alpha:1.0];
+    return [[GSTheme theme] menuBarBackgroundColor];
 }
 static NSColor *DropBg(void)
 {
-    return [NSColor colorWithCalibratedRed:0.13 green:0.13 blue:0.20 alpha:1.0];
+    return [[GSTheme theme] menuBackgroundColor];
 }
 static NSColor *DropBorder(void)
 {
-    return [NSColor colorWithCalibratedWhite:0.35 alpha:0.9];
+    return [[GSTheme theme] menuBorderColor];
 }
 static NSColor *BarHighlight(void)
 {
-    return [NSColor colorWithCalibratedWhite:1.0 alpha:kHighlightAlpha];
+    return [[NSColor selectedMenuItemColor]
+            colorWithAlphaComponent:kHighlightAlpha];
 }
 static NSColor *DropHighlight(void)
 {
-    return [NSColor colorWithCalibratedRed:0.20 green:0.40 blue:0.80 alpha:0.85];
+    return [NSColor selectedMenuItemColor];
 }
 static NSColor *BarSep(void)
 {
-    return [NSColor colorWithCalibratedWhite:0.40 alpha:0.8];
+    return [[GSTheme theme] menuSeparatorColor];
 }
+
+/* ---- Font helpers ---- */
+static NSFont *MenuFont(void)
+{
+    return [NSFont menuFontOfSize:0];
+}
+static NSFont *MenuFontBold(void)
+{
+    NSFont *base = [NSFont menuFontOfSize:0];
+    NSFont *bold = [[NSFontManager sharedFontManager]
+                    convertFont:base toHaveTrait:NSBoldFontMask];
+    return bold ? bold : base;
+}
+
+/* ---- Text attribute helpers ---- */
 static NSDictionary *NormalAttrs(void)
 {
     return @{
-        NSForegroundColorAttributeName: [NSColor colorWithCalibratedWhite:0.92 alpha:1.0],
-        NSFontAttributeName: [NSFont systemFontOfSize:kFontSize],
+        NSForegroundColorAttributeName: [NSColor controlTextColor],
+        NSFontAttributeName: MenuFont(),
     };
 }
 static NSDictionary *BoldAttrs(void)
 {
     return @{
-        NSForegroundColorAttributeName: [NSColor colorWithCalibratedWhite:1.0 alpha:1.0],
-        NSFontAttributeName: [NSFont boldSystemFontOfSize:kBoldFontSize],
+        NSForegroundColorAttributeName: [NSColor controlTextColor],
+        NSFontAttributeName: MenuFontBold(),
     };
 }
 static NSDictionary *DisabledAttrs(void)
 {
     return @{
-        NSForegroundColorAttributeName: [NSColor colorWithCalibratedWhite:0.55 alpha:1.0],
-        NSFontAttributeName: [NSFont systemFontOfSize:kFontSize],
+        NSForegroundColorAttributeName: [NSColor disabledControlTextColor],
+        NSFontAttributeName: MenuFont(),
     };
 }
 static NSDictionary *DropItemAttrs(BOOL highlighted)
 {
     NSColor *fg = highlighted
-        ? [NSColor whiteColor]
-        : [NSColor colorWithCalibratedWhite:0.92 alpha:1.0];
+        ? [NSColor selectedMenuItemTextColor]
+        : [NSColor controlTextColor];
     return @{
         NSForegroundColorAttributeName: fg,
-        NSFontAttributeName: [NSFont systemFontOfSize:kFontSize],
+        NSFontAttributeName: MenuFont(),
     };
 }
 
@@ -142,16 +157,28 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     _hoveredIdx      = -1;
 
     [self _updateClockString];
-    _clockTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
+    _clockTimer = [NSTimer scheduledTimerWithTimeInterval:60.0
                                                    target:self
                                                  selector:@selector(_tickClock:)
                                                  userInfo:nil
                                                   repeats:YES];
+
+    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+    [nc addObserver:self
+           selector:@selector(_themeDidChange:)
+               name:GSThemeDidActivateNotification
+             object:nil];
+    [nc addObserver:self
+           selector:@selector(_themeDidChange:)
+               name:NSSystemColorsDidChangeNotification
+             object:nil];
+
     return self;
 }
 
 - (void)dealloc
 {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [_clockTimer invalidate];
     _clockTimer = nil;
 }
@@ -179,12 +206,20 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 }
 
 /* ---------------------------------------------------------------------- */
+#pragma mark - Theme changes
+
+- (void)_themeDidChange:(NSNotification *)note
+{
+    [self setNeedsDisplay:YES];
+}
+
+/* ---------------------------------------------------------------------- */
 #pragma mark - Clock
 
 - (void)_updateClockString
 {
     NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
-    [fmt setDateFormat:@"HH:mm:ss"];
+    [fmt setDateFormat:@"EEE h:mm a"];
     _clockString = [fmt stringFromDate:[NSDate date]];
 }
 
@@ -261,11 +296,13 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 
     /* Top-level app menu items */
     NSUInteger activeItemIndex = 0;
+    BOOL isFirstMenuItem = YES;
     for (NSDictionary *item in _activeMenuItems) {
         if ([item[kMenuItemSeparator] boolValue]) { activeItemIndex++; continue; }
 
+        NSDictionary *attrs = isFirstMenuItem ? BoldAttrs() : NormalAttrs();
         NSString *title   = item[kMenuItemTitle] ?: @"";
-        NSSize    titleSz = [title sizeWithAttributes:NormalAttrs()];
+        NSSize    titleSz = [title sizeWithAttributes:attrs];
         CGFloat   itemW   = titleSz.width + kItemPad * 2 + 8;
 
         if (leftX + itemW + kBarPad > rightX) break;
@@ -277,19 +314,19 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 
         BOOL isPressed = (_pressedRegion == MenuBarRegionMenuItem + menuIdx);
         BOOL isOpen    = (_openTag       == MenuBarRegionMenuItem + menuIdx);
-        NSString *label = [title stringByAppendingString:@" \u25BE"];
         [self _drawBarButton:itemRect
-                       label:label
-                       attrs:NormalAttrs()
+                       label:title
+                       attrs:attrs
                    isPressed:isPressed
                       isOpen:isOpen];
+        isFirstMenuItem = NO;
 
         leftX += itemW + kItemGap;
         activeItemIndex++;
     }
 
     /* Bottom border */
-    [[NSColor colorWithCalibratedWhite:0.0 alpha:0.4] set];
+    [[[GSTheme theme] menuBarBorderColor] set];
     NSRectFill(NSMakeRect(0, kBarHeight - 1.0, W, 1.0));
 
     /* ================================================================
@@ -378,7 +415,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 
             /* Draw separator line */
             CGFloat lineY = y + rowH * 0.5;
-            [[NSColor colorWithCalibratedWhite:0.45 alpha:0.8] set];
+            [[[GSTheme theme] menuSeparatorColor] set];
             NSBezierPath *line = [NSBezierPath bezierPath];
             [line moveToPoint:NSMakePoint(_dropdownX + kDropPadX,       lineY + 0.5)];
             [line lineToPoint:NSMakePoint(_dropdownX + _dropdownW - kDropPadX, lineY + 0.5)];
