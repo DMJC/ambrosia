@@ -417,6 +417,12 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     _state->screencopy_manager = wlr_screencopy_manager_v1_create(_state->display);
     wlr_log(WLR_DEBUG, "Screencopy manager created");
 
+    /* wp-viewporter — allows clients to crop and scale surface content
+     * without reallocating buffers; required by many Wayland clients
+     * (e.g. video players, game engines) for efficient scaling.           */
+    _state->viewporter = wlr_viewporter_create(_state->display);
+    wlr_log(WLR_DEBUG, "Viewporter created");
+
     /* xdg-output-manager (zxdg_output_manager_v1) — lets clients query logical
      * output geometry (position, size, name) from the compositor's output layout. */
     _state->xdg_output_manager =
@@ -1061,11 +1067,25 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
 
 - (void)handleNewToplevelDecoration:(struct wlr_xdg_toplevel_decoration_v1 *)decoration
 {
-    /* Compositor uses client-side decorations throughout: windows draw their
-     * own chrome (or none at all).  Tell every client to use CSD so GNUstep
-     * panels and borderless windows are never given an unwanted server frame. */
-    wlr_xdg_toplevel_decoration_v1_set_mode(decoration,
-        WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+    /* Always use client-side decorations: GNUstep windows draw their own
+     * chrome and borderless panels must not receive an unwanted server frame.
+     *
+     * wlr_xdg_toplevel_decoration_v1_set_mode() calls
+     * wlr_xdg_surface_schedule_configure(), which asserts surface->initialized.
+     * That flag is set only after the client's first wl_surface.commit, but
+     * new_toplevel_decoration fires before that commit.  When the surface is
+     * not yet initialized, prime scheduled_mode directly; the decoration
+     * module's internal surface_configure listener (WLR_PRIVATE) will include
+     * it in the initial configure that handle_surface_commit schedules on
+     * initial_commit.  If the decoration is bound late (surface already
+     * initialized) the normal path is safe to use immediately. */
+    if (decoration->toplevel->base->initialized) {
+        wlr_xdg_toplevel_decoration_v1_set_mode(decoration,
+            WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+    } else {
+        decoration->scheduled_mode =
+            WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+    }
 }
 
 - (void)handleNewLayerSurface:(struct wlr_layer_surface_v1 *)layer_surface
