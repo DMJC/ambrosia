@@ -18,6 +18,11 @@ static const CGFloat kFallbackScreenH    = 1080.0;
     int32_t       _activeClientPID;
     id            _activateObserver;
     id            _deactivateObserver;
+    /* GFinder running-state tracking. */
+    int32_t       _gfinderPID;        /* 0 = not running */
+    NSString     *_gfinderLaunchPath; /* path seen at launch time */
+    id            _gfinderLaunchObs;
+    id            _gfinderTerminateObs;
 }
 
 @synthesize menuPanel   = _menuPanel;
@@ -31,6 +36,7 @@ static const CGFloat kFallbackScreenH    = 1080.0;
     [self _createPanel];
     [self _startDOServer];
     [self _observeWorkspace];
+    [self _startTrackingGFinder];
 }
 
 /* ---------------------------------------------------------------------- */
@@ -266,6 +272,85 @@ static const CGFloat kFallbackScreenH    = 1080.0;
 }
 
 /* ---------------------------------------------------------------------- */
+#pragma mark - GFinder running-state tracking
+
+- (void)_startTrackingGFinder
+{
+    NSWorkspace *ws = [NSWorkspace sharedWorkspace];
+    __weak typeof(self) weakSelf = self;
+
+    _gfinderLaunchObs = [ws.notificationCenter
+        addObserverForName:NSWorkspaceDidLaunchApplicationNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) {
+        __strong typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSDictionary *info = note.userInfo;
+        NSString *bundleID = info[@"NSApplicationBundleIdentifier"];
+        NSString *name     = info[@"NSApplicationName"];
+        if ([bundleID isEqualToString:@"org.gnustep.GFinder"] ||
+            [name isEqualToString:@"GFinder"]) {
+            strongSelf->_gfinderPID        = [info[@"NSApplicationProcessIdentifier"] intValue];
+            strongSelf->_gfinderLaunchPath = info[@"NSApplicationPath"];
+        }
+    }];
+
+    _gfinderTerminateObs = [ws.notificationCenter
+        addObserverForName:NSWorkspaceDidTerminateApplicationNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) {
+        __strong typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSDictionary *info = note.userInfo;
+        NSString *bundleID = info[@"NSApplicationBundleIdentifier"];
+        NSString *name     = info[@"NSApplicationName"];
+        int32_t   pid      = [info[@"NSApplicationProcessIdentifier"] intValue];
+        if ([bundleID isEqualToString:@"org.gnustep.GFinder"] ||
+            [name isEqualToString:@"GFinder"] ||
+            (pid != 0 && pid == strongSelf->_gfinderPID)) {
+            strongSelf->_gfinderPID        = 0;
+            strongSelf->_gfinderLaunchPath = nil;
+        }
+    }];
+}
+
+- (void)openGFinder
+{
+    if (_gfinderPID != 0) {
+        /* GFinder is already running — ask the compositor to bring it to focus. */
+        NSMutableDictionary *info = [NSMutableDictionary dictionary];
+        info[@"bundleIdentifier"] = @"org.gnustep.GFinder";
+        info[@"appName"]          = @"GFinder";
+        if (_gfinderLaunchPath.length)
+            info[@"launchPath"] = _gfinderLaunchPath;
+        [[NSDistributedNotificationCenter defaultCenter]
+            postNotificationName:@"AmbrosiaActivateApplication"
+                          object:nil
+                        userInfo:info
+              deliverImmediately:YES];
+        return;
+    }
+
+    /* GFinder is not running — launch it. */
+    NSArray<NSString *> *candidates = @[
+        @"/usr/GNUstep/Local/Applications/GFinder.app",
+        @"/usr/GNUstep/System/Applications/GFinder.app",
+        @"/usr/local/GNUstep/Local/Applications/GFinder.app",
+        [NSHomeDirectory() stringByAppendingPathComponent:
+            @"GNUstep/Applications/GFinder.app"],
+    ];
+    for (NSString *path in candidates) {
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            [[NSWorkspace sharedWorkspace] launchApplication:path];
+            return;
+        }
+    }
+    NSLog(@"MenuServer: GFinder.app not found in standard locations.");
+}
+
+/* ---------------------------------------------------------------------- */
 #pragma mark - Panel geometry (called by MenuBarView)
 
 - (void)expandPanelByDropdownHeight:(CGFloat)dropH
@@ -310,6 +395,54 @@ static const CGFloat kFallbackScreenH    = 1080.0;
                           object:nil
                         userInfo:nil
               deliverImmediately:YES];
+    }
+}
+
+- (void)openTerminal
+{
+    NSArray<NSString *> *candidates = @[
+        @"/usr/bin/xterm",
+        @"/usr/bin/x-terminal-emulator",
+        @"/usr/bin/gnome-terminal",
+        @"/usr/bin/konsole",
+        @"/usr/bin/xfce4-terminal",
+        @"/usr/bin/lxterminal",
+        @"/usr/bin/mate-terminal",
+    ];
+    for (NSString *path in candidates) {
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            [[NSWorkspace sharedWorkspace] launchApplication:path];
+            return;
+        }
+    }
+    NSLog(@"MenuServer: no terminal emulator found in standard locations.");
+}
+
+- (void)shutdown
+{
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:@"Shut Down"];
+    [alert setInformativeText:@"Are you sure you want to shut down?"];
+    [alert addButtonWithTitle:@"Shut Down"];
+    [alert addButtonWithTitle:@"Cancel"];
+
+    if ([alert runModal] == NSAlertFirstButtonReturn) {
+        [[NSTask launchedTaskWithLaunchPath:@"/bin/sh"
+                                  arguments:@[@"-c", @"systemctl poweroff"]] waitUntilExit];
+    }
+}
+
+- (void)reboot
+{
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:@"Restart"];
+    [alert setInformativeText:@"Are you sure you want to restart?"];
+    [alert addButtonWithTitle:@"Restart"];
+    [alert addButtonWithTitle:@"Cancel"];
+
+    if ([alert runModal] == NSAlertFirstButtonReturn) {
+        [[NSTask launchedTaskWithLaunchPath:@"/bin/sh"
+                                  arguments:@[@"-c", @"systemctl reboot"]] waitUntilExit];
     }
 }
 

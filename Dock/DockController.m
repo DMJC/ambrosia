@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static NSString *const kPrefsIconSize    = @"iconSize";
@@ -114,9 +115,35 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
 /* ---------------------------------------------------------------------- */
 #pragma mark - NSApplicationDelegate
 
+/**
+ * Override position and sizing with values passed by the Compositor at launch.
+ * The Compositor reads org.gnustep.AmbrosiaDock.plist and forwards the relevant
+ * keys as command-line arguments, making itself the authoritative source of
+ * dock geometry.  Arguments take precedence over anything loaded from the
+ * preferences file so the two sources cannot diverge.
+ */
+- (void)_applyCompositorArgs
+{
+    NSArray<NSString *> *args = [[NSProcessInfo processInfo] arguments];
+    for (NSUInteger i = 0; i + 1 < args.count; i++) {
+        NSString *flag = args[i];
+        NSString *val  = args[i + 1];
+        if ([flag isEqualToString:@"-AmbrosiaPosition"]) {
+            if (val.length) _dockPosition = [val copy];
+        } else if ([flag isEqualToString:@"-AmbrosiaIconSize"]) {
+            double v = [val doubleValue];
+            if (v > 0) _iconSize = v;
+        } else if ([flag isEqualToString:@"-AmbrosiaZoomFactor"]) {
+            double v = [val doubleValue];
+            if (v > 0) _zoomFactor = v;
+        }
+    }
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)note
 {
     [self loadPreferences];
+    [self _applyCompositorArgs];   /* compositor-provided geometry wins */
     [self createDockPanel];
     [self repositionDock];
     [self observeRunningApps];
@@ -459,6 +486,13 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
 
 - (void)reconcileRunningApps
 {
+    /* Reap any children that have exited so they don't linger as zombies.
+     * NSWorkspace launchApplication: uses fork/exec, making launched apps
+     * direct children of this process.  Without reaping, killed apps remain
+     * as zombie entries in the process table until the Dock itself exits. */
+    while (waitpid(-1, NULL, WNOHANG) > 0)
+        ;
+
     BOOL changed = NO;
     for (DockItem *item in [_items copy]) {
         if (!item.isRunning || item.pid <= 0) continue;

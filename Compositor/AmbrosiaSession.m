@@ -362,6 +362,42 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
     menuServer.restartDelaySecs = 2;
 
     /* ---- AmbrosiaDock ---- */
+
+    /* Read dock preferences so the Compositor can pass authoritative geometry
+     * to the Dock at launch.  The Dock uses these args rather than computing
+     * its own position, keeping the Compositor as the single source of truth.
+     *
+     * Probe both GNUstep layout (~/GNUstep/Library/Preferences) and the XDG /
+     * macOS layout (~/Library/Preferences) because the Compositor is a bare
+     * wlroots process and NSSearchPathForDirectoriesInDomains may not return
+     * the GNUstep path reliably outside a full GNUstep application context. */
+    NSString *home = NSHomeDirectory();
+    NSArray<NSString *> *prefsCandidates = @[
+        [home stringByAppendingPathComponent:
+              @"GNUstep/Library/Preferences/org.gnustep.AmbrosiaDock.plist"],
+        [home stringByAppendingPathComponent:
+              @"Library/Preferences/org.gnustep.AmbrosiaDock.plist"],
+    ];
+    NSDictionary *dockPrefs = nil;
+    for (NSString *candidate in prefsCandidates) {
+        dockPrefs = [NSDictionary dictionaryWithContentsOfFile:candidate];
+        if (dockPrefs) break;
+    }
+    dockPrefs = dockPrefs ?: @{};
+
+    NSString *dockPosition = dockPrefs[@"dockPosition"] ?: @"bottom";
+    double    iconSize     = [dockPrefs[@"iconSize"]    doubleValue];
+    double    zoomFactor   = [dockPrefs[@"zoomFactor"]  doubleValue];
+    if (iconSize   <= 0) iconSize   = 48.0;
+    if (zoomFactor <= 0) zoomFactor = 1.7;
+
+    NSArray<NSString *> *dockArgs =
+        [gnustepWaylandArgs arrayByAddingObjectsFromArray:@[
+            @"-AmbrosiaPosition",   dockPosition,
+            @"-AmbrosiaIconSize",   [NSString stringWithFormat:@"%.1f", iconSize],
+            @"-AmbrosiaZoomFactor", [NSString stringWithFormat:@"%.2f", zoomFactor],
+        ]];
+
     NSString *dockExec = findExecutable(candidatePaths(@"AmbrosiaDock.app",
                                                        @"AmbrosiaDock"));
     if (!dockExec) dockExec = @"AmbrosiaDock"; /* fallback: hope it is in PATH */
@@ -369,7 +405,7 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
     AmbrosiaSessionProcess *dock =
         [session addProcessNamed:@"AmbrosiaDock"
                         execPath:dockExec
-                       arguments:gnustepWaylandArgs];
+                       arguments:dockArgs];
     dock.restartDelaySecs = 2;
 
     /* ---- GFinder ---- */

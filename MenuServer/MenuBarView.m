@@ -683,8 +683,12 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
         @{ kSysItemTitle: @"About Ambrosia\u2026",       kSysItemSel: @"_doAbout" },
         @{ kSysItemSep: @YES },
         @{ kSysItemTitle: @"System Preferences\u2026",   kSysItemSel: @"_doPreferences" },
+        @{ kSysItemTitle: @"Open Terminal",              kSysItemSel: @"_doTerminal" },
+        @{ kSysItemTitle: @"Files",                      kSysItemSel: @"_doGFinder" },
         @{ kSysItemSep: @YES },
         @{ kSysItemTitle: @"Log Out\u2026",              kSysItemSel: @"_doLogout" },
+        @{ kSysItemTitle: @"Shut Down\u2026",            kSysItemSel: @"_doShutdown" },
+        @{ kSysItemTitle: @"Restart\u2026",              kSysItemSel: @"_doReboot" },
     ];
 }
 
@@ -700,7 +704,11 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 
 - (void)_doAbout       { [_controller showAbout]; }
 - (void)_doPreferences { [_controller openSystemPreferences]; }
+- (void)_doTerminal    { [_controller openTerminal]; }
+- (void)_doGFinder     { [_controller openGFinder]; }
 - (void)_doLogout      { [_controller logout]; }
+- (void)_doShutdown    { [_controller shutdown]; }
+- (void)_doReboot      { [_controller reboot]; }
 
 /* ---------------------------------------------------------------------- */
 #pragma mark - App-menu action handlers (kept for compatibility)

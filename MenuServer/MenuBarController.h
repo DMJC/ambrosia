@@ -33,8 +33,20 @@
 /** Open System Preferences if installed. */
 - (void)openSystemPreferences;
 
+/** Bring GFinder to focus if already running, otherwise launch it. */
+- (void)openGFinder;
+
+/** Launch a terminal emulator. */
+- (void)openTerminal;
+
 /** Post the AmbrosiaLogoutRequest notification (with confirmation alert). */
 - (void)logout;
+
+/** Shut the system down (with confirmation alert). */
+- (void)shutdown;
+
+/** Reboot the system (with confirmation alert). */
+- (void)reboot;
 
 /* ---- Panel geometry (called by MenuBarView for inline dropdowns) ---- */
 
