@@ -6,7 +6,8 @@ MenuServer_OBJC_FILES = \
 	main.m \
 	AppDelegate.m \
 	MenuBarController.m \
-	MenuBarView.m
+	MenuBarView.m \
+	BluetoothStatusItem.m
 
 MenuServer_OBJCFLAGS  = -fobjc-arc
 MenuServer_LDFLAGS    =

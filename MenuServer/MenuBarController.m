@@ -9,20 +9,22 @@ static const CGFloat kFallbackWidth      = 1920.0;
 static const CGFloat kFallbackScreenH    = 1080.0;
 
 @implementation MenuBarController {
-    NSPanel      *_menuPanel;
-    MenuBarView  *_menuBarView;
-    NSConnection *_doConnection;
-    NSString     *_activeAppName;
-    NSArray      *_activeMenuItems;
+    NSPanel              *_menuPanel;
+    MenuBarView          *_menuBarView;
+    NSConnection         *_doConnection;
+    NSString             *_activeAppName;
+    NSArray              *_activeMenuItems;
     /* PID of the DO-registered active app, or 0 if no app has registered. */
-    int32_t       _activeClientPID;
-    id            _activateObserver;
-    id            _deactivateObserver;
+    int32_t               _activeClientPID;
+    id                    _activateObserver;
+    id                    _deactivateObserver;
     /* GFinder running-state tracking. */
-    int32_t       _gfinderPID;        /* 0 = not running */
-    NSString     *_gfinderLaunchPath; /* path seen at launch time */
-    id            _gfinderLaunchObs;
-    id            _gfinderTerminateObs;
+    int32_t               _gfinderPID;        /* 0 = not running */
+    NSString             *_gfinderLaunchPath; /* path seen at launch time */
+    id                    _gfinderLaunchObs;
+    id                    _gfinderTerminateObs;
+    /* Status item plugins */
+    BluetoothStatusItem  *_bluetoothItem;
 }
 
 @synthesize menuPanel   = _menuPanel;
@@ -37,6 +39,19 @@ static const CGFloat kFallbackScreenH    = 1080.0;
     [self _startDOServer];
     [self _observeWorkspace];
     [self _startTrackingGFinder];
+    [self _setupStatusPlugins];
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Status item plugins
+
+- (void)_setupStatusPlugins
+{
+    /* Create the Bluetooth status item and wire its delegate to the bar view
+     * so it can request redraws after async refreshes.                      */
+    _bluetoothItem = [[BluetoothStatusItem alloc] init];
+    _bluetoothItem.pluginDelegate = _menuBarView;
+    _menuBarView.statusPlugins    = @[ _bluetoothItem ];
 }
 
 /* ---------------------------------------------------------------------- */

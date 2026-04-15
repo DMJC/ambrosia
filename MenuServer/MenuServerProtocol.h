@@ -35,6 +35,14 @@ static NSString * const kMenuItemSeparator  = @"separator";
 static NSString * const kMenuItemKeyEquiv   = @"keyEquiv";
 static NSString * const kMenuItemChildren   = @"children";
 
+/*
+ * kMenuItemGrayed — NSNumber (BOOL).
+ * When YES the item title is drawn in the disabled/grey colour but the item
+ * remains clickable (enabled).  Useful for status bar plugins that want to
+ * visually distinguish states without preventing interaction.
+ */
+static NSString * const kMenuItemGrayed     = @"grayed";
+
 /* ---- Menu-item selection notification (NSDistributedNotificationCenter) ----
  *
  * MenuServer posts this notification on NSDistributedNotificationCenter when

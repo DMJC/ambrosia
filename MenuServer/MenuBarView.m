@@ -23,10 +23,11 @@ static const CGFloat kDropExtraBot   = 4.0;    /* extra padding below last item 
 
 /* ---- Hit-region tags ---- */
 typedef NS_ENUM(NSInteger, MenuBarRegion) {
-    MenuBarRegionNone     = -1,
-    MenuBarRegionAmbrosia =  0,
-    MenuBarRegionSession  =  1,
-    MenuBarRegionMenuItem =  100,  /* items >= 100; index = tag − 100 */
+    MenuBarRegionNone        = -1,
+    MenuBarRegionAmbrosia    =  0,
+    MenuBarRegionSession     =  1,
+    MenuBarRegionStatusItem  =  50,   /* plugins 50…99; index = tag − 50  */
+    MenuBarRegionMenuItem    =  100,  /* items >= 100; index = tag − 100  */
 };
 
 /* ---- NSDictionary keys for system-menu item descriptors ---- */
@@ -106,6 +107,17 @@ static NSDictionary *DropItemAttrs(BOOL highlighted)
         NSFontAttributeName: MenuFont(),
     };
 }
+static NSDictionary *GrayedItemAttrs(BOOL highlighted)
+{
+    /* Like DisabledAttrs but the item is still clickable. */
+    NSColor *fg = highlighted
+        ? [NSColor selectedMenuItemTextColor]
+        : [NSColor disabledControlTextColor];
+    return @{
+        NSForegroundColorAttributeName: fg,
+        NSFontAttributeName: MenuFont(),
+    };
+}
 
 /* Centre a string rect vertically inside a bar-item rect */
 static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
@@ -128,6 +140,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     NSRect              _appNameRect;
     NSMutableArray     *_menuRects;        /* NSValue(NSRect) per clickable top-level item */
     NSMutableArray     *_menuItemIndices;  /* NSNumber: index into _activeMenuItems */
+    NSMutableArray     *_pluginRects;      /* NSValue(NSRect) per status plugin button */
     NSRect              _clockRect;
     NSRect              _sessionRect;
     NSInteger           _pressedRegion;    /* MenuBarRegion; -1 = none */
@@ -135,11 +148,15 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     /* ---- Inline dropdown state ---- */
     NSInteger           _openTag;          /* which header is open (MenuBarRegion); -1 = none */
     NSArray            *_openDescriptors;  /* items for open dropdown; NSDictionary array */
+    /* When the open dropdown belongs to a plugin, store the plugin index. */
+    NSInteger           _openPluginIdx;    /* -1 if not a plugin dropdown */
     NSMutableArray     *_dropdownRects;    /* NSValue(NSRect) per dropdown row (view coords) */
     CGFloat             _dropdownX;        /* left edge of open dropdown */
     CGFloat             _dropdownW;        /* width of open dropdown */
     NSInteger           _hoveredIdx;       /* hovered item index (-1 = none) */
 }
+
+@synthesize statusPlugins = _statusPlugins;
 
 /* ---------------------------------------------------------------------- */
 #pragma mark - Initialisation
@@ -151,9 +168,11 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 
     _menuRects       = [NSMutableArray array];
     _menuItemIndices = [NSMutableArray array];
+    _pluginRects     = [NSMutableArray array];
     _dropdownRects   = [NSMutableArray array];
     _pressedRegion   = MenuBarRegionNone;
     _openTag         = MenuBarRegionNone;
+    _openPluginIdx   = -1;
     _hoveredIdx      = -1;
 
     [self _updateClockString];
@@ -206,6 +225,15 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 }
 
 /* ---------------------------------------------------------------------- */
+#pragma mark - AmbrosiaStatusItemPluginDelegate
+
+- (void)statusItemPluginDidUpdate:(id<AmbrosiaStatusItemPlugin>)plugin
+{
+    /* Redraw the bar so the plugin's label (and open dropdown) refresh. */
+    [self setNeedsDisplay:YES];
+}
+
+/* ---------------------------------------------------------------------- */
 #pragma mark - Theme changes
 
 - (void)_themeDidChange:(NSNotification *)note
@@ -253,6 +281,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 
     [_menuRects removeAllObjects];
     [_menuItemIndices removeAllObjects];
+    [_pluginRects removeAllObjects];
 
     CGFloat leftX  = kBarPad;
     CGFloat rightX = W - kBarPad;
@@ -278,6 +307,31 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     _clockRect = NSMakeRect(rightX - clockW, 0, clockW, kBarHeight);
     [self _drawLabelInRect:_clockRect label:clock attrs:NormalAttrs()];
     rightX -= clockW + kItemGap;
+
+    /* ---- RIGHT SIDE: status item plugins (right-to-left) ---- */
+    NSArray<id<AmbrosiaStatusItemPlugin>> *plugins = _statusPlugins;
+    for (NSInteger pi = (NSInteger)plugins.count - 1; pi >= 0; pi--) {
+        id<AmbrosiaStatusItemPlugin> plugin = plugins[(NSUInteger)pi];
+        NSString *label = plugin.barLabel;
+        if (!label.length) continue;
+
+        NSSize   lblSz  = [label sizeWithAttributes:NormalAttrs()];
+        CGFloat  itemW  = lblSz.width + kItemPad * 2;
+        NSRect   pRect  = NSMakeRect(rightX - itemW, 0, itemW, kBarHeight);
+
+        /* Pad _pluginRects so index pi maps to the right slot. */
+        while ((NSInteger)_pluginRects.count <= pi)
+            [_pluginRects addObject:[NSValue valueWithRect:NSZeroRect]];
+        _pluginRects[(NSUInteger)pi] = [NSValue valueWithRect:pRect];
+
+        NSInteger tag = MenuBarRegionStatusItem + pi;
+        [self _drawBarButton:pRect
+                       label:label
+                       attrs:NormalAttrs()
+                   isPressed:(_pressedRegion == tag)
+                      isOpen:(_openTag == tag)];
+        rightX -= itemW + kItemGap;
+    }
 
     /* ---- LEFT SIDE: Ambrosia button ---- */
     NSString *ambStr = @"  Ambrosia  ";
@@ -426,6 +480,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
         } else {
             BOOL enabled = item[kMenuItemEnabled]
                            ? [item[kMenuItemEnabled] boolValue] : YES;
+            BOOL grayed  = [item[kMenuItemGrayed] boolValue];
             BOOL hovered = (_hoveredIdx == (NSInteger)idx);
             CGFloat rowH = kDropItemH;
             NSRect rowRect = NSMakeRect(_dropdownX, y, _dropdownW, rowH);
@@ -437,9 +492,13 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
             }
 
             NSString *title = item[kSysItemTitle] ?: item[kMenuItemTitle] ?: @"";
-            NSDictionary *attrs = enabled
-                                  ? DropItemAttrs(hovered)
-                                  : DisabledAttrs();
+            NSDictionary *attrs;
+            if (!enabled)
+                attrs = DisabledAttrs();
+            else if (grayed)
+                attrs = GrayedItemAttrs(hovered);
+            else
+                attrs = DropItemAttrs(hovered);
             NSSize sz = [title sizeWithAttributes:attrs];
             CGFloat textY = y + (rowH - sz.height) * 0.5;
             [title drawAtPoint:NSMakePoint(_dropdownX + kDropPadX, textY)
@@ -500,13 +559,17 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
                  * click sequence is drained, including button-UP. Otherwise
                  * button-UP can land on the just-opened alert and immediately
                  * trigger the default button, closing the alert before the
-                 * user can interact with it.                                 */
+                 * user can interact with it.
+                 *
+                 * Capture _openPluginIdx NOW — _closeDropdown resets it to -1,
+                 * so the deferred block would never route to the plugin.      */
+                NSInteger capturedPluginIdx = _openPluginIdx;
                 [self _closeDropdown];
                 NSDictionary *deferred = item;
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                              (int64_t)(0.18 * NSEC_PER_SEC)),
                                dispatch_get_main_queue(), ^{
-                    [self _activateDropdownItem:deferred];
+                    [self _activateDropdownItem:deferred pluginIdx:capturedPluginIdx];
                 });
             }
             return;
@@ -556,6 +619,11 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 
     if (NSPointInRect(pt, _ambrosiaRect)) return MenuBarRegionAmbrosia;
     if (NSPointInRect(pt, _sessionRect))  return MenuBarRegionSession;
+    for (NSUInteger i = 0; i < _pluginRects.count; i++) {
+        NSRect r = [_pluginRects[i] rectValue];
+        if (r.size.width == 0 && r.size.height == 0) continue;
+        if (NSPointInRect(pt, r)) return MenuBarRegionStatusItem + (NSInteger)i;
+    }
     for (NSUInteger i = 0; i < _menuRects.count; i++) {
         NSRect r = [[_menuRects objectAtIndex:i] rectValue];
         if (NSPointInRect(pt, r)) return MenuBarRegionMenuItem + (NSInteger)i;
@@ -595,6 +663,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     if (_openTag != MenuBarRegionNone) {
         _openTag         = MenuBarRegionNone;
         _openDescriptors = nil;
+        _openPluginIdx   = -1;
         [_dropdownRects removeAllObjects];
         _hoveredIdx = -1;
         /* Panel is already expanded; we'll resize it below. */
@@ -603,6 +672,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 
     NSArray *descriptors = nil;
     CGFloat openX = 0;
+    _openPluginIdx = -1;
 
     if (region == MenuBarRegionAmbrosia) {
         descriptors = [self _systemDescriptorsForAmbrosia];
@@ -610,6 +680,17 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     } else if (region == MenuBarRegionSession) {
         descriptors = [self _systemDescriptorsForSession];
         openX = _sessionRect.origin.x;
+    } else if (region >= MenuBarRegionStatusItem &&
+               region < MenuBarRegionMenuItem) {
+        NSInteger pi = region - MenuBarRegionStatusItem;
+        NSArray<id<AmbrosiaStatusItemPlugin>> *plugins = _statusPlugins;
+        if (pi < (NSInteger)plugins.count) {
+            id<AmbrosiaStatusItemPlugin> plugin = plugins[(NSUInteger)pi];
+            descriptors = plugin.dropdownItems;
+            if (pi < (NSInteger)_pluginRects.count)
+                openX = [_pluginRects[(NSUInteger)pi] rectValue].origin.x;
+            _openPluginIdx = pi;
+        }
     } else if (region >= MenuBarRegionMenuItem) {
         NSInteger idx = region - MenuBarRegionMenuItem;
         if (idx < (NSInteger)_menuItemIndices.count) {
@@ -644,6 +725,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     if (_openTag == MenuBarRegionNone) return;
     _openTag         = MenuBarRegionNone;
     _openDescriptors = nil;
+    _openPluginIdx   = -1;
     [_dropdownRects removeAllObjects];
     _hoveredIdx = -1;
     [_controller contractPanelDropdown];
@@ -653,8 +735,19 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 /* ---------------------------------------------------------------------- */
 #pragma mark - Dropdown item activation
 
-- (void)_activateDropdownItem:(NSDictionary *)item
+- (void)_activateDropdownItem:(NSDictionary *)item pluginIdx:(NSInteger)pluginIdx
 {
+    /* Plugin items: route to the plugin that owned this dropdown.
+     * pluginIdx is captured before _closeDropdown clears _openPluginIdx. */
+    if (pluginIdx >= 0) {
+        NSArray<id<AmbrosiaStatusItemPlugin>> *plugins = _statusPlugins;
+        if (pluginIdx < (NSInteger)plugins.count) {
+            id<AmbrosiaStatusItemPlugin> plugin = plugins[(NSUInteger)pluginIdx];
+            [plugin activateItem:item];
+        }
+        return;
+    }
+
     /* System-menu items carry a selector name */
     NSString *selName = item[kSysItemSel];
     if (selName.length) {
