@@ -1,6 +1,8 @@
 #import <AppKit/AppKit.h>
 #import "MenuServerProtocol.h"
 #import "BluetoothStatusItem.h"
+#import "WiFiStatusItem.h"
+#import "VolumeStatusItem.h"
 
 @class MenuBarView;
 

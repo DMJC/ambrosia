@@ -30,6 +30,8 @@
 - (void)focusNextWindowExcluding:(AmbrosiaView *)excluded;
 /** Called from handle_activate_pipe on the wl_event_loop thread. */
 - (void)_focusApplicationFromActivateRequest;
+/** Called from handle_session_pipe on the wl_event_loop thread. */
+- (void)_applySessionPrefsUpdate;
 @end
 
 /* --------------------------------------------------------------------------
@@ -48,6 +50,22 @@ static void handle_new_output(struct wl_listener *listener, void *data)
         wl_container_of(listener, s, new_output);
     AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)s->objc_compositor;
     [c handleNewOutput:(struct wlr_output *)data];
+}
+
+static void handle_output_manager_apply(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_compositor_state *s =
+        wl_container_of(listener, s, output_manager_apply);
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)s->objc_compositor;
+    [c handleOutputManagerApply:(struct wlr_output_configuration_v1 *)data];
+}
+
+static void handle_output_manager_test(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_compositor_state *s =
+        wl_container_of(listener, s, output_manager_test);
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)s->objc_compositor;
+    [c handleOutputManagerTest:(struct wlr_output_configuration_v1 *)data];
 }
 
 static void handle_new_xdg_toplevel(struct wl_listener *listener, void *data)
@@ -176,6 +194,16 @@ static int handle_activate_pipe(int fd, uint32_t mask, void *data)
     return 0;
 }
 
+/* Session-prefs pipe watcher — called on the compositor's wl_event_loop thread */
+static int handle_session_pipe(int fd, uint32_t mask, void *data)
+{
+    char byte;
+    while (read(fd, &byte, 1) == 1) {} /* drain all queued bytes */
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)data;
+    [c _applySessionPrefsUpdate];
+    return 0;
+}
+
 /* --------------------------------------------------------------------------
  * Per-popup state: wlroots 0.18+ requires the compositor to send a configure
  * in response to initial_commit for popups just as it does for toplevels.
@@ -278,6 +306,11 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     NSString *_pendingActivateLaunchPath;
     NSString *_pendingActivateAppName;
     NSLock   *_activateLock;
+
+    /* Pending session-prefs update — written by the notification thread,
+     * consumed by the compositor's wl_event_loop thread.              */
+    NSArray  *_pendingSessionItems;
+    NSLock   *_sessionLock;
 }
 
 @synthesize state         = _state;
@@ -295,6 +328,7 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     _outputs       = [NSMutableArray array];
     _layerSurfaces = [NSMutableArray array];
     _activateLock  = [[NSLock alloc] init];
+    _sessionLock   = [[NSLock alloc] init];
     _state   = calloc(1, sizeof(struct ambrosia_compositor_state));
     if (!_state) return nil;
 
@@ -429,6 +463,12 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         wlr_xdg_output_manager_v1_create(_state->display, _state->output_layout);
     wlr_log(WLR_DEBUG, "XDG output manager created");
 
+    /* wlr-output-management-unstable-v1 — lets clients (e.g. wlr-randr, kanshi)
+     * enumerate outputs and request configuration changes (mode, scale, position,
+     * transform, enable/disable, adaptive sync).                                 */
+    _state->output_manager = wlr_output_manager_v1_create(_state->display);
+    wlr_log(WLR_DEBUG, "Output manager created");
+
     /* Seat */
     _state->seat = wlr_seat_create(_state->display, "seat0");
     wlr_log(WLR_DEBUG, "Seat 'seat0' created");
@@ -480,6 +520,12 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     _state->request_set_selection.notify = handle_request_set_selection;
     wl_signal_add(&_state->seat->events.request_set_selection, &_state->request_set_selection);
 
+    _state->output_manager_apply.notify = handle_output_manager_apply;
+    wl_signal_add(&_state->output_manager->events.apply, &_state->output_manager_apply);
+
+    _state->output_manager_test.notify = handle_output_manager_test;
+    wl_signal_add(&_state->output_manager->events.test, &_state->output_manager_test);
+
     /* Input handler */
     _input = [[AmbrosiaInput alloc] initWithCompositor:self];
 
@@ -521,6 +567,26 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         _state->activate_pipe[0],
         WL_EVENT_READABLE,
         handle_activate_pipe,
+        (__bridge void *)self);
+
+    /* Session-prefs self-pipe: background NSRunLoop thread → wl_event_loop */
+    if (pipe(_state->session_pipe) != 0) {
+        wlr_log(WLR_ERROR, "Failed to create session pipe: %s", strerror(errno));
+        if (error) *error = [NSError errorWithDomain:@"AmbrosiaCompositor"
+                                                code:7
+                                            userInfo:@{NSLocalizedDescriptionKey:@"Failed to create session pipe"}];
+        return NO;
+    }
+    for (int i = 0; i < 2; i++) {
+        fcntl(_state->session_pipe[i], F_SETFD, FD_CLOEXEC);
+        fcntl(_state->session_pipe[i], F_SETFL,
+              fcntl(_state->session_pipe[i], F_GETFL) | O_NONBLOCK);
+    }
+    _state->session_source = wl_event_loop_add_fd(
+        _state->event_loop,
+        _state->session_pipe[0],
+        WL_EVENT_READABLE,
+        handle_session_pipe,
         (__bridge void *)self);
 
     wlr_log(WLR_INFO, "Ambrosia: compositor setup complete");
@@ -580,6 +646,12 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     }
     close(_state->activate_pipe[0]);
     close(_state->activate_pipe[1]);
+    if (_state->session_source) {
+        wl_event_source_remove(_state->session_source);
+        _state->session_source = NULL;
+    }
+    close(_state->session_pipe[0]);
+    close(_state->session_pipe[1]);
 
     /* Tear down all Wayland client connections first.  This causes gnustep-back
      * inside each session process to receive a connection error, which unblocks
@@ -1025,7 +1097,106 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         wlr_log(WLR_INFO, "Output %s: %dx%d @ %d mHz",
                 output->name, cur_mode->width, cur_mode->height, cur_mode->refresh);
     }
+
+    [self notifyOutputManager];
 }
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Output management (wlr-output-management-unstable-v1)
+
+/**
+ * Broadcasts the current output configuration to all connected
+ * wlr-output-management clients.  Must be called whenever the set of
+ * active outputs changes or a configuration is applied.
+ */
+- (void)notifyOutputManager
+{
+    if (!_state->output_manager) return;
+
+    struct wlr_output_configuration_v1 *config =
+        wlr_output_configuration_v1_create();
+
+    /* wlr_output_configuration_head_v1_create() auto-fills state (enabled,
+     * mode, scale, transform, position, adaptive_sync) from the output and
+     * output-layout objects.                                                */
+    for (AmbrosiaOutput *ambOutput in _outputs) {
+        wlr_output_configuration_head_v1_create(config, ambOutput.state->output);
+    }
+
+    /* Transfers ownership of config to the manager. */
+    wlr_output_manager_v1_set_configuration(_state->output_manager, config);
+}
+
+/**
+ * Apply a client-requested output configuration atomically.
+ * Uses wlr_backend_test then wlr_backend_commit so that either ALL
+ * outputs transition to the new state or none do.
+ */
+- (void)handleOutputManagerApply:(struct wlr_output_configuration_v1 *)config
+{
+    size_t states_len = 0;
+    struct wlr_backend_output_state *states =
+        wlr_output_configuration_v1_build_state(config, &states_len);
+
+    BOOL ok = NO;
+    if (states) {
+        /* Test before committing so we don't leave outputs in a broken state */
+        ok = wlr_backend_test(_state->backend, states, states_len);
+        if (ok) {
+            ok = wlr_backend_commit(_state->backend, states, states_len);
+        }
+        free(states);
+    }
+
+    if (ok) {
+        /* Update output-layout positions for every enabled head.
+         * wlr_output_layout_add() switches the output from auto-placed to
+         * explicitly positioned, honouring whatever the client requested.   */
+        struct wlr_output_configuration_head_v1 *head;
+        wl_list_for_each(head, &config->heads, link) {
+            if (!head->state.enabled) continue;
+            wlr_output_layout_add(_state->output_layout,
+                                  head->state.output,
+                                  head->state.x,
+                                  head->state.y);
+        }
+        wlr_output_configuration_v1_send_succeeded(config);
+        wlr_log(WLR_INFO, "Output manager: configuration applied");
+    } else {
+        wlr_output_configuration_v1_send_failed(config);
+        wlr_log(WLR_ERROR, "Output manager: configuration apply failed");
+    }
+
+    /* Config ownership transfers to us on the apply signal; destroy it now. */
+    wlr_output_configuration_v1_destroy(config);
+
+    /* Broadcast updated state regardless of success so clients stay in sync. */
+    [self notifyOutputManager];
+}
+
+/**
+ * Test a client-requested output configuration without committing it.
+ * Sends succeeded/failed feedback but makes no persistent changes.
+ */
+- (void)handleOutputManagerTest:(struct wlr_output_configuration_v1 *)config
+{
+    size_t states_len = 0;
+    struct wlr_backend_output_state *states =
+        wlr_output_configuration_v1_build_state(config, &states_len);
+
+    BOOL ok = (states != NULL) &&
+              wlr_backend_test(_state->backend, states, states_len);
+    free(states);
+
+    if (ok) {
+        wlr_output_configuration_v1_send_succeeded(config);
+    } else {
+        wlr_output_configuration_v1_send_failed(config);
+    }
+    wlr_output_configuration_v1_destroy(config);
+}
+
+/* ---------------------------------------------------------------------- */
 
 - (void)handleNewXdgToplevel:(struct wlr_xdg_toplevel *)toplevel
 {
@@ -1484,8 +1655,14 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
            selector:@selector(_handleActivateApplicationNotification:)
                name:@"AmbrosiaActivateApplication"
              object:nil];
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_handleSessionPrefsNotification:)
+               name:@"AmbrosiaSessionPrefsChanged"
+             object:nil];
     wlr_log(WLR_DEBUG,
-        "Notification listener running (AmbrosiaLogoutRequest, AmbrosiaActivateApplication)");
+        "Notification listener running (AmbrosiaLogoutRequest, AmbrosiaActivateApplication,"
+        " AmbrosiaSessionPrefsChanged)");
     /* Runs until the process exits; the observer keeps the loop alive. */
     [[NSRunLoop currentRunLoop] run];
 }
@@ -1510,6 +1687,34 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     [_activateLock unlock];
     char byte = 1;
     (void)write(_state->activate_pipe[1], &byte, 1);
+}
+
+- (void)_handleSessionPrefsNotification:(NSNotification *)note
+{
+    NSArray *items = note.userInfo[@"sessionItems"] ?: @[];
+    wlr_log(WLR_DEBUG, "AmbrosiaSessionPrefsChanged: %lu item(s)",
+            (unsigned long)items.count);
+    [_sessionLock lock];
+    _pendingSessionItems = items;
+    [_sessionLock unlock];
+    char byte = 1;
+    (void)write(_state->session_pipe[1], &byte, 1);
+}
+
+/**
+ * Called on the wl_event_loop thread when the session pipe becomes readable.
+ * Applies the pending session-prefs update to the running session manager.
+ */
+- (void)_applySessionPrefsUpdate
+{
+    [_sessionLock lock];
+    NSArray *items = _pendingSessionItems;
+    _pendingSessionItems = nil;
+    [_sessionLock unlock];
+
+    wlr_log(WLR_INFO, "session: applying prefs update (%lu item(s))",
+            (unsigned long)items.count);
+    [_session syncUserApps:items];
 }
 
 /**

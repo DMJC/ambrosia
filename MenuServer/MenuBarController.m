@@ -8,6 +8,21 @@ static const CGFloat kBarHeight          = 24.0;
 static const CGFloat kFallbackWidth      = 1920.0;
 static const CGFloat kFallbackScreenH    = 1080.0;
 
+/* Shared plist path for menu-bar visibility prefs written by SystemPreferences. */
+static NSString *MenuBarPrefsPath(void)
+{
+    return [NSHomeDirectory() stringByAppendingPathComponent:
+            @"GNUstep/Defaults/AmbrosiaMenuBar.plist"];
+}
+
+static BOOL ReadMenuBarPref(NSString *key)
+{
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:MenuBarPrefsPath()];
+    return [prefs[key] boolValue];
+}
+
+/* ---------------------------------------------------------------------- */
+
 @implementation MenuBarController {
     NSPanel              *_menuPanel;
     MenuBarView          *_menuBarView;
@@ -25,6 +40,8 @@ static const CGFloat kFallbackScreenH    = 1080.0;
     id                    _gfinderTerminateObs;
     /* Status item plugins */
     BluetoothStatusItem  *_bluetoothItem;
+    WiFiStatusItem       *_wifiItem;
+    VolumeStatusItem     *_volumeItem;
 }
 
 @synthesize menuPanel   = _menuPanel;
@@ -40,6 +57,7 @@ static const CGFloat kFallbackScreenH    = 1080.0;
     [self _observeWorkspace];
     [self _startTrackingGFinder];
     [self _setupStatusPlugins];
+    [self _observeMenuBarPrefs];
 }
 
 /* ---------------------------------------------------------------------- */
@@ -47,11 +65,52 @@ static const CGFloat kFallbackScreenH    = 1080.0;
 
 - (void)_setupStatusPlugins
 {
-    /* Create the Bluetooth status item and wire its delegate to the bar view
-     * so it can request redraws after async refreshes.                      */
+    /* Always show Bluetooth. Wi-Fi and Volume are opt-in via SystemPreferences
+     * checkboxes; they write ShowWiFiMenu / ShowVolumeMenu to the plist below. */
     _bluetoothItem = [[BluetoothStatusItem alloc] init];
     _bluetoothItem.pluginDelegate = _menuBarView;
-    _menuBarView.statusPlugins    = @[ _bluetoothItem ];
+
+    NSMutableArray *plugins = [NSMutableArray arrayWithObject:_bluetoothItem];
+
+    /* Plugins are drawn right-to-left: index 0 is rightmost (closest to clock).
+     * Desired bar order (right→left): BT | Wi-Fi | Vol               */
+    if (ReadMenuBarPref(@"ShowWiFiMenu")) {
+        _wifiItem = [[WiFiStatusItem alloc] init];
+        _wifiItem.pluginDelegate = _menuBarView;
+        [plugins insertObject:_wifiItem atIndex:0];
+    } else {
+        _wifiItem = nil;
+    }
+
+    if (ReadMenuBarPref(@"ShowVolumeMenu")) {
+        _volumeItem = [[VolumeStatusItem alloc] init];
+        _volumeItem.pluginDelegate = _menuBarView;
+        [plugins insertObject:_volumeItem atIndex:0];
+    } else {
+        _volumeItem = nil;
+    }
+
+    _menuBarView.statusPlugins = plugins;
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Menu-bar preference change notification
+
+- (void)_observeMenuBarPrefs
+{
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_menuBarPrefsChanged:)
+               name:@"AmbrosiaMenuBarPrefsChanged"
+             object:nil
+  suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
+}
+
+- (void)_menuBarPrefsChanged:(NSNotification *)note
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self _setupStatusPlugins];
+    });
 }
 
 /* ---------------------------------------------------------------------- */

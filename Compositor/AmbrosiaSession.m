@@ -13,6 +13,23 @@
  * -------------------------------------------------------------------------- */
 
 /**
+ * Return the GNUstep user preferences directory.
+ * Reads GNUSTEP_USER_LIBRARY from the environment (set by GNUstep.sh) and
+ * appends "Preferences".  Falls back to ~/GNUstep/Library/Preferences when
+ * the variable is not present so the compositor works without GNUstep.sh.
+ */
+static NSString *gnustepPrefsDirectory(void)
+{
+    const char *userLib = getenv("GNUSTEP_USER_LIBRARY");
+    if (userLib && userLib[0]) {
+        return [[NSString stringWithUTF8String:userLib]
+                stringByAppendingPathComponent:@"Preferences"];
+    }
+    return [NSHomeDirectory()
+            stringByAppendingPathComponent:@"GNUstep/Library/Preferences"];
+}
+
+/**
  * Search a set of candidate paths and return the first that exists.
  * Returns nil if none found.
  */
@@ -276,11 +293,12 @@ done:
 
             proc.pid = 0;
 
-            if (_stopping) {
+            if (_stopping || proc.disabled) {
                 wlr_log(WLR_INFO,
-                        "session: '%s' (pid %d) exited (%s %d) — session stopping, no restart",
+                        "session: '%s' (pid %d) exited (%s %d) — %s, no restart",
                         [proc.name UTF8String], pid,
-                        normal ? "exit" : "signal", code);
+                        normal ? "exit" : "signal", code,
+                        _stopping ? "session stopping" : "process disabled");
             } else {
                 wlr_log(WLR_INFO,
                         "session: '%s' (pid %d) exited (%s %d) — scheduling restart",
@@ -295,8 +313,64 @@ done:
 
 - (void)restartProcess:(AmbrosiaSessionProcess *)process
 {
+    if (process.disabled) {
+        wlr_log(WLR_INFO, "session: '%s' disabled — skipping restart",
+                [process.name UTF8String]);
+        return;
+    }
     wlr_log(WLR_INFO, "session: restarting '%s'", [process.name UTF8String]);
     [process launch];
+}
+
+- (void)syncUserApps:(NSArray<NSDictionary *> *)items
+{
+    /* Build a lookup of existing user-managed processes by path */
+    NSMutableDictionary<NSString *, AmbrosiaSessionProcess *> *existing =
+        [NSMutableDictionary dictionary];
+    for (AmbrosiaSessionProcess *proc in _processes) {
+        if (proc.userManaged) existing[proc.execPath] = proc;
+    }
+
+    /* Build a set of paths that should remain enabled */
+    NSMutableSet<NSString *> *enabledPaths = [NSMutableSet set];
+    for (NSDictionary *item in items) {
+        if ([item[@"enabled"] boolValue]) {
+            NSString *path = item[@"path"];
+            if (path.length) [enabledPaths addObject:path];
+        }
+    }
+
+    /* Disable/terminate processes that are no longer enabled */
+    for (NSString *path in existing) {
+        if (![enabledPaths containsObject:path]) {
+            AmbrosiaSessionProcess *proc = existing[path];
+            proc.disabled = YES;
+            [proc terminate];
+            [_processes removeObject:proc];
+            wlr_log(WLR_INFO, "session: removed user app '%s'",
+                    [proc.name UTF8String]);
+        }
+    }
+
+    /* Add and launch newly enabled processes */
+    for (NSDictionary *item in items) {
+        if (![item[@"enabled"] boolValue]) continue;
+        NSString *path = item[@"path"];
+        if (!path.length) continue;
+        if (existing[path]) continue; /* already managed */
+
+        NSString *name = item[@"name"] ?: [[path lastPathComponent]
+                                            stringByDeletingPathExtension];
+        AmbrosiaSessionProcess *proc = [self addProcessNamed:name
+                                                    execPath:path
+                                                   arguments:@[@"-GSBackend",
+                                                               @"libgnustep-wayland"]];
+        proc.userManaged      = YES;
+        proc.restartDelaySecs = 2;
+        [proc launch];
+        wlr_log(WLR_INFO, "session: added user app '%s' from plist",
+                [name UTF8String]);
+    }
 }
 
 @end
@@ -365,25 +439,13 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
 
     /* Read dock preferences so the Compositor can pass authoritative geometry
      * to the Dock at launch.  The Dock uses these args rather than computing
-     * its own position, keeping the Compositor as the single source of truth.
-     *
-     * Probe both GNUstep layout (~/GNUstep/Library/Preferences) and the XDG /
-     * macOS layout (~/Library/Preferences) because the Compositor is a bare
-     * wlroots process and NSSearchPathForDirectoriesInDomains may not return
-     * the GNUstep path reliably outside a full GNUstep application context. */
-    NSString *home = NSHomeDirectory();
-    NSArray<NSString *> *prefsCandidates = @[
-        [home stringByAppendingPathComponent:
-              @"GNUstep/Library/Preferences/org.gnustep.AmbrosiaDock.plist"],
-        [home stringByAppendingPathComponent:
-              @"Library/Preferences/org.gnustep.AmbrosiaDock.plist"],
-    ];
-    NSDictionary *dockPrefs = nil;
-    for (NSString *candidate in prefsCandidates) {
-        dockPrefs = [NSDictionary dictionaryWithContentsOfFile:candidate];
-        if (dockPrefs) break;
-    }
-    dockPrefs = dockPrefs ?: @{};
+     * its own position, keeping the Compositor as the single source of truth. */
+    NSString *prefsDir = gnustepPrefsDirectory();
+    NSString *dockPlistPath = [prefsDir
+                               stringByAppendingPathComponent:
+                               @"org.gnustep.AmbrosiaDock.plist"];
+    NSDictionary *dockPrefs = [NSDictionary dictionaryWithContentsOfFile:dockPlistPath]
+                              ?: @{};
 
     NSString *dockPosition = dockPrefs[@"dockPosition"] ?: @"bottom";
     double    iconSize     = [dockPrefs[@"iconSize"]    doubleValue];
@@ -408,16 +470,53 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
                        arguments:dockArgs];
     dock.restartDelaySecs = 2;
 
-    /* ---- GFinder ---- */
-    NSString *finderExec = findExecutable(candidatePaths(@"GFinder.app",
-                                                         @"GFinder"));
-    if (!finderExec) finderExec = @"GFinder";
+    /* ---- User-configured apps from the session plist ---- */
+    NSString *sessionPlistPath = [prefsDir
+                                  stringByAppendingPathComponent:
+                                  @"org.gnustep.AmbrosiaSession.plist"];
+    NSDictionary *sessionPrefs = [NSDictionary dictionaryWithContentsOfFile:sessionPlistPath];
 
-    AmbrosiaSessionProcess *finder =
-        [session addProcessNamed:@"GFinder"
-                        execPath:finderExec
-                       arguments:gnustepWaylandArgs];
-    finder.restartDelaySecs = 3; /* slightly longer delay for the file manager */
+    /* First-run: plist absent — seed it with the historical default apps. */
+    if (!sessionPrefs) {
+        NSString *finderExec = findExecutable(candidatePaths(@"GFinder.app", @"GFinder"));
+
+        NSMutableArray *defaultItems = [NSMutableArray array];
+        if (finderExec) {
+            [defaultItems addObject:@{
+                @"name":    @"GFinder",
+                @"path":    finderExec,
+                @"enabled": @YES,
+            }];
+        }
+
+        sessionPrefs = @{ @"sessionItems": defaultItems };
+
+        NSString *dir = [sessionPlistPath stringByDeletingLastPathComponent];
+        [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:nil];
+        [sessionPrefs writeToFile:sessionPlistPath atomically:YES];
+        wlr_log(WLR_INFO, "session: created default session plist at %s",
+                [sessionPlistPath UTF8String]);
+    }
+
+    NSArray<NSDictionary *> *sessionItems = sessionPrefs[@"sessionItems"] ?: @[];
+    for (NSDictionary *item in sessionItems) {
+        if (![item[@"enabled"] boolValue]) continue;
+        NSString *path = item[@"path"];
+        if (!path.length) continue;
+        NSString *name = item[@"name"] ?: [[path lastPathComponent]
+                                            stringByDeletingPathExtension];
+        AmbrosiaSessionProcess *proc =
+            [session addProcessNamed:name
+                            execPath:path
+                           arguments:gnustepWaylandArgs];
+        proc.userManaged      = YES;
+        proc.restartDelaySecs = 2;
+        wlr_log(WLR_INFO, "session: registered user app '%s' from plist",
+                [name UTF8String]);
+    }
 
     return session;
 }

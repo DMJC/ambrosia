@@ -1,15 +1,18 @@
 #import "AmbrosiaModule.h"
 
 /* Plist file names written by each component */
-static NSString *const kCompPlistName = @"org.gnustep.AmbrosiaCompositor.plist";
-static NSString *const kDockPlistName = @"org.gnustep.AmbrosiaDock.plist";
+static NSString *const kCompPlistName    = @"org.gnustep.AmbrosiaCompositor.plist";
+static NSString *const kDockPlistName    = @"org.gnustep.AmbrosiaDock.plist";
+static NSString *const kSessionPlistName = @"org.gnustep.AmbrosiaSession.plist";
 
-/* Notification names (posted to the dock over NSDistributedNotificationCenter) */
-static NSString *const kDockPrefsChanged = @"AmbrosiaDocksPrefsChanged";
-static NSString *const kCompPrefsChanged = @"AmbrosiaCompositorPrefsChanged";
+/* Notification names (posted over NSDistributedNotificationCenter) */
+static NSString *const kDockPrefsChanged    = @"AmbrosiaDocksPrefsChanged";
+static NSString *const kCompPrefsChanged    = @"AmbrosiaCompositorPrefsChanged";
+static NSString *const kSessionPrefsChanged = @"AmbrosiaSessionPrefsChanged";
 
 @interface AmbrosiaModule () <NSTableViewDataSource, NSTableViewDelegate>
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *dockItems;
+@property (nonatomic, strong) NSMutableArray<NSDictionary *> *sessionItems;
 @end
 
 /* ---------------------------------------------------------------------- */
@@ -35,8 +38,10 @@ static NSString *const kCompPrefsChanged = @"AmbrosiaCompositorPrefsChanged";
 @implementation AmbrosiaModule {
     NSString            *_compPrefsPath;
     NSString            *_dockPrefsPath;
+    NSString            *_sessionPrefsPath;
     NSMutableDictionary *_compPrefs;
     NSMutableDictionary *_dockPrefs;
+    NSMutableDictionary *_sessionPrefs;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -44,6 +49,13 @@ static NSString *const kCompPrefsChanged = @"AmbrosiaCompositorPrefsChanged";
 
 static NSString *PrefsDirectory(void)
 {
+    /* Prefer the path set by GNUstep.sh so the pref pane writes to the same
+     * location the compositor reads from. */
+    const char *userLib = getenv("GNUSTEP_USER_LIBRARY");
+    if (userLib && userLib[0]) {
+        return [[NSString stringWithUTF8String:userLib]
+                stringByAppendingPathComponent:@"Preferences"];
+    }
     NSArray *dirs = NSSearchPathForDirectoriesInDomains(
         NSLibraryDirectory, NSUserDomainMask, YES);
     NSString *lib = dirs.firstObject ?: NSHomeDirectory();
@@ -337,6 +349,65 @@ static NSButton *MakePushButton(NSString *title)
     return tab;
 }
 
+- (NSView *)buildSessionTab
+{
+    NSView *tab = [[GNFlippedView alloc] initWithFrame:NSMakeRect(0, 0, MV_TAB_W, 400)];
+    tab.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+    CGFloat y = MV_MARGIN;
+
+    NSTextField *itemsLbl = MakeLabel(@"Session Applications:");
+    itemsLbl.frame = NSMakeRect(MV_MARGIN, y, 250, MV_ROW_H);
+    [tab addSubview:itemsLbl];
+    y += MV_ROW_H + 4;
+
+    _sessionItemsTable = [[NSTableView alloc] initWithFrame:NSZeroRect];
+
+    /* Checkbox column for enabled/disabled */
+    NSTableColumn *enabledCol = [[NSTableColumn alloc] initWithIdentifier:@"enabled"];
+    enabledCol.title = @"Auto-start";
+    enabledCol.width = 72;
+    NSButtonCell *checkCell = [[NSButtonCell alloc] init];
+    [checkCell setButtonType:NSSwitchButton];
+    checkCell.title       = @"";
+    checkCell.controlSize = NSControlSizeSmall;
+    enabledCol.dataCell   = checkCell;
+
+    NSTableColumn *nameCol = [[NSTableColumn alloc] initWithIdentifier:@"name"];
+    nameCol.title = @"Name";
+    nameCol.width = 140;
+
+    NSTableColumn *pathCol = [[NSTableColumn alloc] initWithIdentifier:@"sessionPath"];
+    pathCol.title = @"Path";
+
+    [_sessionItemsTable addTableColumn:enabledCol];
+    [_sessionItemsTable addTableColumn:nameCol];
+    [_sessionItemsTable addTableColumn:pathCol];
+
+    CGFloat tableH = 200;
+    NSScrollView *tableScroll = [[NSScrollView alloc]
+        initWithFrame:NSMakeRect(MV_MARGIN, y, MV_TAB_W - MV_MARGIN * 2, tableH)];
+    tableScroll.autoresizingMask       = NSViewWidthSizable | NSViewHeightSizable;
+    tableScroll.hasVerticalScroller    = YES;
+    tableScroll.hasHorizontalScroller  = NO;
+    tableScroll.documentView           = _sessionItemsTable;
+    [tab addSubview:tableScroll];
+    y += tableH + MV_ROW_GAP;
+
+    _addSessionItemButton    = MakePushButton(@"+");
+    _removeSessionItemButton = MakePushButton(@"−");
+    _addSessionItemButton.frame    = NSMakeRect(MV_MARGIN,      y, 32, 28);
+    _removeSessionItemButton.frame = NSMakeRect(MV_MARGIN + 36, y, 32, 28);
+    [_addSessionItemButton    setTarget:self];
+    [_addSessionItemButton    setAction:@selector(addSessionItem:)];
+    [_removeSessionItemButton setTarget:self];
+    [_removeSessionItemButton setAction:@selector(removeSessionItem:)];
+    [tab addSubview:_addSessionItemButton];
+    [tab addSubview:_removeSessionItemButton];
+
+    return tab;
+}
+
 /* ---------------------------------------------------------------------- */
 #pragma mark - NSPreferencePane lifecycle
 
@@ -364,6 +435,11 @@ static NSButton *MakePushButton(NSString *title)
     dockItem.view  = [self buildDockTab];
     [_tabView addTabViewItem:dockItem];
 
+    NSTabViewItem *sessionItem = [[NSTabViewItem alloc] initWithIdentifier:@"session"];
+    sessionItem.label = @"Session";
+    sessionItem.view  = [self buildSessionTab];
+    [_tabView addTabViewItem:sessionItem];
+
     /* Apply / Revert buttons — bottom-right */
     NSButton *applyBtn  = MakePushButton(@"Apply");
     NSButton *revertBtn = MakePushButton(@"Revert");
@@ -388,20 +464,26 @@ static NSButton *MakePushButton(NSString *title)
     self = [super initWithBundle:bundle];
     if (self) {
         NSString *prefsDir = PrefsDirectory();
-        _compPrefsPath = [prefsDir stringByAppendingPathComponent:kCompPlistName];
-        _dockPrefsPath = [prefsDir stringByAppendingPathComponent:kDockPlistName];
-        _compPrefs = LoadPlist(_compPrefsPath);
-        _dockPrefs = LoadPlist(_dockPrefsPath);
+        _compPrefsPath    = [prefsDir stringByAppendingPathComponent:kCompPlistName];
+        _dockPrefsPath    = [prefsDir stringByAppendingPathComponent:kDockPlistName];
+        _sessionPrefsPath = [prefsDir stringByAppendingPathComponent:kSessionPlistName];
+        _compPrefs    = LoadPlist(_compPrefsPath);
+        _dockPrefs    = LoadPlist(_dockPrefsPath);
+        _sessionPrefs = LoadPlist(_sessionPrefsPath);
     }
     return self;
 }
 
 - (void)mainViewDidLoad
 {
-    /* Wire up the table view — outlets are guaranteed non-nil here */
+    /* Wire up the table views — outlets are guaranteed non-nil here */
     _dockItems = [NSMutableArray array];
     _dockItemsTable.dataSource = self;
     _dockItemsTable.delegate   = self;
+
+    _sessionItems = [NSMutableArray array];
+    _sessionItemsTable.dataSource = self;
+    _sessionItemsTable.delegate   = self;
 
     /* Populate controls from on-disk prefs */
     [self loadCurrentValues];
@@ -419,8 +501,9 @@ static NSButton *MakePushButton(NSString *title)
 - (void)loadCurrentValues
 {
     /* Reload from disk so we always reflect the current on-disk state */
-    _compPrefs = LoadPlist(_compPrefsPath);
-    _dockPrefs = LoadPlist(_dockPrefsPath);
+    _compPrefs    = LoadPlist(_compPrefsPath);
+    _dockPrefs    = LoadPlist(_dockPrefsPath);
+    _sessionPrefs = LoadPlist(_sessionPrefsPath);
 
     /* ---- Compositor ---- */
     CGFloat transparency = [_compPrefs[@"windowTransparency"] doubleValue];
@@ -496,6 +579,14 @@ static NSButton *MakePushButton(NSString *title)
         [_dockItems addObject:[d mutableCopy]];
     }
     [_dockItemsTable reloadData];
+
+    /* ---- Session ---- */
+    NSArray *rawSessionItems = _sessionPrefs[@"sessionItems"];
+    _sessionItems = [NSMutableArray array];
+    for (NSDictionary *d in rawSessionItems) {
+        [_sessionItems addObject:[d mutableCopy]];
+    }
+    [_sessionItemsTable reloadData];
 }
 
 - (void)updateLabels
@@ -575,6 +666,38 @@ static NSButton *MakePushButton(NSString *title)
 }
 
 /* ---------------------------------------------------------------------- */
+#pragma mark - IBActions – Session
+
+- (IBAction)addSessionItem:(id)sender
+{
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.allowedFileTypes    = @[@"app"];
+    panel.canChooseDirectories = YES;
+    panel.canChooseFiles       = NO;
+    [panel beginSheetModalForWindow:self.mainView.window ?: [NSApp mainWindow]
+                  completionHandler:^(NSModalResponse r) {
+        if (r != NSModalResponseOK) return;
+        NSString *path = panel.URL.path;
+        NSString *name = [[path lastPathComponent] stringByDeletingPathExtension];
+        NSDictionary *entry = @{
+            @"name":    name,
+            @"path":    path,
+            @"enabled": @YES,
+        };
+        [self->_sessionItems addObject:[entry mutableCopy]];
+        [self->_sessionItemsTable reloadData];
+    }];
+}
+
+- (IBAction)removeSessionItem:(id)sender
+{
+    NSInteger row = _sessionItemsTable.selectedRow;
+    if (row < 0 || row >= (NSInteger)_sessionItems.count) return;
+    [_sessionItems removeObjectAtIndex:(NSUInteger)row];
+    [_sessionItemsTable reloadData];
+}
+
+/* ---------------------------------------------------------------------- */
 #pragma mark - Apply / Revert
 
 - (IBAction)applyChanges:(id)sender
@@ -631,6 +754,16 @@ static NSButton *MakePushButton(NSString *title)
                    object:nil
                  userInfo:compNotif
      deliverImmediately:YES];
+
+    /* ---- Session ---- */
+    _sessionPrefs[@"sessionItems"] = [_sessionItems copy];
+    SavePlist(_sessionPrefs, _sessionPrefsPath);
+
+    [[NSDistributedNotificationCenter defaultCenter]
+     postNotificationName:kSessionPrefsChanged
+                   object:nil
+                 userInfo:@{ @"sessionItems": _sessionPrefs[@"sessionItems"] ?: @[] }
+     deliverImmediately:YES];
 }
 
 - (IBAction)revertChanges:(id)sender
@@ -644,6 +777,7 @@ static NSButton *MakePushButton(NSString *title)
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tv
 {
+    if (tv == _sessionItemsTable) return (NSInteger)_sessionItems.count;
     return (NSInteger)_dockItems.count;
 }
 
@@ -651,6 +785,14 @@ static NSButton *MakePushButton(NSString *title)
 objectValueForTableColumn:(NSTableColumn *)col
             row:(NSInteger)row
 {
+    if (tv == _sessionItemsTable) {
+        NSDictionary *item = _sessionItems[row];
+        if ([col.identifier isEqualToString:@"enabled"])
+            return @([item[@"enabled"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff);
+        if ([col.identifier isEqualToString:@"name"])        return item[@"name"];
+        if ([col.identifier isEqualToString:@"sessionPath"]) return item[@"path"];
+        return @"";
+    }
     NSDictionary *item = _dockItems[row];
     if ([col.identifier isEqualToString:@"label"]) return item[@"label"];
     if ([col.identifier isEqualToString:@"path"])  return item[@"launchPath"];
@@ -662,6 +804,14 @@ objectValueForTableColumn:(NSTableColumn *)col
    forTableColumn:(NSTableColumn *)col
               row:(NSInteger)row
 {
+    if (tv == _sessionItemsTable) {
+        NSMutableDictionary *item = (NSMutableDictionary *)_sessionItems[row];
+        if ([col.identifier isEqualToString:@"enabled"])
+            item[@"enabled"] = @([obj intValue] == NSControlStateValueOn);
+        else if ([col.identifier isEqualToString:@"name"])
+            item[@"name"] = obj;
+        return;
+    }
     NSMutableDictionary *item = (NSMutableDictionary *)_dockItems[row];
     if ([col.identifier isEqualToString:@"label"]) item[@"label"] = obj;
 }

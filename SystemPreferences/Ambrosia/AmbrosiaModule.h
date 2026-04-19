@@ -41,6 +41,11 @@
 @property (nonatomic, strong) IBOutlet NSButton       *addItemButton;
 @property (nonatomic, strong) IBOutlet NSButton       *removeItemButton;
 
+/* Session settings outlets */
+@property (nonatomic, strong) IBOutlet NSTableView    *sessionItemsTable;
+@property (nonatomic, strong) IBOutlet NSButton       *addSessionItemButton;
+@property (nonatomic, strong) IBOutlet NSButton       *removeSessionItemButton;
+
 /* Tab view for switching sections */
 @property (nonatomic, strong) IBOutlet NSTabView      *tabView;
 
@@ -60,6 +65,9 @@
 - (IBAction)toggleRunningIndicator:(id)sender;
 - (IBAction)addDockItem:(id)sender;
 - (IBAction)removeDockItem:(id)sender;
+
+- (IBAction)addSessionItem:(id)sender;
+- (IBAction)removeSessionItem:(id)sender;
 
 - (IBAction)applyChanges:(id)sender;
 - (IBAction)revertChanges:(id)sender;

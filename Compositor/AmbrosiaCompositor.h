@@ -22,6 +22,7 @@
 #include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
+#include <wlr/types/wlr_output_management_v1.h>
 #include <wlr/backend/session.h>
 
 @class AmbrosiaView;
@@ -70,6 +71,7 @@ struct ambrosia_compositor_state {
     struct wlr_screencopy_manager_v1 *screencopy_manager;
     struct wlr_viewporter            *viewporter;
     struct wlr_xdg_output_manager_v1 *xdg_output_manager;
+    struct wlr_output_manager_v1     *output_manager;
     struct wlr_seat                  *seat;
     struct wlr_cursor           *cursor;
     struct wlr_xcursor_manager  *cursor_mgr;
@@ -89,6 +91,8 @@ struct ambrosia_compositor_state {
     struct wl_listener new_input;
     struct wl_listener request_set_cursor;
     struct wl_listener request_set_selection;
+    struct wl_listener output_manager_apply;
+    struct wl_listener output_manager_test;
 
     /* Grab / resize state */
     AmbrosiaCursorMode  cursor_mode;
@@ -106,6 +110,12 @@ struct ambrosia_compositor_state {
      * the Wayland focus change happens on the compositor's main thread.      */
     int                  activate_pipe[2];
     struct wl_event_source *activate_source;
+
+    /* Session-prefs self-pipe: background notification thread → wl_event_loop
+     * Written when "AmbrosiaSessionPrefsChanged" arrives so the session
+     * manager is updated on the compositor's main thread.                    */
+    int                  session_pipe[2];
+    struct wl_event_source *session_source;
 
     /* Back-reference (not retained – ObjC object owns this struct) */
     void               *objc_compositor;
@@ -163,6 +173,11 @@ struct ambrosia_compositor_state {
 - (void)handleNewInput:(struct wlr_input_device *)device;
 - (void)handleRequestSetCursor:(struct wlr_seat_pointer_request_set_cursor_event *)event;
 - (void)handleRequestSetSelection:(struct wlr_seat_request_set_selection_event *)event;
+- (void)handleOutputManagerApply:(struct wlr_output_configuration_v1 *)config;
+- (void)handleOutputManagerTest:(struct wlr_output_configuration_v1 *)config;
+
+/** Broadcast the current output configuration to all wlr-output-management clients. */
+- (void)notifyOutputManager;
 
 @end
 

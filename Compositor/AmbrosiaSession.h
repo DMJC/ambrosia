@@ -22,6 +22,10 @@
 @property (nonatomic)         NSInteger restartDelaySecs;
 /** Current child PID; 0 when not running */
 @property (nonatomic)         pid_t pid;
+/** YES for processes added from the user session plist (vs. core infrastructure) */
+@property (nonatomic)         BOOL userManaged;
+/** When YES the process will not be restarted after it exits */
+@property (nonatomic)         BOOL disabled;
 
 @property (nonatomic, weak)   AmbrosiaSession *session;
 
@@ -71,11 +75,27 @@
 /** Called from the C timer handler for @p process — do not call directly. */
 - (void)restartProcess:(AmbrosiaSessionProcess *)process;
 
+/**
+ * Synchronise the set of user-managed processes with @p items, an array of
+ * dictionaries each containing:
+ *   "name"    (NSString) — human-readable label
+ *   "path"    (NSString) — path to the executable or .app bundle
+ *   "enabled" (NSNumber/BOOL) — whether the process should auto-start
+ *
+ * Processes no longer present in @p items, or whose "enabled" flag is NO, are
+ * terminated.  New enabled entries are launched immediately.  Core processes
+ * (MenuServer, AmbrosiaDock) are never touched by this method.
+ *
+ * Safe to call from the wl_event_loop thread.
+ */
+- (void)syncUserApps:(NSArray<NSDictionary *> *)items;
+
 @end
 
 /**
- * Convenience constructor: creates a session managing AmbrosiaDock and GFinder,
- * searching standard GNUstep application directories for each executable.
+ * Convenience constructor: creates a session managing the core Ambrosia
+ * infrastructure (MenuServer, AmbrosiaDock) plus any apps enabled in
+ * ~/Library/Preferences/org.gnustep.AmbrosiaSession.plist.
  */
 AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop);
 

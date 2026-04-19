@@ -17,6 +17,7 @@ static const CGFloat kHighlightAlpha = 0.25;
 /* ---- Dropdown geometry ---- */
 static const CGFloat kDropItemH      = 22.0;   /* normal item row height          */
 static const CGFloat kDropSepH       = 8.0;    /* separator row height            */
+static const CGFloat kDropSliderH    = 130.0;  /* vertical slider row height      */
 static const CGFloat kDropPadX       = 14.0;   /* horizontal text inset           */
 static const CGFloat kDropMinW       = 180.0;  /* minimum dropdown panel width    */
 static const CGFloat kDropExtraBot   = 4.0;    /* extra padding below last item   */
@@ -142,7 +143,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     NSMutableArray     *_menuItemIndices;  /* NSNumber: index into _activeMenuItems */
     NSMutableArray     *_pluginRects;      /* NSValue(NSRect) per status plugin button */
     NSRect              _clockRect;
-    NSRect              _sessionRect;
+    NSRect              _sessionRect;      /* kept for compat; always NSZeroRect */
     NSInteger           _pressedRegion;    /* MenuBarRegion; -1 = none */
 
     /* ---- Inline dropdown state ---- */
@@ -154,6 +155,10 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     CGFloat             _dropdownX;        /* left edge of open dropdown */
     CGFloat             _dropdownW;        /* width of open dropdown */
     NSInteger           _hoveredIdx;       /* hovered item index (-1 = none) */
+
+    /* ---- Vertical slider drag state ---- */
+    NSInteger           _draggingSliderRowIdx;    /* row index in _dropdownRects; -1 = none */
+    NSInteger           _draggingSliderPluginIdx; /* plugin index owning the slider; -1 = none */
 }
 
 @synthesize statusPlugins = _statusPlugins;
@@ -166,14 +171,17 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     self = [super initWithFrame:frame];
     if (!self) return nil;
 
-    _menuRects       = [NSMutableArray array];
-    _menuItemIndices = [NSMutableArray array];
-    _pluginRects     = [NSMutableArray array];
-    _dropdownRects   = [NSMutableArray array];
-    _pressedRegion   = MenuBarRegionNone;
-    _openTag         = MenuBarRegionNone;
-    _openPluginIdx   = -1;
-    _hoveredIdx      = -1;
+    _menuRects              = [NSMutableArray array];
+    _menuItemIndices        = [NSMutableArray array];
+    _pluginRects            = [NSMutableArray array];
+    _dropdownRects          = [NSMutableArray array];
+    _pressedRegion          = MenuBarRegionNone;
+    _openTag                = MenuBarRegionNone;
+    _openPluginIdx          = -1;
+    _hoveredIdx             = -1;
+    _draggingSliderRowIdx    = -1;
+    _draggingSliderPluginIdx = -1;
+    _sessionRect            = NSZeroRect;
 
     [self _updateClockString];
     _clockTimer = [NSTimer scheduledTimerWithTimeInterval:60.0
@@ -287,19 +295,8 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     CGFloat rightX = W - kBarPad;
 
     /* ---- RIGHT SIDE ---- */
-    NSString *sessionStr = @"\u23FB";
-    NSSize sessionSz = [sessionStr sizeWithAttributes:NormalAttrs()];
-    CGFloat sessionW = sessionSz.width + kItemPad * 2;
-    _sessionRect = NSMakeRect(rightX - sessionW, 0, sessionW, kBarHeight);
-    [self _drawBarButton:_sessionRect
-                  label:sessionStr
-                  attrs:NormalAttrs()
-              isPressed:(_pressedRegion == MenuBarRegionSession)
-                isOpen:(_openTag == MenuBarRegionSession)];
-    rightX -= sessionW + kItemGap;
-
-    [self _drawBarSepAtX:rightX];
-    rightX -= kSepWidth + kItemGap;
+    /* Session/logout button removed; logout is accessible via the Ambrosia menu. */
+    _sessionRect = NSZeroRect;
 
     NSString *clock = _clockString ?: @"--:--:--";
     NSSize clockSz  = [clock sizeWithAttributes:NormalAttrs()];
@@ -461,22 +458,69 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     /* Items */
     NSUInteger idx = 0;
     for (NSDictionary *item in _openDescriptors) {
-        BOOL isSep = [item[kSysItemSep] boolValue] || [item[kMenuItemSeparator] boolValue];
+        BOOL isSep    = [item[kSysItemSep] boolValue] || [item[kMenuItemSeparator] boolValue];
+        BOOL isSlider = !isSep && [item[kMenuItemSlider] boolValue];
+
         if (isSep) {
             CGFloat rowH = kDropSepH;
             NSRect rowRect = NSMakeRect(_dropdownX, y, _dropdownW, rowH);
             [_dropdownRects addObject:[NSValue valueWithRect:rowRect]];
 
-            /* Draw separator line */
             CGFloat lineY = y + rowH * 0.5;
             [[[GSTheme theme] menuSeparatorColor] set];
             NSBezierPath *line = [NSBezierPath bezierPath];
-            [line moveToPoint:NSMakePoint(_dropdownX + kDropPadX,       lineY + 0.5)];
+            [line moveToPoint:NSMakePoint(_dropdownX + kDropPadX,             lineY + 0.5)];
             [line lineToPoint:NSMakePoint(_dropdownX + _dropdownW - kDropPadX, lineY + 0.5)];
             [line setLineWidth:1.0];
             [line stroke];
 
             y += rowH;
+
+        } else if (isSlider) {
+            /* ---- Vertical volume slider ---- */
+            CGFloat rowH = kDropSliderH;
+            NSRect rowRect = NSMakeRect(_dropdownX, y, _dropdownW, rowH);
+            [_dropdownRects addObject:[NSValue valueWithRect:rowRect]];
+
+            CGFloat value    = [item[kMenuItemSliderValue] doubleValue];
+            CGFloat trackW   = 8.0;
+            CGFloat padY     = 18.0;  /* space reserved for percentage label at top */
+            CGFloat trackX   = _dropdownX + (_dropdownW - trackW) * 0.5;
+            CGFloat trackTop = y + padY;
+            CGFloat trackBot = y + rowH - 10.0;
+            CGFloat trackH   = trackBot - trackTop;
+
+            /* Track background */
+            NSRect trackBg = NSMakeRect(trackX, trackTop, trackW, trackH);
+            [[NSColor colorWithWhite:0.75 alpha:1.0] set];
+            [[NSBezierPath bezierPathWithRoundedRect:trackBg xRadius:4 yRadius:4] fill];
+
+            /* Filled portion (bottom up) */
+            CGFloat fillH = trackH * (value / 100.0);
+            NSRect  fillR = NSMakeRect(trackX, trackBot - fillH, trackW, fillH);
+            [[NSColor selectedMenuItemColor] set];
+            [[NSBezierPath bezierPathWithRoundedRect:fillR xRadius:4 yRadius:4] fill];
+
+            /* Thumb */
+            CGFloat thumbD = 16.0;
+            CGFloat thumbX = trackX + (trackW - thumbD) * 0.5;
+            CGFloat thumbY = trackBot - fillH - thumbD * 0.5;
+            NSRect  thumbR = NSMakeRect(thumbX, thumbY, thumbD, thumbD);
+            [[NSColor selectedMenuItemColor] set];
+            [[NSBezierPath bezierPathWithOvalInRect:thumbR] fill];
+            [[NSColor whiteColor] set];
+            [[NSBezierPath bezierPathWithOvalInRect:NSInsetRect(thumbR, 4, 4)] fill];
+
+            /* Percentage label centred above the track */
+            NSString     *pct  = [NSString stringWithFormat:@"%.0f%%", value];
+            NSDictionary *pctA = NormalAttrs();
+            NSSize        pctSz = [pct sizeWithAttributes:pctA];
+            [pct drawAtPoint:NSMakePoint(_dropdownX + (_dropdownW - pctSz.width) * 0.5,
+                                         y + 2.0)
+              withAttributes:pctA];
+
+            y += rowH;
+
         } else {
             BOOL enabled = item[kMenuItemEnabled]
                            ? [item[kMenuItemEnabled] boolValue] : YES;
@@ -504,7 +548,6 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
             [title drawAtPoint:NSMakePoint(_dropdownX + kDropPadX, textY)
                 withAttributes:attrs];
 
-            /* Key equivalent (right-aligned) */
             NSString *keyEquiv = item[kMenuItemKeyEquiv];
             if (keyEquiv.length) {
                 NSString *hint = [@"\u2318" stringByAppendingString:keyEquiv.uppercaseString];
@@ -527,8 +570,11 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 {
     CGFloat h = 0;
     for (NSDictionary *item in _openDescriptors) {
-        BOOL isSep = [item[kSysItemSep] boolValue] || [item[kMenuItemSeparator] boolValue];
-        h += isSep ? kDropSepH : kDropItemH;
+        BOOL isSep    = [item[kSysItemSep] boolValue] || [item[kMenuItemSeparator] boolValue];
+        BOOL isSlider = !isSep && [item[kMenuItemSlider] boolValue];
+        if (isSep)         h += kDropSepH;
+        else if (isSlider) h += kDropSliderH;
+        else               h += kDropItemH;
     }
     return h + kDropExtraBot;
 }
@@ -545,9 +591,19 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
         NSInteger hitIdx = [self _dropdownIndexForPoint:pt];
         if (hitIdx >= 0) {
             NSDictionary *item = _openDescriptors[(NSUInteger)hitIdx];
-            BOOL isSep = [item[kSysItemSep] boolValue] || [item[kMenuItemSeparator] boolValue];
-            BOOL enabled = item[kMenuItemEnabled]
-                           ? [item[kMenuItemEnabled] boolValue] : YES;
+            BOOL isSep    = [item[kSysItemSep] boolValue] || [item[kMenuItemSeparator] boolValue];
+            BOOL isSlider = !isSep && [item[kMenuItemSlider] boolValue];
+            BOOL enabled  = item[kMenuItemEnabled]
+                            ? [item[kMenuItemEnabled] boolValue] : YES;
+
+            if (isSlider) {
+                /* Start tracking a slider drag — do NOT close the dropdown. */
+                _draggingSliderRowIdx    = hitIdx;
+                _draggingSliderPluginIdx = _openPluginIdx;
+                [self _updateSliderFromPoint:pt];
+                return;
+            }
+
             if (!isSep && enabled) {
                 /* Close (and contract the panel) BEFORE activating the item.
                  * Some actions (e.g. logout) call [NSAlert runModal] which is
@@ -607,6 +663,62 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
         _hoveredIdx = -1;
         [self setNeedsDisplayInRect:[self _dropdownBoundsRect]];
     }
+}
+
+- (void)mouseDragged:(NSEvent *)event
+{
+    if (_draggingSliderRowIdx < 0) return;
+    NSPoint pt = [self convertPoint:[event locationInWindow] fromView:nil];
+    [self _updateSliderFromPoint:pt];
+}
+
+- (void)mouseUp:(NSEvent *)event
+{
+    if (_draggingSliderRowIdx < 0) return;
+    NSPoint pt = [self convertPoint:[event locationInWindow] fromView:nil];
+    [self _updateSliderFromPoint:pt];
+    _draggingSliderRowIdx    = -1;
+    _draggingSliderPluginIdx = -1;
+}
+
+/**
+ * Recalculate the slider value from the mouse position during a drag,
+ * update _openDescriptors, and notify the owning plugin.
+ *
+ * The vertical slider maps: track top → 100%, track bottom → 0%.
+ */
+- (void)_updateSliderFromPoint:(NSPoint)pt
+{
+    if (_draggingSliderRowIdx < 0 ||
+        _draggingSliderRowIdx >= (NSInteger)_dropdownRects.count) return;
+
+    NSRect sliderRowRect =
+        [_dropdownRects[(NSUInteger)_draggingSliderRowIdx] rectValue];
+
+    CGFloat padY     = 18.0;   /* must match kDropSliderH layout in _drawDropdown */
+    CGFloat trackTop = sliderRowRect.origin.y + padY;
+    CGFloat trackBot = sliderRowRect.origin.y + sliderRowRect.size.height - 10.0;
+    CGFloat trackH   = trackBot - trackTop;
+
+    if (trackH <= 0) return;
+    CGFloat t        = 1.0 - MAX(0.0, MIN(1.0, (pt.y - trackTop) / trackH));
+    CGFloat newValue = t * 100.0;
+
+    /* Rebuild _openDescriptors with the updated slider value. */
+    NSMutableArray *mutable = [_openDescriptors mutableCopy];
+    NSMutableDictionary *sliderItem =
+        [mutable[(NSUInteger)_draggingSliderRowIdx] mutableCopy];
+    sliderItem[kMenuItemSliderValue] = @(newValue);
+    mutable[(NSUInteger)_draggingSliderRowIdx] = sliderItem;
+    _openDescriptors = [mutable copy];
+
+    /* Notify the owning plugin so it applies the volume change. */
+    NSArray<id<AmbrosiaStatusItemPlugin>> *plugins = _statusPlugins;
+    NSInteger pi = _draggingSliderPluginIdx;
+    if (pi >= 0 && pi < (NSInteger)plugins.count)
+        [plugins[(NSUInteger)pi] activateItem:sliderItem];
+
+    [self setNeedsDisplay:YES];
 }
 
 /* ---------------------------------------------------------------------- */

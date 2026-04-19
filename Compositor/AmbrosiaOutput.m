@@ -121,6 +121,9 @@ static void handle_output_destroy(struct wl_listener *listener, void *data)
     _state = NULL;
 
     [_compositor.outputs removeObject:self];
+
+    /* Notify output-management clients that an output disappeared. */
+    [_compositor notifyOutputManager];
 }
 
 @end

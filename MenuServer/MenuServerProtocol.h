@@ -43,6 +43,18 @@ static NSString * const kMenuItemChildren   = @"children";
  */
 static NSString * const kMenuItemGrayed     = @"grayed";
 
+/*
+ * kMenuItemSlider — NSNumber (BOOL).
+ * When YES the row is rendered as a vertical interactive slider rather than
+ * a text item.  Only meaningful for status-item plugin dropdowns.
+ *
+ * kMenuItemSliderValue — NSNumber (CGFloat, 0-100).
+ * Current slider value.  Updated in _openDescriptors while the user drags,
+ * and passed to -activateItem: on every change so the plugin can apply it.
+ */
+static NSString * const kMenuItemSlider      = @"slider";
+static NSString * const kMenuItemSliderValue = @"sliderValue";
+
 /* ---- Menu-item selection notification (NSDistributedNotificationCenter) ----
  *
  * MenuServer posts this notification on NSDistributedNotificationCenter when
