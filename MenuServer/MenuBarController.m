@@ -474,7 +474,58 @@ static BOOL ReadMenuBarPref(NSString *key)
 
 - (void)openTerminal
 {
-    NSArray<NSString *> *candidates = @[
+    /* Prefer Terminal.app (GNUstep).  If it is already running, bring it to
+     * focus via the compositor's activate notification instead of launching
+     * a second instance.  Fall back to common X11 terminal emulators when
+     * Terminal.app is not installed.                                        */
+    NSArray<NSString *> *terminalAppCandidates = @[
+        @"/usr/GNUstep/Local/Applications/Terminal.app",
+        @"/usr/GNUstep/System/Applications/Terminal.app",
+        @"/usr/local/GNUstep/Local/Applications/Terminal.app",
+        [NSHomeDirectory() stringByAppendingPathComponent:
+            @"GNUstep/Applications/Terminal.app"],
+    ];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *terminalPath = nil;
+    for (NSString *path in terminalAppCandidates) {
+        if ([fm fileExistsAtPath:path]) {
+            terminalPath = path;
+            break;
+        }
+    }
+
+    if (terminalPath) {
+        /* Check whether Terminal.app is already in the running-applications list. */
+        BOOL alreadyRunning = NO;
+        for (NSDictionary *info in [[NSWorkspace sharedWorkspace] launchedApplications]) {
+            NSString *appPath = info[@"NSApplicationPath"];
+            NSString *appName = info[@"NSApplicationName"];
+            if ([appPath isEqualToString:terminalPath] ||
+                [appName isEqualToString:@"Terminal"]) {
+                alreadyRunning = YES;
+                break;
+            }
+        }
+
+        if (alreadyRunning) {
+            /* Terminal is running — ask the compositor to raise it. */
+            [[NSDistributedNotificationCenter defaultCenter]
+                postNotificationName:@"AmbrosiaActivateApplication"
+                              object:nil
+                            userInfo:@{
+                                @"appName":    @"Terminal",
+                                @"launchPath": terminalPath,
+                            }
+                  deliverImmediately:YES];
+        } else {
+            [[NSWorkspace sharedWorkspace] launchApplication:terminalPath];
+        }
+        return;
+    }
+
+    /* Terminal.app not found — fall back to generic X11 terminal emulators. */
+    NSArray<NSString *> *fallbacks = @[
         @"/usr/bin/xterm",
         @"/usr/bin/x-terminal-emulator",
         @"/usr/bin/gnome-terminal",
@@ -483,8 +534,8 @@ static BOOL ReadMenuBarPref(NSString *key)
         @"/usr/bin/lxterminal",
         @"/usr/bin/mate-terminal",
     ];
-    for (NSString *path in candidates) {
-        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+    for (NSString *path in fallbacks) {
+        if ([fm fileExistsAtPath:path]) {
             [[NSWorkspace sharedWorkspace] launchApplication:path];
             return;
         }

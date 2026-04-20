@@ -32,6 +32,8 @@
 - (void)_focusApplicationFromActivateRequest;
 /** Called from handle_session_pipe on the wl_event_loop thread. */
 - (void)_applySessionPrefsUpdate;
+/** Called from handle_desktop_pipe on the wl_event_loop thread. */
+- (void)_applyDesktopPrefsUpdate;
 @end
 
 /* --------------------------------------------------------------------------
@@ -204,6 +206,16 @@ static int handle_session_pipe(int fd, uint32_t mask, void *data)
     return 0;
 }
 
+/* Desktop-prefs pipe watcher — called on the compositor's wl_event_loop thread */
+static int handle_desktop_pipe(int fd, uint32_t mask, void *data)
+{
+    char byte;
+    while (read(fd, &byte, 1) == 1) {} /* drain all queued bytes */
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)data;
+    [c _applyDesktopPrefsUpdate];
+    return 0;
+}
+
 /* --------------------------------------------------------------------------
  * Per-popup state: wlroots 0.18+ requires the compositor to send a configure
  * in response to initial_commit for popups just as it does for toplevels.
@@ -298,6 +310,7 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     AmbrosiaInput                    *_input;
     AmbrosiaView                     *_focusedView;
     AmbrosiaSession                  *_session;
+    AmbrosiaBackground               *_background;
     BOOL                              _running;
 
     /* Pending activate request — written by the notification thread,
@@ -311,10 +324,16 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
      * consumed by the compositor's wl_event_loop thread.              */
     NSArray  *_pendingSessionItems;
     NSLock   *_sessionLock;
+
+    /* Pending desktop-prefs update — written by the notification thread,
+     * consumed by the compositor's wl_event_loop thread.              */
+    NSDictionary *_pendingDesktopPrefs;
+    NSLock       *_desktopLock;
 }
 
 @synthesize state         = _state;
 @synthesize session       = _session;
+@synthesize background    = _background;
 @synthesize views         = _views;
 @synthesize outputs       = _outputs;
 @synthesize layerSurfaces = _layerSurfaces;
@@ -329,6 +348,7 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     _layerSurfaces = [NSMutableArray array];
     _activateLock  = [[NSLock alloc] init];
     _sessionLock   = [[NSLock alloc] init];
+    _desktopLock   = [[NSLock alloc] init];
     _state   = calloc(1, sizeof(struct ambrosia_compositor_state));
     if (!_state) return nil;
 
@@ -432,6 +452,13 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     _state->scene_layer_overlay = wlr_scene_tree_create(&_state->scene->tree);
     _state->usable_top = 0;
     wlr_log(WLR_DEBUG, "Scene graph initialised (layered sub-trees created)");
+
+    /* Background manager — reads wallpaper prefs and renders into scene_layer_bg. */
+    _background = [[AmbrosiaBackground alloc]
+                   initWithEventLoop:_state->event_loop
+                           sceneTree:_state->scene_layer_bg
+                        outputLayout:_state->output_layout];
+    [_background applyPreferencesFromPlist];
 
     /* XDG shell (version 3) */
     _state->xdg_shell = wlr_xdg_shell_create(_state->display, 3);
@@ -589,6 +616,26 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         handle_session_pipe,
         (__bridge void *)self);
 
+    /* Desktop-prefs self-pipe: background notification thread → wl_event_loop */
+    if (pipe(_state->desktop_pipe) != 0) {
+        wlr_log(WLR_ERROR, "Failed to create desktop pipe: %s", strerror(errno));
+        if (error) *error = [NSError errorWithDomain:@"AmbrosiaCompositor"
+                                                code:8
+                                            userInfo:@{NSLocalizedDescriptionKey:@"Failed to create desktop pipe"}];
+        return NO;
+    }
+    for (int i = 0; i < 2; i++) {
+        fcntl(_state->desktop_pipe[i], F_SETFD, FD_CLOEXEC);
+        fcntl(_state->desktop_pipe[i], F_SETFL,
+              fcntl(_state->desktop_pipe[i], F_GETFL) | O_NONBLOCK);
+    }
+    _state->desktop_source = wl_event_loop_add_fd(
+        _state->event_loop,
+        _state->desktop_pipe[0],
+        WL_EVENT_READABLE,
+        handle_desktop_pipe,
+        (__bridge void *)self);
+
     wlr_log(WLR_INFO, "Ambrosia: compositor setup complete");
     return YES;
 }
@@ -652,6 +699,15 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     }
     close(_state->session_pipe[0]);
     close(_state->session_pipe[1]);
+
+    if (_state->desktop_source) {
+        wl_event_source_remove(_state->desktop_source);
+        _state->desktop_source = NULL;
+    }
+    close(_state->desktop_pipe[0]);
+    close(_state->desktop_pipe[1]);
+    [_background stop];
+    _background = nil;
 
     /* Tear down all Wayland client connections first.  This causes gnustep-back
      * inside each session process to receive a connection error, which unblocks
@@ -1097,6 +1153,9 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         wlr_log(WLR_INFO, "Output %s: %dx%d @ %d mHz",
                 output->name, cur_mode->width, cur_mode->height, cur_mode->refresh);
     }
+
+    /* Render the desktop background on this output. */
+    [_background handleOutputAdded:output];
 
     [self notifyOutputManager];
 }
@@ -1660,9 +1719,14 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
            selector:@selector(_handleSessionPrefsNotification:)
                name:@"AmbrosiaSessionPrefsChanged"
              object:nil];
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_handleDesktopPrefsNotification:)
+               name:@"AmbrosiaDesktopPrefsChanged"
+             object:nil];
     wlr_log(WLR_DEBUG,
         "Notification listener running (AmbrosiaLogoutRequest, AmbrosiaActivateApplication,"
-        " AmbrosiaSessionPrefsChanged)");
+        " AmbrosiaSessionPrefsChanged, AmbrosiaDesktopPrefsChanged)");
     /* Runs until the process exits; the observer keeps the loop alive. */
     [[NSRunLoop currentRunLoop] run];
 }
@@ -1715,6 +1779,31 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     wlr_log(WLR_INFO, "session: applying prefs update (%lu item(s))",
             (unsigned long)items.count);
     [_session syncUserApps:items];
+}
+
+- (void)_handleDesktopPrefsNotification:(NSNotification *)note
+{
+    NSDictionary *prefs = note.userInfo ?: @{};
+    [_desktopLock lock];
+    _pendingDesktopPrefs = prefs;
+    [_desktopLock unlock];
+    char byte = 1;
+    (void)write(_state->desktop_pipe[1], &byte, 1);
+}
+
+/**
+ * Called on the wl_event_loop thread when the desktop pipe becomes readable.
+ * Forwards the latest prefs to AmbrosiaBackground on the compositor thread.
+ */
+- (void)_applyDesktopPrefsUpdate
+{
+    [_desktopLock lock];
+    NSDictionary *prefs = _pendingDesktopPrefs;
+    _pendingDesktopPrefs = nil;
+    [_desktopLock unlock];
+
+    wlr_log(WLR_INFO, "background: applying desktop prefs update");
+    [_background applyPreferences:prefs];
 }
 
 /**

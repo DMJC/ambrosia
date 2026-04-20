@@ -4,11 +4,17 @@
 static NSString *const kCompPlistName    = @"org.gnustep.AmbrosiaCompositor.plist";
 static NSString *const kDockPlistName    = @"org.gnustep.AmbrosiaDock.plist";
 static NSString *const kSessionPlistName = @"org.gnustep.AmbrosiaSession.plist";
+static NSString *const kDesktopPlistName = @"org.gnustep.AmbrosiaDesktop.plist";
 
 /* Notification names (posted over NSDistributedNotificationCenter) */
 static NSString *const kDockPrefsChanged    = @"AmbrosiaDocksPrefsChanged";
 static NSString *const kCompPrefsChanged    = @"AmbrosiaCompositorPrefsChanged";
 static NSString *const kSessionPrefsChanged = @"AmbrosiaSessionPrefsChanged";
+static NSString *const kDesktopPrefsChanged = @"AmbrosiaDesktopPrefsChanged";
+
+/* Discrete rotation intervals exposed on the slider (position → seconds). */
+static const NSInteger kIntervalValues[] = { 5, 10, 30, 60, 300, 600 };
+static const NSUInteger kIntervalCount   = 6;
 
 @interface AmbrosiaModule () <NSTableViewDataSource, NSTableViewDelegate>
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *dockItems;
@@ -39,9 +45,11 @@ static NSString *const kSessionPrefsChanged = @"AmbrosiaSessionPrefsChanged";
     NSString            *_compPrefsPath;
     NSString            *_dockPrefsPath;
     NSString            *_sessionPrefsPath;
+    NSString            *_desktopPrefsPath;
     NSMutableDictionary *_compPrefs;
     NSMutableDictionary *_dockPrefs;
     NSMutableDictionary *_sessionPrefs;
+    NSMutableDictionary *_desktopPrefs;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -126,6 +134,33 @@ static NSButton *MakePushButton(NSString *title)
     b.bezelStyle = NSRoundedBezelStyle;
     b.title      = title;
     return b;
+}
+
+/* Convert a slider position (0…kIntervalCount-1) to its seconds value. */
+static NSInteger intervalForSliderPos(NSInteger pos)
+{
+    if (pos < 0) pos = 0;
+    if (pos >= (NSInteger)kIntervalCount) pos = (NSInteger)kIntervalCount - 1;
+    return kIntervalValues[(NSUInteger)pos];
+}
+
+/* Find the slider position closest to a given seconds value. */
+static NSInteger sliderPosForInterval(NSInteger secs)
+{
+    NSInteger best = 0;
+    NSInteger bestDiff = ABS(kIntervalValues[0] - secs);
+    for (NSUInteger i = 1; i < kIntervalCount; i++) {
+        NSInteger diff = ABS(kIntervalValues[i] - secs);
+        if (diff < bestDiff) { bestDiff = diff; best = (NSInteger)i; }
+    }
+    return best;
+}
+
+static NSString *intervalLabel(NSInteger secs)
+{
+    if (secs < 60) return [NSString stringWithFormat:@"%ld seconds", (long)secs];
+    return [NSString stringWithFormat:@"%ld minute%s", (long)(secs / 60),
+            (secs / 60 == 1) ? "" : "s"];
 }
 
 /* Add a label + slider + value-label row to |tab| at y, return next y */
@@ -408,6 +443,85 @@ static NSButton *MakePushButton(NSString *title)
     return tab;
 }
 
+- (NSView *)buildDesktopTab
+{
+    NSView *tab = [[GNFlippedView alloc] initWithFrame:NSMakeRect(0, 0, MV_TAB_W, 400)];
+    tab.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+    CGFloat y   = MV_MARGIN;
+    CGFloat fW  = MV_TAB_W - MV_CTRL_X - 80 - MV_MARGIN; /* path-field width */
+    CGFloat btnW = 72;
+
+    /* ---- Background Image ---- */
+    NSTextField *imgLbl = MakeLabel(@"Background Image:");
+    imgLbl.frame = NSMakeRect(MV_MARGIN, y, MV_LBL_W, MV_ROW_H);
+    [tab addSubview:imgLbl];
+
+    _bgImagePathField = [[NSTextField alloc] initWithFrame:
+                          NSMakeRect(MV_CTRL_X, y, fW, MV_ROW_H)];
+    _bgImagePathField.placeholderString = @"(none)";
+    _bgImagePathField.editable = YES;
+    _bgImagePathField.autoresizingMask = NSViewWidthSizable;
+    [tab addSubview:_bgImagePathField];
+
+    _bgImageChooseButton = MakePushButton(@"Choose…");
+    _bgImageChooseButton.frame = NSMakeRect(MV_CTRL_X + fW + 8, y, btnW, MV_ROW_H);
+    _bgImageChooseButton.autoresizingMask = NSViewMinXMargin;
+    [_bgImageChooseButton setTarget:self];
+    [_bgImageChooseButton setAction:@selector(chooseBgImage:)];
+    [tab addSubview:_bgImageChooseButton];
+    y += MV_ROW_H + MV_ROW_GAP;
+
+    /* ---- Rotating Background Images ---- */
+    _rotatingCheck = MakeCheckbox(@"Rotating Background Images");
+    _rotatingCheck.frame = NSMakeRect(MV_MARGIN, y, MV_TAB_W - MV_MARGIN * 2, MV_ROW_H);
+    _rotatingCheck.autoresizingMask = NSViewWidthSizable;
+    [_rotatingCheck setTarget:self];
+    [_rotatingCheck setAction:@selector(toggleRotating:)];
+    [tab addSubview:_rotatingCheck];
+    y += MV_ROW_H + MV_ROW_GAP;
+
+    /* ---- Images Folder ---- */
+    NSTextField *folderLbl = MakeLabel(@"Images Folder:");
+    folderLbl.frame = NSMakeRect(MV_MARGIN, y, MV_LBL_W, MV_ROW_H);
+    [tab addSubview:folderLbl];
+
+    _bgFolderPathField = [[NSTextField alloc] initWithFrame:
+                           NSMakeRect(MV_CTRL_X, y, fW, MV_ROW_H)];
+    _bgFolderPathField.placeholderString = @"(none)";
+    _bgFolderPathField.editable = YES;
+    _bgFolderPathField.autoresizingMask = NSViewWidthSizable;
+    [tab addSubview:_bgFolderPathField];
+
+    _bgFolderChooseButton = MakePushButton(@"Choose…");
+    _bgFolderChooseButton.frame = NSMakeRect(MV_CTRL_X + fW + 8, y, btnW, MV_ROW_H);
+    _bgFolderChooseButton.autoresizingMask = NSViewMinXMargin;
+    [_bgFolderChooseButton setTarget:self];
+    [_bgFolderChooseButton setAction:@selector(chooseBgFolder:)];
+    [tab addSubview:_bgFolderChooseButton];
+    y += MV_ROW_H + MV_ROW_GAP;
+
+    /* ---- Rotation Interval (discrete slider) ---- */
+    _intervalSlider = [[NSSlider alloc] initWithFrame:NSZeroRect];
+    _intervalSlider.minValue                 = 0;
+    _intervalSlider.maxValue                 = (double)(kIntervalCount - 1);
+    _intervalSlider.numberOfTickMarks        = (NSInteger)kIntervalCount;
+    _intervalSlider.allowsTickMarkValuesOnly = YES;
+    [_intervalSlider setTarget:self];
+    [_intervalSlider setAction:@selector(intervalChanged:)];
+    _intervalLabel = MakeValueLabel();
+    y = [self addSliderRow:tab
+                     label:@"Change every:"
+                    slider:_intervalSlider
+                valueLabel:_intervalLabel
+                       atY:y];
+
+    /* Update enabled state of folder controls based on checkbox default (off). */
+    [self _updateRotatingControlsEnabled:NO];
+
+    return tab;
+}
+
 /* ---------------------------------------------------------------------- */
 #pragma mark - NSPreferencePane lifecycle
 
@@ -440,6 +554,11 @@ static NSButton *MakePushButton(NSString *title)
     sessionItem.view  = [self buildSessionTab];
     [_tabView addTabViewItem:sessionItem];
 
+    NSTabViewItem *desktopItem = [[NSTabViewItem alloc] initWithIdentifier:@"desktop"];
+    desktopItem.label = @"Desktop";
+    desktopItem.view  = [self buildDesktopTab];
+    [_tabView addTabViewItem:desktopItem];
+
     /* Apply / Revert buttons — bottom-right */
     NSButton *applyBtn  = MakePushButton(@"Apply");
     NSButton *revertBtn = MakePushButton(@"Revert");
@@ -467,9 +586,11 @@ static NSButton *MakePushButton(NSString *title)
         _compPrefsPath    = [prefsDir stringByAppendingPathComponent:kCompPlistName];
         _dockPrefsPath    = [prefsDir stringByAppendingPathComponent:kDockPlistName];
         _sessionPrefsPath = [prefsDir stringByAppendingPathComponent:kSessionPlistName];
+        _desktopPrefsPath = [prefsDir stringByAppendingPathComponent:kDesktopPlistName];
         _compPrefs    = LoadPlist(_compPrefsPath);
         _dockPrefs    = LoadPlist(_dockPrefsPath);
         _sessionPrefs = LoadPlist(_sessionPrefsPath);
+        _desktopPrefs = LoadPlist(_desktopPrefsPath);
     }
     return self;
 }
@@ -504,6 +625,7 @@ static NSButton *MakePushButton(NSString *title)
     _compPrefs    = LoadPlist(_compPrefsPath);
     _dockPrefs    = LoadPlist(_dockPrefsPath);
     _sessionPrefs = LoadPlist(_sessionPrefsPath);
+    _desktopPrefs = LoadPlist(_desktopPrefsPath);
 
     /* ---- Compositor ---- */
     CGFloat transparency = [_compPrefs[@"windowTransparency"] doubleValue];
@@ -587,6 +709,17 @@ static NSButton *MakePushButton(NSString *title)
         [_sessionItems addObject:[d mutableCopy]];
     }
     [_sessionItemsTable reloadData];
+
+    /* ---- Desktop ---- */
+    _bgImagePathField.stringValue  = _desktopPrefs[@"backgroundImagePath"] ?: @"";
+    BOOL rotating = [_desktopPrefs[@"rotatingImages"] boolValue];
+    _rotatingCheck.state = rotating ? NSControlStateValueOn : NSControlStateValueOff;
+    _bgFolderPathField.stringValue = _desktopPrefs[@"rotatingImagesFolder"] ?: @"";
+    NSInteger secs = [_desktopPrefs[@"rotationInterval"] integerValue];
+    if (secs <= 0) secs = 30;
+    _intervalSlider.integerValue = sliderPosForInterval(secs);
+    _intervalLabel.stringValue   = intervalLabel(intervalForSliderPos(_intervalSlider.integerValue));
+    [self _updateRotatingControlsEnabled:rotating];
 }
 
 - (void)updateLabels
@@ -698,6 +831,57 @@ static NSButton *MakePushButton(NSString *title)
 }
 
 /* ---------------------------------------------------------------------- */
+#pragma mark - IBActions – Desktop
+
+- (void)_updateRotatingControlsEnabled:(BOOL)enabled
+{
+    _bgFolderPathField.enabled    = enabled;
+    _bgFolderChooseButton.enabled = enabled;
+    _intervalSlider.enabled       = enabled;
+    _intervalLabel.textColor      = enabled
+        ? [NSColor controlTextColor] : [NSColor disabledControlTextColor];
+}
+
+- (IBAction)chooseBgImage:(id)sender
+{
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.allowedFileTypes   = @[@"png", @"jpg", @"jpeg"];
+    panel.canChooseFiles     = YES;
+    panel.canChooseDirectories = NO;
+    [panel beginSheetModalForWindow:self.mainView.window ?: [NSApp mainWindow]
+                  completionHandler:^(NSModalResponse r) {
+        if (r != NSModalResponseOK) return;
+        self->_bgImagePathField.stringValue = panel.URL.path ?: @"";
+    }];
+}
+
+- (IBAction)toggleRotating:(id)sender
+{
+    BOOL on = (_rotatingCheck.state == NSControlStateValueOn);
+    [self _updateRotatingControlsEnabled:on];
+}
+
+- (IBAction)chooseBgFolder:(id)sender
+{
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles        = NO;
+    panel.canChooseDirectories  = YES;
+    panel.canCreateDirectories  = NO;
+    [panel beginSheetModalForWindow:self.mainView.window ?: [NSApp mainWindow]
+                  completionHandler:^(NSModalResponse r) {
+        if (r != NSModalResponseOK) return;
+        self->_bgFolderPathField.stringValue = panel.URL.path ?: @"";
+    }];
+}
+
+- (IBAction)intervalChanged:(id)sender
+{
+    NSInteger pos  = _intervalSlider.integerValue;
+    NSInteger secs = intervalForSliderPos(pos);
+    _intervalLabel.stringValue = intervalLabel(secs);
+}
+
+/* ---------------------------------------------------------------------- */
 #pragma mark - Apply / Revert
 
 - (IBAction)applyChanges:(id)sender
@@ -763,6 +947,23 @@ static NSButton *MakePushButton(NSString *title)
      postNotificationName:kSessionPrefsChanged
                    object:nil
                  userInfo:@{ @"sessionItems": _sessionPrefs[@"sessionItems"] ?: @[] }
+     deliverImmediately:YES];
+
+    /* ---- Desktop ---- */
+    NSInteger sliderPos   = _intervalSlider.integerValue;
+    NSInteger intervalSec = intervalForSliderPos(sliderPos);
+    BOOL      rotating    = (_rotatingCheck.state == NSControlStateValueOn);
+
+    _desktopPrefs[@"backgroundImagePath"]   = [_bgImagePathField.stringValue copy] ?: @"";
+    _desktopPrefs[@"rotatingImages"]        = @(rotating);
+    _desktopPrefs[@"rotatingImagesFolder"]  = [_bgFolderPathField.stringValue copy] ?: @"";
+    _desktopPrefs[@"rotationInterval"]      = @(intervalSec);
+    SavePlist(_desktopPrefs, _desktopPrefsPath);
+
+    [[NSDistributedNotificationCenter defaultCenter]
+     postNotificationName:kDesktopPrefsChanged
+                   object:nil
+                 userInfo:[_desktopPrefs copy]
      deliverImmediately:YES];
 }
 

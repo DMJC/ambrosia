@@ -3,6 +3,7 @@
 
 #import <Foundation/Foundation.h>
 #import "AmbrosiaSession.h"
+#import "AmbrosiaBackground.h"
 #include <wayland-server-core.h>
 #include <wlr/backend.h>
 #include <wlr/render/allocator.h>
@@ -117,6 +118,12 @@ struct ambrosia_compositor_state {
     int                  session_pipe[2];
     struct wl_event_source *session_source;
 
+    /* Desktop-prefs self-pipe: background notification thread → wl_event_loop
+     * Written when "AmbrosiaDesktopPrefsChanged" arrives so the background
+     * manager is updated on the compositor's main thread.                    */
+    int                  desktop_pipe[2];
+    struct wl_event_source *desktop_source;
+
     /* Back-reference (not retained – ObjC object owns this struct) */
     void               *objc_compositor;
 };
@@ -129,6 +136,7 @@ struct ambrosia_compositor_state {
 @property (readonly) NSMutableArray                   *layerSurfaces; /**< NSValue wrapping ambrosia_layer_surface* */
 @property (readonly, nullable) AmbrosiaView            *focusedView;
 @property (readonly)           AmbrosiaSession         *session;
+@property (readonly)           AmbrosiaBackground      *background;
 
 - (instancetype)init;
 - (BOOL)setup:(NSError **)error;

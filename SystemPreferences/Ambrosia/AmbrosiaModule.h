@@ -46,6 +46,15 @@
 @property (nonatomic, strong) IBOutlet NSButton       *addSessionItemButton;
 @property (nonatomic, strong) IBOutlet NSButton       *removeSessionItemButton;
 
+/* Desktop settings outlets */
+@property (nonatomic, strong) IBOutlet NSTextField    *bgImagePathField;
+@property (nonatomic, strong) IBOutlet NSButton       *bgImageChooseButton;
+@property (nonatomic, strong) IBOutlet NSButton       *rotatingCheck;
+@property (nonatomic, strong) IBOutlet NSTextField    *bgFolderPathField;
+@property (nonatomic, strong) IBOutlet NSButton       *bgFolderChooseButton;
+@property (nonatomic, strong) IBOutlet NSSlider       *intervalSlider;
+@property (nonatomic, strong) IBOutlet NSTextField    *intervalLabel;
+
 /* Tab view for switching sections */
 @property (nonatomic, strong) IBOutlet NSTabView      *tabView;
 
@@ -68,6 +77,11 @@
 
 - (IBAction)addSessionItem:(id)sender;
 - (IBAction)removeSessionItem:(id)sender;
+
+- (IBAction)chooseBgImage:(id)sender;
+- (IBAction)toggleRotating:(id)sender;
+- (IBAction)chooseBgFolder:(id)sender;
+- (IBAction)intervalChanged:(id)sender;
 
 - (IBAction)applyChanges:(id)sender;
 - (IBAction)revertChanges:(id)sender;

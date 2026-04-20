@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+#
+# ambrosia-session — session wrapper for the Ambrosia desktop environment.
+#
+# Starts ambrosia-compositor and blocks until it exits for any reason
+# (clean shutdown, crash, SIGKILL, …).  After the compositor is gone this
+# script sends SIGTERM — then, after a grace period, SIGKILL — to every
+# remaining Ambrosia desktop service.
+#
+# Direct children of the compositor already receive SIGTERM automatically
+# via prctl(PR_SET_PDEATHSIG) set in AmbrosiaSession.m.  This script
+# handles the cases that prctl cannot reach:
+#
+#   • Applications launched from the Dock via NSWorkspace (grandchildren of
+#     the compositor that do not inherit PR_SET_PDEATHSIG).
+#   • Any process that survived a prctl race (signal delivered before the
+#     child's event loop was ready to handle it).
+#   • Processes from user-configured session items that were started before
+#     this script was introduced.
+#
+# Usage (development build):
+#   ./ambrosia-session [compositor-args...]
+#
+# Usage (installed build):
+#   ambrosia-session [compositor-args...]
+#
+# Forwarding: SIGTERM or SIGINT sent to this script is forwarded to the
+# compositor, triggering its own graceful shutdown sequence before this
+# script's cleanup runs.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ---------------------------------------------------------------------------
+# Locate the compositor binary.
+# Prefer a local development build (obj/ or obj.*/ under Compositor/).
+# ---------------------------------------------------------------------------
+COMPOSITOR=""
+for candidate in \
+        "${SCRIPT_DIR}/Compositor/obj/ambrosia-compositor" \
+        "${SCRIPT_DIR}/Compositor"/obj.*/ambrosia-compositor; do
+    if [[ -x "${candidate}" ]]; then
+        COMPOSITOR="${candidate}"
+        break
+    fi
+done
+if [[ -z "${COMPOSITOR}" ]]; then
+    COMPOSITOR="$(command -v ambrosia-compositor 2>/dev/null || true)"
+fi
+if [[ -z "${COMPOSITOR}" ]]; then
+    echo "ambrosia-session: cannot find ambrosia-compositor" >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Source the GNUstep environment if it has not been set up yet.
+# ---------------------------------------------------------------------------
+if [[ -z "${GNUSTEP_MAKEFILES:-}" ]]; then
+    for gnustep_sh in \
+            /usr/share/GNUstep/Makefiles/GNUstep.sh \
+            /usr/local/share/GNUstep/Makefiles/GNUstep.sh \
+            /usr/GNUstep/System/Library/Makefiles/GNUstep.sh; do
+        if [[ -f "${gnustep_sh}" ]]; then
+            # shellcheck source=/dev/null
+            source "${gnustep_sh}"
+            break
+        fi
+    done
+fi
+
+# ---------------------------------------------------------------------------
+# Start the compositor.
+# ---------------------------------------------------------------------------
+echo "ambrosia-session: starting ${COMPOSITOR}"
+"${COMPOSITOR}" "$@" &
+COMPOSITOR_PID=$!
+
+# ---------------------------------------------------------------------------
+# Forward SIGTERM / SIGINT to the compositor so that sending a signal to
+# this script triggers the compositor's own graceful shutdown rather than
+# immediately orphaning all session services.
+# ---------------------------------------------------------------------------
+_forward_signal() {
+    local sig="$1"
+    if kill -0 "${COMPOSITOR_PID}" 2>/dev/null; then
+        echo "ambrosia-session: forwarding SIG${sig} to compositor (pid ${COMPOSITOR_PID})"
+        kill "-${sig}" "${COMPOSITOR_PID}"
+    fi
+}
+trap '_forward_signal TERM' TERM
+trap '_forward_signal INT'  INT
+
+# ---------------------------------------------------------------------------
+# Block until the compositor exits.
+# ---------------------------------------------------------------------------
+wait "${COMPOSITOR_PID}" || true
+COMPOSITOR_EXIT=$?
+echo "ambrosia-session: compositor exited (status ${COMPOSITOR_EXIT})"
+
+# Reset signal traps — the compositor is gone, nothing to forward to.
+trap - TERM INT
+
+# ---------------------------------------------------------------------------
+# Build the list of service names to clean up.
+#
+# Start with the fixed set of system services, then append any user-app
+# names recorded in the session plist (written by AmbrosiaSessionCreateDefault
+# in AmbrosiaSession.m and updated live by AmbrosiaSession.syncUserApps:).
+#
+# The session plist is in GNUstep OpenStep format.  Values for the "name"
+# key are plain identifiers (no spaces) so a simple pattern match is safe.
+# ---------------------------------------------------------------------------
+KNOWN_SERVICES=(MenuServer AmbrosiaDock GFinder)
+
+SESSION_PLIST="${HOME}/GNUstep/Library/Preferences/org.gnustep.AmbrosiaSession.plist"
+USER_APP_NAMES=()
+if [[ -r "${SESSION_PLIST}" ]]; then
+    # Match both quoted and unquoted identifiers after "name = " or "name=".
+    mapfile -t USER_APP_NAMES < <(
+        sed -n 's/[[:space:]]*name[[:space:]]*=[[:space:]]*"\?\([A-Za-z0-9._-][A-Za-z0-9._-]*\)"\?[[:space:]]*;.*/\1/p' \
+            "${SESSION_PLIST}" 2>/dev/null || true
+    )
+fi
+
+# Merge, deduplicate, and drop empty strings.
+declare -A _seen
+ALL_SERVICES=()
+for svc in "${KNOWN_SERVICES[@]}" "${USER_APP_NAMES[@]}"; do
+    [[ -z "${svc}" ]] && continue
+    [[ -n "${_seen[${svc}]:-}" ]] && continue
+    _seen["${svc}"]=1
+    ALL_SERVICES+=("${svc}")
+done
+
+if [[ ${#ALL_SERVICES[@]} -eq 0 ]]; then
+    echo "ambrosia-session: no services to clean up"
+    exit "${COMPOSITOR_EXIT}"
+fi
+
+echo "ambrosia-session: stopping services: ${ALL_SERVICES[*]}"
+
+# ---------------------------------------------------------------------------
+# Phase 1 — SIGTERM (graceful shutdown).
+# ---------------------------------------------------------------------------
+for svc in "${ALL_SERVICES[@]}"; do
+    if pkill -TERM -x "${svc}" 2>/dev/null; then
+        echo "ambrosia-session: sent SIGTERM to ${svc}"
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# Phase 2 — wait up to 5 seconds for every service to exit on its own.
+# ---------------------------------------------------------------------------
+GRACE_SECONDS=5
+DEADLINE=$(( $(date +%s) + GRACE_SECONDS ))
+SURVIVORS=("${ALL_SERVICES[@]}")
+
+while [[ ${#SURVIVORS[@]} -gt 0 && $(date +%s) -lt ${DEADLINE} ]]; do
+    sleep 0.25
+    STILL_RUNNING=()
+    for svc in "${SURVIVORS[@]}"; do
+        if pgrep -x "${svc}" &>/dev/null; then
+            STILL_RUNNING+=("${svc}")
+        fi
+    done
+    SURVIVORS=("${STILL_RUNNING[@]}")
+done
+
+# ---------------------------------------------------------------------------
+# Phase 3 — SIGKILL anything that survived the grace period.
+# ---------------------------------------------------------------------------
+if [[ ${#SURVIVORS[@]} -gt 0 ]]; then
+    echo "ambrosia-session: force-killing unresponsive services: ${SURVIVORS[*]}"
+    for svc in "${SURVIVORS[@]}"; do
+        pkill -KILL -x "${svc}" 2>/dev/null || true
+    done
+fi
+
+echo "ambrosia-session: session ended"
+exit "${COMPOSITOR_EXIT}"

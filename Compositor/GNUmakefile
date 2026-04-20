@@ -9,16 +9,17 @@ ambrosia-compositor_OBJC_FILES = \
 	AmbrosiaView.m \
 	AmbrosiaDecoration.m \
 	AmbrosiaInput.m \
-	AmbrosiaSession.m
+	AmbrosiaSession.m \
+	AmbrosiaBackground.m
 
 ambrosia-compositor_OBJCFLAGS = \
-	$(shell pkg-config --cflags wlroots-0.20 wayland-server xkbcommon) \
+	$(shell pkg-config --cflags wlroots-0.20 wayland-server xkbcommon cairo) \
 	-DWLR_USE_UNSTABLE \
 	-I$(CURDIR)
 
 ambrosia-compositor_LDFLAGS = \
-	$(shell pkg-config --libs wlroots-0.20 wayland-server xkbcommon) \
-	-ldrm
+	$(shell pkg-config --libs wlroots-0.20 wayland-server xkbcommon cairo) \
+	-ldrm -ljpeg
 
 ambrosia-compositor_INCLUDE_DIRS = .
 

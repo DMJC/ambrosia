@@ -28,10 +28,17 @@ SUBPROJECTS = Compositor Dock SystemPreferences MenuServer AmbrosiaMenus
 
 include $(GNUSTEP_MAKEFILES)/aggregate.make
 
-.PHONY: run clean-all
+.PHONY: run run-session clean-all
 
+# Run the compositor directly (no watchdog cleanup on exit).
 run: all
 	./Compositor/$(GNUSTEP_OBJ_DIR)/ambrosia-compositor
+
+# Run the full session: compositor + automatic service cleanup on exit.
+# Prefer this over 'make run' so orphaned Dock/MenuServer processes are
+# terminated if the compositor crashes.
+run-session: all
+	./ambrosia-session
 
 clean-all:
 	$(MAKE) -C Compositor clean
