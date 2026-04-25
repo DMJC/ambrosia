@@ -2,6 +2,7 @@
 #define AMBROSIA_VIEW_H
 
 #import <Foundation/Foundation.h>
+#import "AmbrosiaWindowView.h"
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_scene.h>
 
@@ -27,7 +28,7 @@ struct ambrosia_view_state {
     void *objc_view;
 };
 
-@interface AmbrosiaView : NSObject
+@interface AmbrosiaView : NSObject <AmbrosiaWindowView>
 
 @property (nonatomic, weak) AmbrosiaCompositor *compositor;
 @property (nonatomic, readonly) struct ambrosia_view_state *state;
@@ -87,6 +88,15 @@ struct ambrosia_view_state {
 - (void)handleRequestFullscreen;
 - (void)handleSetTitle;
 - (void)handleSetAppId;
+
+/* AmbrosiaWindowView protocol additions */
+- (void)activateFocus:(BOOL)focused;
+- (void)close;
+- (void)raiseSceneNode;
+- (nullable struct wlr_surface *)surfaceAt:(double)x y:(double)y
+                                   localX:(double *)lx localY:(double *)ly;
+- (nullable struct wl_client *)waylandClient;
+- (pid_t)clientPid;
 
 @end
 

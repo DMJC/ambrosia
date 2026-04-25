@@ -693,12 +693,30 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
 /* ---------------------------------------------------------------------- */
 #pragma mark - Actions
 
+- (void)_openFolderInGFinder:(NSString *)path
+{
+    NSArray<NSString *> *candidates = @[
+        @"/usr/GNUstep/Local/Applications/GFinder.app",
+        @"/usr/GNUstep/System/Applications/GFinder.app",
+        @"/usr/local/GNUstep/Local/Applications/GFinder.app",
+        [NSHomeDirectory() stringByAppendingPathComponent:
+            @"GNUstep/Applications/GFinder.app"],
+    ];
+    for (NSString *gfinderPath in candidates) {
+        if ([[NSFileManager defaultManager] fileExistsAtPath:gfinderPath]) {
+            [[NSWorkspace sharedWorkspace] openFile:path withApplication:gfinderPath];
+            return;
+        }
+    }
+    /* GFinder not found; fall back to system default */
+    [[NSWorkspace sharedWorkspace] openFile:path];
+}
+
 - (void)launchItem:(DockItem *)item
 {
     if (!item.launchPath) return;
     if (item.itemType == DockItemTypeFolder) {
-        /* Open folder in the default file manager */
-        [[NSWorkspace sharedWorkspace] openFile:item.launchPath];
+        [self _openFolderInGFinder:item.launchPath];
         return;
     }
 

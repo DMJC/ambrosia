@@ -1,7 +1,9 @@
 #import <AppKit/AppKit.h>
 #import "AmbrosiaStatusItemPlugin.h"
+#import "TrayItem.h"
 
 @class MenuBarController;
+@class TrayManager;
 
 /**
  * MenuBarView — full-width custom view that draws the Ambrosia menu bar.
@@ -23,10 +25,17 @@
 
 /**
  * Ordered array of right-side status item plugins (drawn right-to-left,
- * inserted between the clock and session button).
+ * inserted between the clock and tray area).
  * Set by MenuBarController after construction.
  */
 @property (nonatomic, copy) NSArray<id<AmbrosiaStatusItemPlugin>> *statusPlugins;
+
+/**
+ * Tray items from the SNI StatusNotifierWatcher, drawn between the status
+ * plugins and the clock.  Set by MenuBarController when the TrayManager
+ * reports a change.
+ */
+@property (nonatomic, copy) NSArray<TrayItem *> *trayItems;
 
 /**
  * Update the displayed application name and optional menu-item descriptors.

@@ -3,6 +3,7 @@
 #import "BluetoothStatusItem.h"
 #import "WiFiStatusItem.h"
 #import "VolumeStatusItem.h"
+#import "TrayManager.h"
 
 @class MenuBarView;
 
@@ -14,13 +15,16 @@
  * The controller also drives the Ambrosia system actions (logout, about, …)
  * that the MenuBarView triggers via direct calls.
  */
-@interface MenuBarController : NSObject <MenuServerProtocol>
+@interface MenuBarController : NSObject <MenuServerProtocol, TrayManagerDelegate>
 
 /** The full-width borderless panel displayed at NSMainMenuWindowLevel. */
 @property (nonatomic, strong, readonly) NSPanel *menuPanel;
 
 /** The custom view that fills the panel and draws all bar content. */
 @property (nonatomic, strong, readonly) MenuBarView *menuBarView;
+
+/** The SNI tray manager; used by MenuBarView for Activate/ContextMenu calls. */
+@property (nonatomic, strong, readonly) TrayManager *trayManager;
 
 /** Show the menu bar.  Call once from -applicationDidFinishLaunching:. */
 - (void)showMenuBar;

@@ -3,6 +3,7 @@
 #import "AmbrosiaDecoration.h"
 
 #include <wlr/util/log.h>
+#include <wlr/types/wlr_xdg_shell.h>
 #include <string.h>
 
 /* --------------------------------------------------------------------------
@@ -473,11 +474,15 @@ check_title:
 
 - (void)handleRequestMaximize
 {
+    if (!_state->xdg_toplevel->base->initialized)
+        return;
     [self _setMaximized:_state->xdg_toplevel->requested.maximized];
 }
 
 - (void)handleRequestFullscreen
 {
+    if (!_state->xdg_toplevel->base->initialized)
+        return;
     BOOL doFull = _state->xdg_toplevel->requested.fullscreen;
     wlr_xdg_toplevel_set_fullscreen(_state->xdg_toplevel, doFull);
     wlr_xdg_surface_schedule_configure(_state->xdg_toplevel->base);
@@ -494,6 +499,58 @@ check_title:
     _isDockWindow        = isDock(_state->xdg_toplevel);
     _isDesktopBackground = isDesktopToplevel(_state->xdg_toplevel);
     _isMenu              = isMenuToplevel(_state->xdg_toplevel) || _isDockWindow || _isDesktopBackground;
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - AmbrosiaWindowView protocol additions
+
+- (void)activateFocus:(BOOL)focused
+{
+    wlr_xdg_toplevel_set_activated(_state->xdg_toplevel, focused ? true : false);
+}
+
+- (void)close
+{
+    wlr_xdg_toplevel_send_close(_state->xdg_toplevel);
+}
+
+- (void)raiseSceneNode
+{
+    wlr_scene_node_raise_to_top(&_state->scene_tree->node);
+}
+
+- (struct wlr_surface *)surfaceAt:(double)x y:(double)y
+                          localX:(double *)lx localY:(double *)ly
+{
+    NSEdgeInsets insets = [AmbrosiaDecoration frameInsets];
+    double view_sx = x - _x;
+    double view_sy = y - _y;
+    if (_decoration) {
+        view_sx -= insets.left;
+        view_sy -= insets.top;
+    }
+    double sx = 0, sy = 0;
+    struct wlr_surface *found =
+        wlr_xdg_surface_surface_at(_state->xdg_toplevel->base, view_sx, view_sy, &sx, &sy);
+    if (found) {
+        if (lx) *lx = sx;
+        if (ly) *ly = sy;
+    }
+    return found;
+}
+
+- (struct wl_client *)waylandClient
+{
+    return wl_resource_get_client(_state->xdg_toplevel->base->resource);
+}
+
+- (pid_t)clientPid
+{
+    struct wl_client *client =
+        wl_resource_get_client(_state->xdg_toplevel->base->resource);
+    pid_t pid = 0;
+    wl_client_get_credentials(client, &pid, NULL, NULL);
+    return pid;
 }
 
 @end

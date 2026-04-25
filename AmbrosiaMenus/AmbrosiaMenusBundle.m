@@ -95,41 +95,55 @@
 
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
 
-    /* Initial registration: fires after the app finishes launching and its
-     * main menu has been set up.                                           */
-    [nc addObserverForName:NSApplicationDidFinishLaunchingNotification
-                   object:nil
-                    queue:[NSOperationQueue mainQueue]
-               usingBlock:^(NSNotification *note) {
-        [[AmbrosiaMenusBundle sharedBundle] registerMenuWithServer];
-    }];
+    AmbrosiaMenusBundle *bundle = [AmbrosiaMenusBundle sharedBundle];
+
+    /* Use the traditional addObserver:selector:name:object: API instead of
+     * addObserverForName:object:queue:usingBlock:.  GNUstep always routes
+     * block observers through GSNotificationBlockOperation on a thread-pool
+     * thread regardless of the queue: argument; NSConnection / NSPortMessage
+     * crash when called off the main thread.  The selector-based API delivers
+     * directly on the thread that posts the notification, which for all
+     * AppKit lifecycle and window notifications is the main thread.          */
+    [nc addObserver:bundle
+           selector:@selector(_handleMenuRegistration:)
+               name:NSApplicationDidFinishLaunchingNotification
+             object:nil];
+
+    [nc addObserver:bundle
+           selector:@selector(_handleMenuRegistration:)
+               name:NSApplicationDidBecomeActiveNotification
+             object:nil];
 
     /* Re-register whenever the app regains focus (e.g. user switches back).
      * NSApplicationDidBecomeActiveNotification may only fire once in
      * gnustep-back; NSWindowDidBecomeKeyNotification is more reliable because
      * it fires every time the compositor delivers wlr_seat keyboard.enter to
      * a surface, which gnustep-back translates into a key window change.    */
-    [nc addObserverForName:NSApplicationDidBecomeActiveNotification
-                   object:nil
-                    queue:[NSOperationQueue mainQueue]
-               usingBlock:^(NSNotification *note) {
-        [[AmbrosiaMenusBundle sharedBundle] registerMenuWithServer];
-    }];
-
-    [nc addObserverForName:NSWindowDidBecomeKeyNotification
-                   object:nil
-                    queue:[NSOperationQueue mainQueue]
-               usingBlock:^(NSNotification *note) {
-        [[AmbrosiaMenusBundle sharedBundle] registerMenuWithServer];
-    }];
+    [nc addObserver:bundle
+           selector:@selector(_handleMenuRegistration:)
+               name:NSWindowDidBecomeKeyNotification
+             object:nil];
 
     /* Deregister on termination so MenuServer clears the bar cleanly. */
-    [nc addObserverForName:NSApplicationWillTerminateNotification
-                   object:nil
-                    queue:[NSOperationQueue mainQueue]
-               usingBlock:^(NSNotification *note) {
-        [[AmbrosiaMenusBundle sharedBundle] deregisterFromServer];
-    }];
+    [nc addObserver:bundle
+           selector:@selector(_handleMenuDeregistration:)
+               name:NSApplicationWillTerminateNotification
+             object:nil];
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Notification selectors (main-thread delivery)
+
+- (void)_handleMenuRegistration:(NSNotification *)note
+{
+    (void)note;
+    [self registerMenuWithServer];
+}
+
+- (void)_handleMenuDeregistration:(NSNotification *)note
+{
+    (void)note;
+    [self deregisterFromServer];
 }
 
 /* ---------------------------------------------------------------------- */

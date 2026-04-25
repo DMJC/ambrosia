@@ -4,6 +4,7 @@
 #import <Foundation/Foundation.h>
 #import "AmbrosiaSession.h"
 #import "AmbrosiaBackground.h"
+#import "AmbrosiaWindowView.h"
 #include <wayland-server-core.h>
 #include <wlr/backend.h>
 #include <wlr/render/allocator.h>
@@ -25,8 +26,10 @@
 #include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_output_management_v1.h>
 #include <wlr/backend/session.h>
+#include <wlr/xwayland.h>
 
 @class AmbrosiaView;
+@class AmbrosiaXWaylandView;
 @class AmbrosiaOutput;
 
 /* Cursor interaction mode */
@@ -102,6 +105,11 @@ struct ambrosia_compositor_state {
     struct wlr_box      grab_geobox;
     uint32_t            resize_edges;
 
+    /* XWayland — NULL if Xwayland is unavailable or failed to start */
+    struct wlr_xwayland         *xwayland;
+    struct wl_listener           xwayland_ready;
+    struct wl_listener           new_xwayland_surface;
+
     /* Logout self-pipe: background notification thread → wl_event_loop */
     int                  logout_pipe[2];
     struct wl_event_source *logout_source;
@@ -131,10 +139,10 @@ struct ambrosia_compositor_state {
 @interface AmbrosiaCompositor : NSObject
 
 @property (readonly) struct ambrosia_compositor_state *state;
-@property (readonly) NSMutableArray<AmbrosiaView *>   *views;
+@property (readonly) NSMutableArray                   *views;         /**< id<AmbrosiaWindowView> elements */
 @property (readonly) NSMutableArray<AmbrosiaOutput *> *outputs;
 @property (readonly) NSMutableArray                   *layerSurfaces; /**< NSValue wrapping ambrosia_layer_surface* */
-@property (readonly, nullable) AmbrosiaView            *focusedView;
+@property (readonly, nullable) id<AmbrosiaWindowView>  focusedView;
 @property (readonly)           AmbrosiaSession         *session;
 @property (readonly)           AmbrosiaBackground      *background;
 
@@ -153,16 +161,16 @@ struct ambrosia_compositor_state {
 - (void)saveSessionAndLogout;
 
 /* View management */
-- (void)addView:(AmbrosiaView *)view;
-- (void)removeView:(AmbrosiaView *)view;
-- (nullable AmbrosiaView *)viewAtX:(double)x y:(double)y
-                         surface:(struct wlr_surface **)surfaceOut
-                          localX:(double *)lx
-                          localY:(double *)ly;
-- (void)focusView:(AmbrosiaView *)view surface:(struct wlr_surface *)surface;
-- (void)focusNextWindowExcluding:(AmbrosiaView *)excluded;
-- (void)beginMoveView:(AmbrosiaView *)view cursor:(struct wlr_cursor *)cursor;
-- (void)beginResizeView:(AmbrosiaView *)view
+- (void)addView:(id<AmbrosiaWindowView>)view;
+- (void)removeView:(id<AmbrosiaWindowView>)view;
+- (nullable id<AmbrosiaWindowView>)viewAtX:(double)x y:(double)y
+                                   surface:(struct wlr_surface **)surfaceOut
+                                    localX:(double *)lx
+                                    localY:(double *)ly;
+- (void)focusView:(nullable id<AmbrosiaWindowView>)view surface:(nullable struct wlr_surface *)surface;
+- (void)focusNextWindowExcluding:(nullable id<AmbrosiaWindowView>)excluded;
+- (void)beginMoveView:(id<AmbrosiaWindowView>)view cursor:(struct wlr_cursor *)cursor;
+- (void)beginResizeView:(id<AmbrosiaWindowView>)view
                  cursor:(struct wlr_cursor *)cursor
                   edges:(uint32_t)edges;
 
@@ -186,6 +194,10 @@ struct ambrosia_compositor_state {
 
 /** Broadcast the current output configuration to all wlr-output-management clients. */
 - (void)notifyOutputManager;
+
+/* XWayland callbacks */
+- (void)handleXWaylandReady;
+- (void)handleNewXWaylandSurface:(struct wlr_xwayland_surface *)xsurface;
 
 @end
 

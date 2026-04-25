@@ -1,6 +1,7 @@
 #import "AmbrosiaCompositor.h"
 #import "AmbrosiaOutput.h"
 #import "AmbrosiaView.h"
+#import "AmbrosiaXWaylandView.h"
 #import "AmbrosiaDecoration.h"
 #import "AmbrosiaInput.h"
 
@@ -22,12 +23,7 @@
 - (void)applyExclusiveZonesToBox:(struct wlr_box *)box
                        forOutput:(struct wlr_output *)output;
 - (void)recalculateUsableTop;
-/**
- * Give keyboard focus to the topmost mapped, non-miniaturized, non-menu
- * window other than @c excluded.  Clears focus if no candidate exists.
- * Used after a window is minimized or closed via its decoration button.
- */
-- (void)focusNextWindowExcluding:(AmbrosiaView *)excluded;
+- (void)focusNextWindowExcluding:(nullable id<AmbrosiaWindowView>)excluded;
 /** Called from handle_activate_pipe on the wl_event_loop thread. */
 - (void)_focusApplicationFromActivateRequest;
 /** Called from handle_session_pipe on the wl_event_loop thread. */
@@ -299,16 +295,36 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
 }
 
 /* --------------------------------------------------------------------------
+ * XWayland C-level callbacks
+ * -------------------------------------------------------------------------- */
+
+static void handle_xwayland_ready(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_compositor_state *s =
+        wl_container_of(listener, s, xwayland_ready);
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)s->objc_compositor;
+    [c handleXWaylandReady];
+}
+
+static void handle_new_xwayland_surface(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_compositor_state *s =
+        wl_container_of(listener, s, new_xwayland_surface);
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)s->objc_compositor;
+    [c handleNewXWaylandSurface:(struct wlr_xwayland_surface *)data];
+}
+
+/* --------------------------------------------------------------------------
  * AmbrosiaCompositor
  * -------------------------------------------------------------------------- */
 
 @implementation AmbrosiaCompositor {
     struct ambrosia_compositor_state *_state;
-    NSMutableArray<AmbrosiaView *>   *_views;
+    NSMutableArray                   *_views;          /* id<AmbrosiaWindowView> */
     NSMutableArray<AmbrosiaOutput *> *_outputs;
     NSMutableArray                   *_layerSurfaces;
     AmbrosiaInput                    *_input;
-    AmbrosiaView                     *_focusedView;
+    id<AmbrosiaWindowView>            _focusedView;
     AmbrosiaSession                  *_session;
     AmbrosiaBackground               *_background;
     BOOL                              _running;
@@ -426,7 +442,7 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     wlr_log(WLR_DEBUG, "Allocator created");
 
     /* Wayland globals */
-    wlr_compositor_create(_state->display, 5, _state->renderer);
+    _state->compositor = wlr_compositor_create(_state->display, 5, _state->renderer);
     wlr_subcompositor_create(_state->display);
     wlr_data_device_manager_create(_state->display);
     wlr_log(WLR_DEBUG, "Wayland globals registered");
@@ -555,6 +571,20 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
 
     /* Input handler */
     _input = [[AmbrosiaInput alloc] initWithCompositor:self];
+
+    /* XWayland — started lazily; Xwayland process spawns when first X11 client
+     * connects.  display_name is determined at creation; DISPLAY is set in the
+     * ready callback once the XWM handshake is complete.                      */
+    _state->xwayland = wlr_xwayland_create(_state->display, _state->compositor, false);
+    if (_state->xwayland) {
+        _state->xwayland_ready.notify = handle_xwayland_ready;
+        wl_signal_add(&_state->xwayland->events.ready, &_state->xwayland_ready);
+        _state->new_xwayland_surface.notify = handle_new_xwayland_surface;
+        wl_signal_add(&_state->xwayland->events.new_surface, &_state->new_xwayland_surface);
+        wlr_log(WLR_INFO, "XWayland initialised");
+    } else {
+        wlr_log(WLR_ERROR, "Failed to initialise XWayland — X11 apps will not work");
+    }
 
     /* Logout self-pipe: background NSRunLoop thread → wl_event_loop */
     if (pipe(_state->logout_pipe) != 0) {
@@ -718,6 +748,10 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     wl_display_destroy_clients(_state->display);
     [_session stop];
     _session = nil;
+    if (_state->xwayland) {
+        wlr_xwayland_destroy(_state->xwayland);
+        _state->xwayland = NULL;
+    }
     wlr_xcursor_manager_destroy(_state->cursor_mgr);
     wlr_cursor_destroy(_state->cursor);
     wlr_output_layout_destroy(_state->output_layout);
@@ -733,43 +767,33 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
 /* ---------------------------------------------------------------------- */
 #pragma mark - View management
 
-- (void)addView:(AmbrosiaView *)view
+- (void)addView:(id<AmbrosiaWindowView>)view
 {
     [_views addObject:view];
     wlr_log(WLR_DEBUG, "View added (total: %lu)", (unsigned long)_views.count);
 }
 
-- (void)removeView:(AmbrosiaView *)view
+- (void)removeView:(id<AmbrosiaWindowView>)view
 {
     if (_focusedView == view) _focusedView = nil;
     [_views removeObject:view];
     wlr_log(WLR_DEBUG, "View removed (total: %lu)", (unsigned long)_views.count);
 }
 
-- (nullable AmbrosiaView *)viewAtX:(double)x y:(double)y
-                          surface:(struct wlr_surface **)surfaceOut
-                           localX:(double *)lx
-                           localY:(double *)ly
+- (nullable id<AmbrosiaWindowView>)viewAtX:(double)x y:(double)y
+                                   surface:(struct wlr_surface **)surfaceOut
+                                    localX:(double *)lx
+                                    localY:(double *)ly
 {
     NSEdgeInsets insets = [AmbrosiaDecoration frameInsets];
 
     /* Iterate top-to-bottom (last added = topmost) */
     for (NSInteger i = (NSInteger)_views.count - 1; i >= 0; i--) {
-        AmbrosiaView *view = _views[i];
+        id<AmbrosiaWindowView> view = _views[(NSUInteger)i];
         if (!view.isMapped) continue;
 
-        /* Try surface hit first */
-        double view_sx = x - view.x;
-        double view_sy = y - view.y;
-        if (view.decoration) {
-            view_sx -= insets.left;
-            view_sy -= insets.top;
-        }
-
-        struct wlr_surface *found = NULL;
         double sx = 0, sy = 0;
-        found = wlr_xdg_surface_surface_at(
-            view.state->xdg_toplevel->base, view_sx, view_sy, &sx, &sy);
+        struct wlr_surface *found = [view surfaceAt:x y:y localX:&sx localY:&sy];
 
         if (found) {
             if (surfaceOut) *surfaceOut = found;
@@ -778,9 +802,8 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
             return view;
         }
 
-        /* The titlebar/borders are compositor-drawn rects, not Wayland surfaces,
-         * so wlr_xdg_surface_surface_at will not find them.  Check whether the
-         * cursor is inside the decorated bounding box instead.               */
+        /* The titlebar/borders are compositor-drawn rects, not Wayland surfaces.
+         * Check whether the cursor is inside the decorated bounding box.      */
         if (view.decoration) {
             struct wlr_box geo = [view geometry];
             double frameW = insets.left + geo.width  + insets.right;
@@ -798,77 +821,69 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     return nil;
 }
 
-- (void)focusView:(AmbrosiaView *)view surface:(struct wlr_surface *)surface
+- (void)focusView:(nullable id<AmbrosiaWindowView>)view
+          surface:(nullable struct wlr_surface *)surface
 {
     if (_focusedView == view) return;
 
     /*
-     * Modal-dialog protection: if the currently focused app has a mapped
-     * transient child window (xdg_toplevel->parent belonging to this app's
-     * Wayland client — e.g. an NSAlert panel), redirect ALL focus changes
-     * back to that dialog — even if the new target is nil (empty desktop),
-     * a menu/panel surface, or a window belonging to a different app.
-     *
-     * Without this, gnustep-back receives wl_keyboard.leave and fires
-     * NSApplicationDidResignActiveNotification, which terminates the modal
-     * session and closes the alert window.
-     *
-     * We check _focusedView here (not `view`) so the guard fires even when
-     * the new target is nil or a menu surface that bypasses the isMenu path.
+     * Modal-dialog protection (XDG toplevels only): if the currently focused
+     * XDG app has a mapped transient child, redirect focus to that dialog.
      */
-    if (_focusedView) {
-        struct wl_client *focusedClient = wl_resource_get_client(
-            _focusedView.state->xdg_toplevel->base->resource);
+    if ([_focusedView isKindOfClass:[AmbrosiaView class]]) {
+        AmbrosiaView *xdgFocused = (AmbrosiaView *)_focusedView;
+        struct wl_client *focusedClient =
+            wl_resource_get_client(xdgFocused.state->xdg_toplevel->base->resource);
 
-        /* Look for the topmost mapped transient belonging to the focused app.
-         * If one exists, it owns input until it is dismissed. */
         AmbrosiaView *modal = nil;
-        for (AmbrosiaView *candidate in _views) {
-            if (!candidate.isMapped) continue;
-            struct wlr_xdg_toplevel *tp = candidate.state->xdg_toplevel;
+        for (id<AmbrosiaWindowView> candidate in _views) {
+            if (![candidate isKindOfClass:[AmbrosiaView class]]) continue;
+            AmbrosiaView *v = (AmbrosiaView *)candidate;
+            if (!v.isMapped) continue;
+            struct wlr_xdg_toplevel *tp = v.state->xdg_toplevel;
             if (!tp->parent) continue;
             struct wl_client *parentClient =
                 wl_resource_get_client(tp->parent->base->resource);
             if (parentClient == focusedClient) {
-                modal = candidate; /* last in list = topmost */
+                modal = v;
             }
         }
 
-        if (modal && view != modal) {
+        if (modal && (id<AmbrosiaWindowView>)modal != view) {
             wlr_log(WLR_DEBUG,
-                "focusView: redirecting to modal dialog '%s' "
-                "(blocked focus change while modal is active)",
+                "focusView: redirecting to modal dialog '%s'",
                 modal.state->xdg_toplevel->title ?: "(untitled)");
             view    = modal;
             surface = modal.surface;
         }
     }
 
-    /* Re-check: redirect may have landed on the already-focused view */
     if (_focusedView == view) return;
 
     if (view) {
-        const char *title   = view.state->xdg_toplevel->title   ?: "(untitled)";
-        const char *app_id  = view.state->xdg_toplevel->app_id  ?: "(unknown)";
-        wlr_log(WLR_DEBUG, "Focus: %s [%s]", title, app_id);
+        if ([view isKindOfClass:[AmbrosiaView class]]) {
+            AmbrosiaView *v = (AmbrosiaView *)view;
+            wlr_log(WLR_DEBUG, "Focus: %s [%s]",
+                    v.state->xdg_toplevel->title  ?: "(untitled)",
+                    v.state->xdg_toplevel->app_id ?: "(unknown)");
+        } else if ([view isKindOfClass:[AmbrosiaXWaylandView class]]) {
+            AmbrosiaXWaylandView *v = (AmbrosiaXWaylandView *)view;
+            wlr_log(WLR_DEBUG, "Focus XWayland: %s [%s]",
+                    v.state->xwayland_surface->title ?: "(untitled)",
+                    v.state->xwayland_surface->class ?: "(unknown)");
+        }
     } else {
         wlr_log(WLR_DEBUG, "Focus cleared");
     }
 
-    /* Capture the previous app's wl_client before updating _focusedView so we
-     * can detect an application change after the new focus is established.    */
-    struct wl_client *prevClient = NULL;
-    if (_focusedView) {
-        prevClient = wl_resource_get_client(
-            _focusedView.state->xdg_toplevel->base->resource);
-    }
+    /* Track previous pid for app-change detection. */
+    pid_t prevPid = [_focusedView clientPid];
 
     /* Unfocus previous */
     if (_focusedView) {
         _focusedView.decoration.focused = NO;
-        [_focusedView.decoration updateWithWidth:0 height:0 title:nil]; /* redraw unfocused */
-        struct wlr_xdg_surface *prev = _focusedView.state->xdg_toplevel->base;
-        wlr_xdg_toplevel_set_activated(prev->toplevel, false);
+        [_focusedView.decoration updateWithWidth:0 height:0 title:nil];
+        [_focusedView activateFocus:NO];
     }
 
     _focusedView = view;
@@ -880,75 +895,57 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
 
     view.decoration.focused = YES;
 
-    /* Raise to top of view list */
+    /* Raise to top of view list and scene graph */
     [_views removeObject:view];
     [_views addObject:view];
+    [view raiseSceneNode];
 
-    /* Raise scene tree */
-    wlr_scene_node_raise_to_top(&view.state->scene_tree->node);
-
-    /* Activate the xdg toplevel */
-    wlr_xdg_toplevel_set_activated(view.state->xdg_toplevel, true);
+    /* Activate the window (XDG: set_activated; XWayland: activate + offer_focus) */
+    [view activateFocus:YES];
 
     /* Notify seat keyboard */
     struct wlr_keyboard *kb = wlr_seat_get_keyboard(_state->seat);
     if (kb) {
-        wlr_seat_keyboard_notify_enter(_state->seat,
-            surface ?: view.surface,
-            kb->keycodes, kb->num_keycodes, &kb->modifiers);
+        struct wlr_surface *target = surface ?: [view surface];
+        if (target) {
+            wlr_seat_keyboard_notify_enter(_state->seat,
+                target, kb->keycodes, kb->num_keycodes, &kb->modifiers);
+        }
     }
 
     /* Redraw decoration to show focused state */
-    struct wlr_box geo = [view geometry];
-    NSString *title = view.state->xdg_toplevel->title
-        ? [NSString stringWithUTF8String:view.state->xdg_toplevel->title]
-        : @"";
-    [view.decoration updateWithWidth:geo.width height:geo.height title:title];
+    [view updateTitle];
 
-    /* Notify apps when the active APPLICATION changes (different wl_client).
+    /* Broadcast AmbrosiaApplicationActivated when the active app changes.
      *
-     * gnustep-back does not reliably translate wl_keyboard.enter into
-     * NSWindowDidBecomeKeyNotification for surfaces that are already mapped
-     * (e.g. Super+Tab cycling between existing apps), so AmbrosiaMenusBundle
-     * relies on this distributed notification as the primary trigger for
-     * re-registering the focused app's menus with MenuServer.
-     *
-     * The notification name "AmbrosiaApplicationActivated" with userInfo key
-     * "pid" matches kAmbrosiaApplicationActivatedNotification /
-     * kAmbrosiaActivatedPIDKey in AmbrosiaMenus/MenuServerProtocol.h.        */
-    struct wl_client *newClient = wl_resource_get_client(
-        view.state->xdg_toplevel->base->resource);
-    if (newClient != prevClient) {
-        pid_t newPid = 0;
-        wl_client_get_credentials(newClient, &newPid, NULL, NULL);
-        if (newPid > 0) {
-            [[NSDistributedNotificationCenter defaultCenter]
-                postNotificationName:@"AmbrosiaApplicationActivated"
-                              object:nil
-                            userInfo:@{ @"pid": @((int32_t)newPid) }
-                  deliverImmediately:YES];
-        }
+     * Keyed on client PID — this works for both Wayland (one pid per process)
+     * and XWayland (each X11 app has a distinct pid via xsurface->pid).      */
+    pid_t newPid = [view clientPid];
+    if (newPid > 0 && newPid != prevPid) {
+        [[NSDistributedNotificationCenter defaultCenter]
+            postNotificationName:@"AmbrosiaApplicationActivated"
+                          object:nil
+                        userInfo:@{ @"pid": @((int32_t)newPid) }
+              deliverImmediately:YES];
     }
 }
 
 /* ---------------------------------------------------------------------- */
 #pragma mark - Move / Resize
 
-- (void)beginMoveView:(AmbrosiaView *)view cursor:(struct wlr_cursor *)cursor
+- (void)beginMoveView:(id<AmbrosiaWindowView>)view cursor:(struct wlr_cursor *)cursor
 {
-    wlr_log(WLR_DEBUG, "Begin move: %s",
-            view.state->xdg_toplevel->title ?: "(untitled)");
+    wlr_log(WLR_DEBUG, "Begin move");
     _state->cursor_mode = AmbrosiaCursorModeMove;
     _state->grab_x = cursor->x - view.x;
     _state->grab_y = cursor->y - view.y;
 }
 
-- (void)beginResizeView:(AmbrosiaView *)view
+- (void)beginResizeView:(id<AmbrosiaWindowView>)view
                  cursor:(struct wlr_cursor *)cursor
                   edges:(uint32_t)edges
 {
-    wlr_log(WLR_DEBUG, "Begin resize: %s (edges: 0x%x)",
-            view.state->xdg_toplevel->title ?: "(untitled)", edges);
+    wlr_log(WLR_DEBUG, "Begin resize (edges: 0x%x)", edges);
     _state->cursor_mode  = AmbrosiaCursorModeResize;
     _state->resize_edges = edges;
 
@@ -973,7 +970,7 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     double cy = _state->cursor->y;
 
     if (_state->cursor_mode == AmbrosiaCursorModeMove) {
-        AmbrosiaView *grabbed = _focusedView;
+        id<AmbrosiaWindowView> grabbed = _focusedView;
         if (grabbed) {
             int new_x = (int)(cx - _state->grab_x);
             int new_y = (int)(cy - _state->grab_y);
@@ -985,7 +982,7 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     }
 
     if (_state->cursor_mode == AmbrosiaCursorModeResize) {
-        AmbrosiaView *grabbed = _focusedView;
+        id<AmbrosiaWindowView> grabbed = _focusedView;
         if (!grabbed) return;
 
         struct wlr_box new_geo = _state->grab_geobox;
@@ -1009,9 +1006,16 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         int frame_x = new_geo.x - (grabbed.decoration ? (int)insets.left : 0);
         int frame_y = new_geo.y - (grabbed.decoration ? (int)insets.top  : 0);
         [grabbed moveTo:frame_x y:frame_y];
-        wlr_xdg_toplevel_set_size(grabbed.state->xdg_toplevel,
-                                  (uint32_t)new_geo.width,
-                                  (uint32_t)new_geo.height);
+
+        if ([grabbed isKindOfClass:[AmbrosiaView class]]) {
+            wlr_xdg_toplevel_set_size(((AmbrosiaView *)grabbed).state->xdg_toplevel,
+                                      (uint32_t)new_geo.width, (uint32_t)new_geo.height);
+        } else if ([grabbed isKindOfClass:[AmbrosiaXWaylandView class]]) {
+            AmbrosiaXWaylandView *xw = (AmbrosiaXWaylandView *)grabbed;
+            wlr_xwayland_surface_configure(xw.state->xwayland_surface,
+                (int16_t)new_geo.x, (int16_t)new_geo.y,
+                (uint16_t)new_geo.width, (uint16_t)new_geo.height);
+        }
         return;
     }
 
@@ -1045,8 +1049,7 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
              */
             BOOL skipLayerPointer = NO;
             if (_focusedView && !_focusedView.isMenu) {
-                struct wl_client *focusedClient = wl_resource_get_client(
-                    _focusedView.state->xdg_toplevel->base->resource);
+                struct wl_client *focusedClient = [_focusedView waylandClient];
                 for (NSValue *v in _layerSurfaces) {
                     struct ambrosia_layer_surface *ls = [v pointerValue];
                     if (!ls->wlr_layer_surface->surface->mapped) continue;
@@ -1072,7 +1075,7 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
 
     struct wlr_surface *surface = NULL;
     double sx = 0, sy = 0;
-    AmbrosiaView *view = [self viewAtX:cx y:cy surface:&surface localX:&sx localY:&sy];
+    id<AmbrosiaWindowView> view = [self viewAtX:cx y:cy surface:&surface localX:&sx localY:&sy];
 
     if (view) {
         /* Check if pointer is over a decoration */
@@ -1358,6 +1361,27 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     [_layerSurfaces addObject:[NSValue valueWithPointer:ls]];
 }
 
+- (void)handleXWaylandReady
+{
+    const char *display_name = _state->xwayland->display_name;
+    if (display_name) {
+        setenv("DISPLAY", display_name, 1);
+        wlr_log(WLR_INFO, "XWayland ready: DISPLAY=%s", display_name);
+    }
+    wlr_xwayland_set_seat(_state->xwayland, _state->seat);
+}
+
+- (void)handleNewXWaylandSurface:(struct wlr_xwayland_surface *)xsurface
+{
+    wlr_log(WLR_INFO, "New XWayland surface: title='%s' class='%s' override_redirect=%d",
+            xsurface->title ?: "(nil)",
+            xsurface->class ?: "(nil)",
+            xsurface->override_redirect);
+    AmbrosiaXWaylandView *view =
+        [[AmbrosiaXWaylandView alloc] initWithXWaylandSurface:xsurface compositor:self];
+    [self addView:view];
+}
+
 - (void)removeLayerSurface:(struct ambrosia_layer_surface *)ls
 {
     for (NSUInteger i = 0; i < _layerSurfaces.count; i++) {
@@ -1429,16 +1453,16 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
     wlr_log(WLR_DEBUG, "usable_top updated: %d px", top);
 }
 
-- (void)focusNextWindowExcluding:(AmbrosiaView *)excluded
+- (void)focusNextWindowExcluding:(nullable id<AmbrosiaWindowView>)excluded
 {
     /* Iterate views in reverse insertion order (topmost first) */
     for (NSInteger i = (NSInteger)_views.count - 1; i >= 0; i--) {
-        AmbrosiaView *candidate = _views[(NSUInteger)i];
-        if (candidate == excluded)       continue;
-        if (!candidate.isMapped)         continue;
-        if (candidate.isMiniaturized)    continue;
-        if (candidate.isMenu)            continue;
-        [self focusView:candidate surface:candidate.surface];
+        id<AmbrosiaWindowView> candidate = _views[(NSUInteger)i];
+        if (candidate == excluded)    continue;
+        if (!candidate.isMapped)      continue;
+        if (candidate.isMiniaturized) continue;
+        if (candidate.isMenu)         continue;
+        [self focusView:candidate surface:[candidate surface]];
         return;
     }
     [self focusView:nil surface:nil];
@@ -1546,7 +1570,7 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
 
     struct wlr_surface *surface = NULL;
     double sx = 0, sy = 0;
-    AmbrosiaView *view = [self viewAtX:cx y:cy surface:&surface localX:&sx localY:&sy];
+    id<AmbrosiaWindowView> view = [self viewAtX:cx y:cy surface:&surface localX:&sx localY:&sy];
 
     /* Ctrl+Super + left button → compositor-managed window move.
      * Consume the event entirely so the client does not see the click. */
@@ -1589,11 +1613,8 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
                 [self beginMoveView:view cursor:_state->cursor];
                 return;
             case AmbrosiaDecorationHitClose:
-                /* Ensure the window is focused (activated) before requesting
-                 * close so the client's performClose: handler receives it in
-                 * the right application-active state.                        */
                 [self focusView:view surface:surface];
-                wlr_xdg_toplevel_send_close(view.state->xdg_toplevel);
+                [view close];
                 return;
             case AmbrosiaDecorationHitMinimize:
                 /* Hide the window and transfer focus to the next available
@@ -1604,11 +1625,9 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
                 [self focusNextWindowExcluding:view];
                 return;
             case AmbrosiaDecorationHitMaximize:
-                /* Focus the window, then toggle its maximized state.
-                 * toggleMaximize saves/restores position and resizes the
-                 * surface to fill the usable screen area.                    */
                 [self focusView:view surface:surface];
-                [view toggleMaximize];
+                if ([view isKindOfClass:[AmbrosiaView class]])
+                    [(AmbrosiaView *)view toggleMaximize];
                 return;
             case AmbrosiaDecorationHitResizeTop:
             case AmbrosiaDecorationHitResizeBottom:
@@ -1834,15 +1853,17 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
         launchPath.UTF8String ?: "-");
 
     /* Search _views in reverse (topmost first).  Prefer non-miniaturized
-     * windows; keep a miniaturized fallback in case all windows are hidden. */
-    AmbrosiaView *target            = nil;
+     * windows; keep a miniaturized fallback in case all windows are hidden.
+     * Only search XDG views — XWayland apps use X11 app_id semantics.     */
+    AmbrosiaView *target               = nil;
     AmbrosiaView *miniaturizedFallback = nil;
 
     for (NSInteger i = (NSInteger)_views.count - 1; i >= 0; i--) {
+        if (![_views[(NSUInteger)i] isKindOfClass:[AmbrosiaView class]]) continue;
         AmbrosiaView *v = _views[(NSUInteger)i];
-        if (!v.isMapped)         continue;
-        if (v.isMenu)            continue;
-        if (v.isDockWindow)      continue;
+        if (!v.isMapped)           continue;
+        if (v.isMenu)              continue;
+        if (v.isDockWindow)        continue;
         if (v.isDesktopBackground) continue;
 
         const char *rawAppId = v.state->xdg_toplevel->app_id;
@@ -1889,9 +1910,11 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
 {
     wlr_log(WLR_INFO, "Saving session state and logging out");
 
-    /* Build window list from currently mapped views */
+    /* Build window list from currently mapped XDG views */
     NSMutableArray<NSDictionary *> *windows = [NSMutableArray array];
-    for (AmbrosiaView *view in _views) {
+    for (id<AmbrosiaWindowView> wv in _views) {
+        if (![wv isKindOfClass:[AmbrosiaView class]]) continue;
+        AmbrosiaView *view = (AmbrosiaView *)wv;
         if (!view.isMapped) continue;
         struct wlr_box geo = [view geometry];
         const char *appId = view.state->xdg_toplevel->app_id;

@@ -14,10 +14,11 @@
 /* ---------------------------------------------------------------------- */
 
 @implementation ForceQuitController {
-    NSPanel                    *_panel;
-    NSTableView                *_tableView;
-    NSButton                   *_killButton;
+    NSPanel                      *_panel;
+    NSTableView                  *_tableView;
+    NSButton                     *_killButton;
     NSMutableArray<FQAppEntry *> *_entries;
+    NSTextField                  *_runField;
 }
 
 - (instancetype)init
@@ -71,7 +72,7 @@
 
 - (void)_buildPanel
 {
-    const CGFloat W = 360, H = 300;
+    const CGFloat W = 360, H = 340;
 
     _panel = [[NSPanel alloc]
         initWithContentRect:NSMakeRect(0, 0, W, H)
@@ -85,9 +86,33 @@
 
     NSView *content = _panel.contentView;
 
+    /* --- run bar --- */
+    NSTextField *runLabel = [[NSTextField alloc]
+        initWithFrame:NSMakeRect(16, 302, 106, 22)];
+    runLabel.stringValue    = @"Run Command:";
+    runLabel.editable       = NO;
+    runLabel.bordered       = NO;
+    runLabel.drawsBackground = NO;
+    [content addSubview:runLabel];
+
+    _runField = [[NSTextField alloc]
+        initWithFrame:NSMakeRect(116, 302, 148, 22)];
+    _runField.placeholderString = @"command…";
+    _runField.target = self;
+    _runField.action = @selector(_runCommand:);
+    [content addSubview:_runField];
+
+    NSButton *runButton = [[NSButton alloc]
+        initWithFrame:NSMakeRect(270, 299, 74, 28)];
+    runButton.title      = @"Run";
+    runButton.target     = self;
+    runButton.action     = @selector(_runCommand:);
+    runButton.bezelStyle = NSRoundedBezelStyle;
+    [content addSubview:runButton];
+
     /* --- heading label --- */
     NSTextField *heading = [[NSTextField alloc]
-        initWithFrame:NSMakeRect(16, H - 44, W - 32, 22)];
+        initWithFrame:NSMakeRect(16, 262, W - 32, 22)];
     heading.stringValue = @"Select an application to force-quit:";
     heading.editable    = NO;
     heading.bordered    = NO;
@@ -96,7 +121,7 @@
 
     /* --- scroll view + table --- */
     NSScrollView *scroll = [[NSScrollView alloc]
-        initWithFrame:NSMakeRect(16, 60, W - 32, H - 110)];
+        initWithFrame:NSMakeRect(16, 60, W - 32, 190)];
     scroll.hasVerticalScroller   = YES;
     scroll.hasHorizontalScroller = NO;
     scroll.autohidesScrollers    = YES;
@@ -161,6 +186,24 @@
 - (void)_cancel:(id)sender
 {
     [_panel orderOut:nil];
+}
+
+- (void)_runCommand:(id)sender
+{
+    NSString *cmd = [[_runField stringValue]
+        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!cmd.length) return;
+
+    NSTask *task = [[NSTask alloc] init];
+    [task setLaunchPath:@"/bin/sh"];
+    [task setArguments:@[@"-c", cmd]];
+    /* Inherit the parent process environment so $PATH, $DISPLAY, etc. are available. */
+
+    @try {
+        [task launch];
+    } @catch (NSException *e) {
+        NSLog(@"ForceQuit run '%@': %@", cmd, e);
+    }
 }
 
 /* ---------------------------------------------------------------------- */

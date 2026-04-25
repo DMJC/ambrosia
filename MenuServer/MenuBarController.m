@@ -42,10 +42,13 @@ static BOOL ReadMenuBarPref(NSString *key)
     BluetoothStatusItem  *_bluetoothItem;
     WiFiStatusItem       *_wifiItem;
     VolumeStatusItem     *_volumeItem;
+    /* Tray icon manager (SNI / StatusNotifierItem) */
+    TrayManager          *_trayManager;
 }
 
-@synthesize menuPanel   = _menuPanel;
-@synthesize menuBarView = _menuBarView;
+@synthesize menuPanel    = _menuPanel;
+@synthesize menuBarView  = _menuBarView;
+@synthesize trayManager  = _trayManager;
 
 /* ---------------------------------------------------------------------- */
 #pragma mark - Public interface
@@ -58,7 +61,26 @@ static BOOL ReadMenuBarPref(NSString *key)
     [self _startTrackingGFinder];
     [self _setupStatusPlugins];
     [self _observeMenuBarPrefs];
+    [self _startTrayManager];
 }
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Tray icon manager (SNI)
+
+- (void)_startTrayManager
+{
+    _trayManager = [[TrayManager alloc] init];
+    _trayManager.delegate = self;
+    [_trayManager start];
+}
+
+/* TrayManagerDelegate */
+- (void)trayManagerDidUpdateItems:(TrayManager *)manager
+{
+    _menuBarView.trayItems = manager.trayItems;
+}
+
+- (TrayManager *)trayManager { return _trayManager; }
 
 /* ---------------------------------------------------------------------- */
 #pragma mark - Status item plugins

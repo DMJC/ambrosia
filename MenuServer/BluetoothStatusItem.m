@@ -12,6 +12,7 @@ static NSString * const kBTDevPaired    = @"btPaired";
 static NSString * const kBTDevTrusted   = @"btTrusted";
 
 /* Action identifiers embedded in dropdown item kMenuItemIdentifier */
+static NSString * const kActionToggle     = @"bt.toggle";
 static NSString * const kActionConnect    = @"bt.connect.";    /* + address */
 static NSString * const kActionDisconnect = @"bt.disconnect."; /* + address */
 
@@ -79,6 +80,18 @@ static NSString *BTCtlInteractive(NSString *input)
     return StripANSI(out ?: @"");
 }
 
+/** Returns YES if the Bluetooth adapter is powered on. */
+static BOOL FetchBTEnabled(void)
+{
+    NSString *out = BTCtl(@[@"show"]);
+    for (NSString *raw in [out componentsSeparatedByString:@"\n"]) {
+        NSString *line = [raw stringByTrimmingCharactersInSet:
+                          [NSCharacterSet whitespaceCharacterSet]];
+        if ([line hasPrefix:@"Powered: yes"]) return YES;
+    }
+    return NO;
+}
+
 /** Parse "devices" output into an array of {name, address} dicts.
  *  Handles both "Device ADDR Name" and "[NEW] Device ADDR Name" lines. */
 static NSArray<NSDictionary *> *ParseDeviceList(NSString *output)
@@ -126,7 +139,8 @@ static void ParseDeviceInfo(NSString *output,
 /* ---------------------------------------------------------------------- */
 
 @implementation BluetoothStatusItem {
-    NSArray<NSDictionary *> *_devices;   /* latest fetched device list */
+    NSArray<NSDictionary *> *_devices;
+    BOOL                     _btEnabled;
     NSTimer                 *_timer;
     __weak id                _delegate;
 }
@@ -138,7 +152,8 @@ static void ParseDeviceInfo(NSString *output,
     self = [super init];
     if (!self) return nil;
 
-    _devices = @[];
+    _devices   = @[];
+    _btEnabled = YES;
 
     [self refresh];
     _timer = [NSTimer scheduledTimerWithTimeInterval:kRefreshInterval
@@ -164,41 +179,48 @@ static void ParseDeviceInfo(NSString *output,
 
 - (NSArray<NSDictionary *> *)dropdownItems
 {
-    if (!_devices.count) {
-        return @[
-            @{ kMenuItemTitle:   @"No paired or trusted devices",
-               kMenuItemEnabled: @NO },
-        ];
-    }
-
     NSMutableArray *items = [NSMutableArray array];
 
-    [items addObject:@{ kMenuItemTitle:   @"Bluetooth Devices",
-                        kMenuItemEnabled: @NO }];
+    /* Header row: clickable to toggle Bluetooth on/off.
+     * A check mark prefix (U+2713) indicates the adapter is powered on. */
+    NSString *headerPrefix = _btEnabled ? @"✓ " : @"   ";
+    [items addObject:@{
+        kMenuItemTitle:      [headerPrefix stringByAppendingString:@"Bluetooth"],
+        kMenuItemIdentifier: kActionToggle,
+        kMenuItemEnabled:    @YES,
+        kMenuItemGrayed:     @(!_btEnabled),
+    }];
     [items addObject:@{ kMenuItemSeparator: @YES }];
 
-    for (NSDictionary *dev in _devices) {
-        BOOL connected = [dev[kBTDevConnected] boolValue];
-        NSString *name = dev[kBTDevName];
-        NSString *addr = dev[kBTDevAddress];
+    if (!_btEnabled) {
+        [items addObject:@{ kMenuItemTitle:   @"Bluetooth is turned off",
+                            kMenuItemEnabled: @NO }];
+    } else if (!_devices.count) {
+        [items addObject:@{ kMenuItemTitle:   @"No paired or trusted devices",
+                            kMenuItemEnabled: @NO }];
+    } else {
+        for (NSDictionary *dev in _devices) {
+            BOOL connected = [dev[kBTDevConnected] boolValue];
+            NSString *name = dev[kBTDevName];
+            NSString *addr = dev[kBTDevAddress];
 
-        NSString *actionID = connected
-            ? [kActionDisconnect stringByAppendingString:addr]
-            : [kActionConnect    stringByAppendingString:addr];
+            NSString *actionID = connected
+                ? [kActionDisconnect stringByAppendingString:addr]
+                : [kActionConnect    stringByAppendingString:addr];
 
-        /* Connected devices use normal (black) text; paired/trusted but
-         * disconnected devices are greyed out but remain clickable.    */
-        [items addObject:@{
-            kMenuItemTitle:      name,
-            kMenuItemIdentifier: actionID,
-            kMenuItemEnabled:    @YES,
-            kMenuItemGrayed:     @(!connected),
-        }];
+            /* Connected devices use normal text; disconnected are greyed but clickable. */
+            [items addObject:@{
+                kMenuItemTitle:      name,
+                kMenuItemIdentifier: actionID,
+                kMenuItemEnabled:    @YES,
+                kMenuItemGrayed:     @(!connected),
+            }];
+        }
     }
 
     [items addObject:@{ kMenuItemSeparator: @YES }];
     [items addObject:@{
-        kMenuItemTitle:      @"Open Bluetooth Settings\u2026",
+        kMenuItemTitle:      @"Open Bluetooth Settings…",
         kMenuItemIdentifier: @"bt.openprefs",
         kMenuItemEnabled:    @YES,
     }];
@@ -209,43 +231,48 @@ static void ParseDeviceInfo(NSString *output,
 - (void)refresh
 {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        /* Use interactive mode so bluetoothd has time to enumerate the full
-         * device cache — CLI-argument mode exits before offline devices load. */
-        NSString *devOut = BTCtlInteractive(@"devices\nquit\n");
-        NSArray  *all    = ParseDeviceList(devOut);
+        BOOL enabled = FetchBTEnabled();
 
         NSMutableArray *enriched = [NSMutableArray array];
-        for (NSDictionary *dev in all) {
-            NSString *info = BTCtl(@[@"info", dev[kBTDevAddress]]);
-            BOOL paired = NO, trusted = NO, connected = NO;
-            ParseDeviceInfo(info, &paired, &trusted, &connected);
+        if (enabled) {
+            /* Use interactive mode so bluetoothd has time to enumerate the full
+             * device cache — CLI-argument mode exits before offline devices load. */
+            NSString *devOut = BTCtlInteractive(@"devices\nquit\n");
+            NSArray  *all    = ParseDeviceList(devOut);
 
-            /* Only show devices the user has explicitly paired or trusted. */
-            if (!paired && !trusted && !connected) continue;
+            for (NSDictionary *dev in all) {
+                NSString *info = BTCtl(@[@"info", dev[kBTDevAddress]]);
+                BOOL paired = NO, trusted = NO, connected = NO;
+                ParseDeviceInfo(info, &paired, &trusted, &connected);
 
-            [enriched addObject:@{
-                kBTDevName:      dev[kBTDevName],
-                kBTDevAddress:   dev[kBTDevAddress],
-                kBTDevPaired:    @(paired),
-                kBTDevTrusted:   @(trusted),
-                kBTDevConnected: @(connected),
+                /* Only show devices the user has explicitly paired or trusted. */
+                if (!paired && !trusted && !connected) continue;
+
+                [enriched addObject:@{
+                    kBTDevName:      dev[kBTDevName],
+                    kBTDevAddress:   dev[kBTDevAddress],
+                    kBTDevPaired:    @(paired),
+                    kBTDevTrusted:   @(trusted),
+                    kBTDevConnected: @(connected),
+                }];
+            }
+
+            /* Sort: connected devices first, then alphabetically by name. */
+            [enriched sortUsingComparator:^NSComparisonResult(NSDictionary *a,
+                                                               NSDictionary *b) {
+                BOOL ac = [a[kBTDevConnected] boolValue];
+                BOOL bc = [b[kBTDevConnected] boolValue];
+                if (ac != bc) return ac ? NSOrderedAscending : NSOrderedDescending;
+                return [a[kBTDevName] compare:b[kBTDevName]
+                                      options:NSCaseInsensitiveSearch];
             }];
         }
 
-        /* Sort: connected devices first, then alphabetically by name. */
-        [enriched sortUsingComparator:^NSComparisonResult(NSDictionary *a,
-                                                           NSDictionary *b) {
-            BOOL ac = [a[kBTDevConnected] boolValue];
-            BOOL bc = [b[kBTDevConnected] boolValue];
-            if (ac != bc) return ac ? NSOrderedAscending : NSOrderedDescending;
-            return [a[kBTDevName] compare:b[kBTDevName]
-                                  options:NSCaseInsensitiveSearch];
-        }];
-
         dispatch_async(dispatch_get_main_queue(), ^{
-            _devices = [enriched copy];
+            self->_btEnabled = enabled;
+            self->_devices   = [enriched copy];
             id<AmbrosiaStatusItemPluginDelegate> d =
-                (id<AmbrosiaStatusItemPluginDelegate>)_delegate;
+                (id<AmbrosiaStatusItemPluginDelegate>)self->_delegate;
             if ([d respondsToSelector:@selector(statusItemPluginDidUpdate:)])
                 [d statusItemPluginDidUpdate:self];
         });
@@ -256,6 +283,11 @@ static void ParseDeviceInfo(NSString *output,
 {
     NSString *ident = item[kMenuItemIdentifier];
     if (!ident.length) return;
+
+    if ([ident isEqualToString:kActionToggle]) {
+        [self _toggleBluetooth];
+        return;
+    }
 
     if ([ident isEqualToString:@"bt.openprefs"]) {
         [self _openBluetoothPrefs];
@@ -281,6 +313,20 @@ static void ParseDeviceInfo(NSString *output,
 - (void)_timerFired:(NSTimer *)t
 {
     [self refresh];
+}
+
+- (void)_toggleBluetooth
+{
+    BOOL turnOn = !_btEnabled;
+    NSLog(@"BluetoothStatusItem: turning Bluetooth %@", turnOn ? @"on" : @"off");
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        BTCtl(@[@"power", turnOn ? @"on" : @"off"]);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(2.0 * NSEC_PER_SEC)),
+                       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            [self refresh];
+        });
+    });
 }
 
 - (void)_connectDevice:(NSString *)address

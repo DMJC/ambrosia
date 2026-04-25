@@ -1,6 +1,7 @@
 #import "AmbrosiaInput.h"
 #import "AmbrosiaCompositor.h"
 #import "AmbrosiaView.h"
+#import "AmbrosiaWindowView.h"
 
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_keyboard.h>
@@ -163,10 +164,7 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
         /* Alt+F4 → close focused window */
         if (syms[i] == XKB_KEY_F4 && (modifiers & WLR_MODIFIER_ALT)
                 && !(modifiers & WLR_MODIFIER_CTRL)) {
-            if (_compositor.focusedView) {
-                wlr_xdg_toplevel_send_close(
-                    _compositor.focusedView.state->xdg_toplevel);
-            }
+            [_compositor.focusedView close];
             handled = YES;
         }
         /* Alt+Tab → cycle windows */
@@ -207,7 +205,7 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
 
 - (void)cycleWindows
 {
-    NSArray<AmbrosiaView *> *views = _compositor.views;
+    NSArray *views = _compositor.views;
     if (views.count < 2) return;
 
     /* Focus the view one below the current focused view */
@@ -217,9 +215,9 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
     else
         idx--;
 
-    AmbrosiaView *next = views[idx];
+    id<AmbrosiaWindowView> next = views[(NSUInteger)idx];
     if (next.isMapped)
-        [_compositor focusView:next surface:next.surface];
+        [_compositor focusView:next surface:[next surface]];
 }
 
 /**
@@ -233,12 +231,12 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
  */
 - (void)cycleApplications
 {
-    NSArray<AmbrosiaView *> *views = _compositor.views;
+    NSArray *views = _compositor.views;
     if (views.count < 2) return;
 
     /* Collect eligible views (mapped, non-menu, non-miniaturized). */
-    NSMutableArray<AmbrosiaView *> *eligible = [NSMutableArray array];
-    for (AmbrosiaView *v in views) {
+    NSMutableArray *eligible = [NSMutableArray array];
+    for (id<AmbrosiaWindowView> v in views) {
         if (!v.isMapped)      continue;
         if (v.isMiniaturized) continue;
         if (v.isMenu)         continue;
@@ -247,48 +245,41 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
     if (eligible.count < 2) return;
 
     /*
-     * Build an ordered list of unique wl_clients, preserving the z-order of
-     * the last (topmost) window seen for each client.  Iterating eligible in
-     * forward order means later entries overwrite earlier ones, so the final
-     * array entry for each client reflects its topmost window.
+     * Build an ordered list of unique client PIDs, preserving z-order of the
+     * topmost window per pid.  Using PID rather than wl_client allows correct
+     * cycling between X11 apps (which all share the Xwayland wl_client).
      */
-    NSMutableOrderedSet *clientOrder = [NSMutableOrderedSet orderedSet];
-    NSMutableDictionary<NSValue *, AmbrosiaView *> *topmostForClient =
+    NSMutableOrderedSet<NSNumber *> *pidOrder = [NSMutableOrderedSet orderedSet];
+    NSMutableDictionary<NSNumber *, id<AmbrosiaWindowView>> *topmostForPid =
         [NSMutableDictionary dictionary];
 
-    for (AmbrosiaView *v in eligible) {
-        struct wl_client *client =
-            wl_resource_get_client(v.state->xdg_toplevel->base->resource);
-        NSValue *key = [NSValue valueWithPointer:client];
-        [clientOrder addObject:key];           /* no-op if already present */
-        topmostForClient[key] = v;             /* keeps the last/topmost window */
+    for (id<AmbrosiaWindowView> v in eligible) {
+        pid_t pid = [v clientPid];
+        if (pid <= 0) continue;
+        NSNumber *key = @(pid);
+        [pidOrder addObject:key];       /* no-op if already present */
+        topmostForPid[key] = v;        /* keeps the last/topmost window */
     }
 
-    if (clientOrder.count < 2) return;        /* all windows belong to one app */
+    if (pidOrder.count < 2) return;    /* all windows belong to one app */
 
-    /* Find the wl_client of the currently focused view. */
-    struct wl_client *focusedClient = NULL;
-    if (_compositor.focusedView) {
-        focusedClient = wl_resource_get_client(
-            _compositor.focusedView.state->xdg_toplevel->base->resource);
-    }
-
-    NSValue *focusedKey = focusedClient
-        ? [NSValue valueWithPointer:focusedClient] : nil;
+    /* Find the pid of the currently focused view. */
+    pid_t focusedPid = [_compositor.focusedView clientPid];
+    NSNumber *focusedKey = focusedPid > 0 ? @(focusedPid) : nil;
     NSUInteger currentIdx = focusedKey
-        ? [clientOrder indexOfObject:focusedKey] : NSNotFound;
+        ? [pidOrder indexOfObject:focusedKey] : NSNotFound;
 
-    /* Advance to the next client in the ordered set, wrapping around. */
+    /* Advance to the next pid in the ordered set, wrapping around. */
     NSUInteger nextIdx;
-    if (currentIdx == NSNotFound || currentIdx + 1 >= clientOrder.count)
+    if (currentIdx == NSNotFound || currentIdx + 1 >= pidOrder.count)
         nextIdx = 0;
     else
         nextIdx = currentIdx + 1;
 
-    NSValue *nextKey = clientOrder[nextIdx];
-    AmbrosiaView *target = topmostForClient[nextKey];
+    NSNumber *nextKey = pidOrder[nextIdx];
+    id<AmbrosiaWindowView> target = topmostForPid[nextKey];
     if (target)
-        [_compositor focusView:target surface:target.surface];
+        [_compositor focusView:target surface:[target surface]];
 }
 
 @end

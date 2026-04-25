@@ -6,6 +6,7 @@ static const NSTimeInterval kWiFiRefreshInterval = 30.0;
 static NSString * const kWiFiName   = @"wifiName";
 static NSString * const kWiFiActive = @"wifiActive";
 
+static NSString * const kActionWiFiToggle     = @"wifi.toggle";
 static NSString * const kActionWiFiConnect    = @"wifi.connect.";
 static NSString * const kActionWiFiDisconnect = @"wifi.disconnect.";
 static NSString * const kActionWiFiPrefs      = @"wifi.openprefs";
@@ -29,6 +30,47 @@ static NSString *RunNMCLI(NSArray<NSString *> *args)
     NSData   *data = [[pipe fileHandleForReading] readDataToEndOfFile];
     NSString *out  = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     return out ?: @"";
+}
+
+/* Run nmcli for a mutating command; log exit code and any error output. */
+static void RunNMCLICommand(NSArray<NSString *> *args, NSString *label)
+{
+    NSTask *task = [[NSTask alloc] init];
+    NSPipe *outPipe = [NSPipe pipe];
+    NSPipe *errPipe = [NSPipe pipe];
+    task.launchPath     = @"/usr/bin/nmcli";
+    task.arguments      = args;
+    task.standardOutput = outPipe;
+    task.standardError  = errPipe;
+    @try {
+        [task launch];
+        [task waitUntilExit];
+    } @catch (NSException *e) {
+        NSLog(@"WiFiStatusItem: failed to launch nmcli for %@: %@", label, e);
+        return;
+    }
+    int status = task.terminationStatus;
+    NSData *outData = [[outPipe fileHandleForReading] readDataToEndOfFile];
+    NSData *errData = [[errPipe fileHandleForReading] readDataToEndOfFile];
+    NSString *outStr = [[NSString alloc] initWithData:outData encoding:NSUTF8StringEncoding] ?: @"";
+    NSString *errStr = [[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding] ?: @"";
+    if (status != 0) {
+        NSLog(@"WiFiStatusItem: nmcli %@ failed (exit %d).\n  stdout: %@\n  stderr: %@",
+              label, status,
+              [outStr stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]],
+              [errStr stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]);
+    } else {
+        NSLog(@"WiFiStatusItem: nmcli %@ succeeded.", label);
+    }
+}
+
+/* Returns YES if the Wi-Fi radio is on. */
+static BOOL FetchWiFiEnabled(void)
+{
+    NSString *out = RunNMCLI(@[@"radio", @"wifi"]);
+    out = [out stringByTrimmingCharactersInSet:
+           [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return [out caseInsensitiveCompare:@"enabled"] == NSOrderedSame;
 }
 
 /* Returns array of {kWiFiName, kWiFiActive} sorted active-first then alpha. */
@@ -69,6 +111,7 @@ static NSArray<NSDictionary *> *FetchWiFiConnections(void)
 
 @implementation WiFiStatusItem {
     NSArray<NSDictionary *> *_connections;
+    BOOL                     _wifiEnabled;
     NSTimer                 *_timer;
     __weak id                _delegate;
 }
@@ -80,6 +123,7 @@ static NSArray<NSDictionary *> *FetchWiFiConnections(void)
     self = [super init];
     if (!self) return nil;
     _connections = @[];
+    _wifiEnabled = YES;
     [self refresh];
     _timer = [NSTimer scheduledTimerWithTimeInterval:kWiFiRefreshInterval
                                               target:self
@@ -99,18 +143,30 @@ static NSArray<NSDictionary *> *FetchWiFiConnections(void)
 - (NSArray<NSDictionary *> *)dropdownItems
 {
     NSMutableArray *items = [NSMutableArray array];
-    [items addObject:@{ kMenuItemTitle: @"Wi-Fi", kMenuItemEnabled: @NO }];
+
+    /* Header row: clickable to toggle the Wi-Fi radio on/off.
+     * A check mark prefix (U+2713) indicates the radio is on. */
+    NSString *headerPrefix = _wifiEnabled ? @"✓ " : @"   ";
+    [items addObject:@{
+        kMenuItemTitle:      [headerPrefix stringByAppendingString:@"Wi-Fi"],
+        kMenuItemIdentifier: kActionWiFiToggle,
+        kMenuItemEnabled:    @YES,
+        kMenuItemGrayed:     @(!_wifiEnabled),
+    }];
     [items addObject:@{ kMenuItemSeparator: @YES }];
 
-    if (_connections.count == 0) {
+    if (!_wifiEnabled) {
+        [items addObject:@{ kMenuItemTitle:   @"Wi-Fi is turned off",
+                            kMenuItemEnabled: @NO }];
+    } else if (_connections.count == 0) {
         [items addObject:@{ kMenuItemTitle:   @"No configured Wi-Fi networks",
                             kMenuItemEnabled: @NO }];
     } else {
         for (NSDictionary *c in _connections) {
             BOOL     active  = [c[kWiFiActive] boolValue];
             NSString *name   = c[kWiFiName];
-            /* U+2713 = ✓ check mark; three non-breaking spaces align inactive items */
-            NSString *prefix = active ? @"\u2713 " : @"   ";
+            /* U+2713 = check mark; three spaces align inactive items */
+            NSString *prefix = active ? @"✓ " : @"   ";
             NSString *title  = [prefix stringByAppendingString:name];
             NSString *action = active
                 ? [kActionWiFiDisconnect stringByAppendingString:name]
@@ -126,7 +182,7 @@ static NSArray<NSDictionary *> *FetchWiFiConnections(void)
 
     [items addObject:@{ kMenuItemSeparator: @YES }];
     [items addObject:@{
-        kMenuItemTitle:      @"Open Network Preferences\u2026",
+        kMenuItemTitle:      @"Open Network Preferences…",
         kMenuItemIdentifier: kActionWiFiPrefs,
         kMenuItemEnabled:    @YES,
     }];
@@ -136,9 +192,11 @@ static NSArray<NSDictionary *> *FetchWiFiConnections(void)
 - (void)refresh
 {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        NSArray *conns = FetchWiFiConnections();
+        BOOL       enabled = FetchWiFiEnabled();
+        NSArray   *conns   = enabled ? FetchWiFiConnections() : @[];
         dispatch_async(dispatch_get_main_queue(), ^{
-            self->_connections = conns;
+            self->_wifiEnabled  = enabled;
+            self->_connections  = conns;
             id<AmbrosiaStatusItemPluginDelegate> d =
                 (id<AmbrosiaStatusItemPluginDelegate>)self->_delegate;
             if ([d respondsToSelector:@selector(statusItemPluginDidUpdate:)])
@@ -152,6 +210,10 @@ static NSArray<NSDictionary *> *FetchWiFiConnections(void)
     NSString *ident = item[kMenuItemIdentifier];
     if (!ident.length) return;
 
+    if ([ident isEqualToString:kActionWiFiToggle]) {
+        [self _toggleWiFi];
+        return;
+    }
     if ([ident isEqualToString:kActionWiFiPrefs]) {
         [self _openNetworkPrefs];
         return;
@@ -173,10 +235,26 @@ static NSArray<NSDictionary *> *FetchWiFiConnections(void)
 
 - (void)_timerFired:(NSTimer *)t { [self refresh]; }
 
+- (void)_toggleWiFi
+{
+    BOOL turnOn = !_wifiEnabled;
+    NSLog(@"WiFiStatusItem: turning Wi-Fi %@", turnOn ? @"on" : @"off");
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        RunNMCLICommand(@[@"radio", @"wifi", turnOn ? @"on" : @"off"],
+                        turnOn ? @"radio wifi on" : @"radio wifi off");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            [self refresh];
+        });
+    });
+}
+
 - (void)_connectNetwork:(NSString *)name
 {
+    NSLog(@"WiFiStatusItem: connecting to '%@'", name);
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        RunNMCLI(@[@"connection", @"up", name]);
+        RunNMCLICommand(@[@"connection", @"up", @"id", name],
+                        [@"connection up id " stringByAppendingString:name]);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                        dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             [self refresh];
@@ -186,8 +264,10 @@ static NSArray<NSDictionary *> *FetchWiFiConnections(void)
 
 - (void)_disconnectNetwork:(NSString *)name
 {
+    NSLog(@"WiFiStatusItem: disconnecting '%@'", name);
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        RunNMCLI(@[@"connection", @"down", name]);
+        RunNMCLICommand(@[@"connection", @"down", @"id", name],
+                        [@"connection down id " stringByAppendingString:name]);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                        dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             [self refresh];

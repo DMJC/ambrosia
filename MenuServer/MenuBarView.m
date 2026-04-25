@@ -1,6 +1,7 @@
 #import "MenuBarView.h"
 #import "MenuBarController.h"
 #import "MenuServerProtocol.h"
+#import "TrayManager.h"
 #import <GNUstepGUI/GSTheme.h>
 
 /* ---- Bar geometry ---- */
@@ -22,13 +23,19 @@ static const CGFloat kDropPadX       = 14.0;   /* horizontal text inset         
 static const CGFloat kDropMinW       = 180.0;  /* minimum dropdown panel width    */
 static const CGFloat kDropExtraBot   = 4.0;    /* extra padding below last item   */
 
+/* ---- Tray icon geometry ---- */
+static const CGFloat kTrayIconSize = 16.0;   /* render size for tray icons  */
+static const CGFloat kTrayIconPad  =  4.0;   /* left/right padding per icon */
+static const CGFloat kTraySepW     =  6.0;   /* gap between tray and status items */
+
 /* ---- Hit-region tags ---- */
 typedef NS_ENUM(NSInteger, MenuBarRegion) {
     MenuBarRegionNone        = -1,
     MenuBarRegionAmbrosia    =  0,
     MenuBarRegionSession     =  1,
-    MenuBarRegionStatusItem  =  50,   /* plugins 50…99; index = tag − 50  */
-    MenuBarRegionMenuItem    =  100,  /* items >= 100; index = tag − 100  */
+    MenuBarRegionTrayItem    =  200,  /* tray icons 200…249; index = tag − 200 */
+    MenuBarRegionStatusItem  =  50,   /* plugins 50…99;  index = tag − 50  */
+    MenuBarRegionMenuItem    =  100,  /* items >= 100;   index = tag − 100  */
 };
 
 /* ---- NSDictionary keys for system-menu item descriptors ---- */
@@ -142,6 +149,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     NSMutableArray     *_menuRects;        /* NSValue(NSRect) per clickable top-level item */
     NSMutableArray     *_menuItemIndices;  /* NSNumber: index into _activeMenuItems */
     NSMutableArray     *_pluginRects;      /* NSValue(NSRect) per status plugin button */
+    NSMutableArray     *_trayRects;        /* NSValue(NSRect) per tray icon */
     NSRect              _clockRect;
     NSRect              _sessionRect;      /* kept for compat; always NSZeroRect */
     NSInteger           _pressedRegion;    /* MenuBarRegion; -1 = none */
@@ -162,6 +170,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 }
 
 @synthesize statusPlugins = _statusPlugins;
+@synthesize trayItems     = _trayItems;
 
 /* ---------------------------------------------------------------------- */
 #pragma mark - Initialisation
@@ -174,6 +183,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     _menuRects              = [NSMutableArray array];
     _menuItemIndices        = [NSMutableArray array];
     _pluginRects            = [NSMutableArray array];
+    _trayRects              = [NSMutableArray array];
     _dropdownRects          = [NSMutableArray array];
     _pressedRegion          = MenuBarRegionNone;
     _openTag                = MenuBarRegionNone;
@@ -219,6 +229,15 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
  * This is the natural direction for a menu that drops downward.
  */
 - (BOOL)isFlipped { return YES; }
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Tray items
+
+- (void)setTrayItems:(NSArray<TrayItem *> *)trayItems
+{
+    _trayItems = [trayItems copy];
+    [self setNeedsDisplay:YES];
+}
 
 /* ---------------------------------------------------------------------- */
 #pragma mark - Public API
@@ -290,6 +309,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     [_menuRects removeAllObjects];
     [_menuItemIndices removeAllObjects];
     [_pluginRects removeAllObjects];
+    [_trayRects removeAllObjects];
 
     CGFloat leftX  = kBarPad;
     CGFloat rightX = W - kBarPad;
@@ -328,6 +348,55 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
                    isPressed:(_pressedRegion == tag)
                       isOpen:(_openTag == tag)];
         rightX -= itemW + kItemGap;
+    }
+
+    /* ---- RIGHT SIDE: tray icons (right-to-left, left of status plugins) ---- */
+    NSArray<TrayItem *> *trayItems = _trayItems;
+    if (trayItems.count > 0) {
+        /* Vertical icon origin so a kTrayIconSize icon is centred in the bar */
+        CGFloat iconY = (kBarHeight - kTrayIconSize) * 0.5;
+        CGFloat iconSlotW = kTrayIconSize + kTrayIconPad * 2;
+
+        /* Separator between tray area and status plugins */
+        [self _drawBarSepAtX:rightX - kTraySepW * 0.5];
+        rightX -= kTraySepW;
+
+        /* Draw right-to-left */
+        for (NSInteger ti = (NSInteger)trayItems.count - 1; ti >= 0; ti--) {
+            TrayItem *item = trayItems[(NSUInteger)ti];
+            NSRect slotRect = NSMakeRect(rightX - iconSlotW, 0, iconSlotW, kBarHeight);
+
+            /* Pad _trayRects so index ti maps to the right slot */
+            while ((NSInteger)_trayRects.count <= ti)
+                [_trayRects addObject:[NSValue valueWithRect:NSZeroRect]];
+            _trayRects[(NSUInteger)ti] = [NSValue valueWithRect:slotRect];
+
+            NSInteger tag = MenuBarRegionTrayItem + ti;
+            BOOL isPressed = (_pressedRegion == tag);
+            if (isPressed) {
+                [BarHighlight() set];
+                NSRectFillUsingOperation(slotRect, NSCompositeSourceOver);
+            }
+
+            NSImage *icon = item.icon;
+            if (icon) {
+                NSRect iconRect = NSMakeRect(rightX - iconSlotW + kTrayIconPad,
+                                            iconY,
+                                            kTrayIconSize, kTrayIconSize);
+                [icon drawInRect:iconRect
+                        fromRect:NSZeroRect
+                       operation:NSCompositeSourceOver
+                        fraction:1.0];
+            } else {
+                /* Placeholder dot while icon is loading */
+                NSString *dot = @"●";
+                NSSize dotSz  = [dot sizeWithAttributes:NormalAttrs()];
+                CGFloat dotX  = slotRect.origin.x + (iconSlotW - dotSz.width) * 0.5;
+                CGFloat dotY  = (kBarHeight - dotSz.height) * 0.5;
+                [dot drawAtPoint:NSMakePoint(dotX, dotY) withAttributes:NormalAttrs()];
+            }
+            rightX -= iconSlotW;
+        }
     }
 
     /* ---- LEFT SIDE: Ambrosia button ---- */
@@ -582,6 +651,26 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 /* ---------------------------------------------------------------------- */
 #pragma mark - Mouse handling
 
+- (void)rightMouseDown:(NSEvent *)event
+{
+    NSPoint pt = [self convertPoint:[event locationInWindow] fromView:nil];
+    if (pt.y < 0 || pt.y > kBarHeight) return;
+
+    for (NSUInteger i = 0; i < _trayRects.count; i++) {
+        NSRect r = [_trayRects[i] rectValue];
+        if (r.size.width == 0) continue;
+        if (NSPointInRect(pt, r)) {
+            TrayItem *item = _trayItems[(NSUInteger)i];
+            NSPoint screenPt = [self.window convertBaseToScreen:
+                                [self convertPoint:pt toView:nil]];
+            [item contextMenuAtX:(int)screenPt.x
+                               y:(int)screenPt.y
+                      connection:_controller.trayManager.dbusConnection];
+            return;
+        }
+    }
+}
+
 - (void)mouseDown:(NSEvent *)event
 {
     NSPoint pt = [self convertPoint:[event locationInWindow] fromView:nil];
@@ -731,6 +820,11 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 
     if (NSPointInRect(pt, _ambrosiaRect)) return MenuBarRegionAmbrosia;
     if (NSPointInRect(pt, _sessionRect))  return MenuBarRegionSession;
+    for (NSUInteger i = 0; i < _trayRects.count; i++) {
+        NSRect r = [_trayRects[i] rectValue];
+        if (r.size.width == 0) continue;
+        if (NSPointInRect(pt, r)) return MenuBarRegionTrayItem + (NSInteger)i;
+    }
     for (NSUInteger i = 0; i < _pluginRects.count; i++) {
         NSRect r = [_pluginRects[i] rectValue];
         if (r.size.width == 0 && r.size.height == 0) continue;
@@ -780,6 +874,23 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
         _hoveredIdx = -1;
         /* Panel is already expanded; we'll resize it below. */
         [_controller contractPanelDropdown];
+    }
+
+    /* Tray items forward clicks directly to the SNI item; no dropdown. */
+    if (region >= MenuBarRegionTrayItem) {
+        NSInteger ti = region - MenuBarRegionTrayItem;
+        NSArray<TrayItem *> *items = _trayItems;
+        if (ti < (NSInteger)items.count) {
+            TrayItem *item = items[(NSUInteger)ti];
+            NSRect   slot  = [_trayRects[(NSUInteger)ti] rectValue];
+            NSPoint  barPt = NSMakePoint(NSMidX(slot), NSMidY(slot));
+            NSPoint  scPt  = [self.window convertBaseToScreen:
+                              [self convertPoint:barPt toView:nil]];
+            [item activateAtX:(int)scPt.x
+                            y:(int)scPt.y
+                   connection:_controller.trayManager.dbusConnection];
+        }
+        return;
     }
 
     NSArray *descriptors = nil;
