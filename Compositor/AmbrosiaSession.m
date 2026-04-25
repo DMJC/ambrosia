@@ -147,11 +147,6 @@ static int session_restart_timer(void *data)
         return NO;
     }
     if (pid == 0) {
-        /* Child: clear DISPLAY so GNUstep apps use WAYLAND_DISPLAY
-         * (pointing to this compositor's socket) rather than falling
-         * back to Xwayland on a host compositor.                      */
-        unsetenv("DISPLAY");
-
         /* Ensure this child terminates when the compositor (parent) exits
          * for any reason — including crashes and SIGKILL.  Without this,
          * children are reparented to init and keep running after the

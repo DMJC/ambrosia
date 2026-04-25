@@ -149,6 +149,7 @@ check_title:
     struct ambrosia_view_state *_state;
     BOOL _isMapped;
     BOOL _isMiniaturized;
+    BOOL _isFullscreen;
     BOOL _isMenu;
     BOOL _isDockWindow;
     BOOL _isDesktopBackground;
@@ -156,6 +157,10 @@ check_title:
     /* Pre-maximize restore position (surface origin, compositor space) */
     int  _restoreX;
     int  _restoreY;
+
+    /* Pre-fullscreen restore position */
+    int  _restoreFSX;
+    int  _restoreFSY;
 }
 
 @synthesize state               = _state;
@@ -165,6 +170,7 @@ check_title:
 @synthesize y                   = _y;
 @synthesize isMapped            = _isMapped;
 @synthesize isMiniaturized      = _isMiniaturized;
+@synthesize isFullscreen        = _isFullscreen;
 @synthesize isMenu              = _isMenu;
 @synthesize isDockWindow        = _isDockWindow;
 @synthesize isDesktopBackground = _isDesktopBackground;
@@ -417,6 +423,71 @@ check_title:
 }
 
 /* ---------------------------------------------------------------------- */
+#pragma mark - Fullscreen
+
+/**
+ * Enter or exit fullscreen mode.
+ *
+ * Fullscreen windows are moved to scene_layer_fullscreen, which sits above
+ * the menu-bar layer, so they cover the entire output.  The server-side
+ * decoration is hidden while fullscreen and restored on exit.
+ */
+- (void)_setFullscreen:(BOOL)fullscreen
+{
+    if (fullscreen == _isFullscreen) return;
+
+    struct ambrosia_compositor_state *cs = _compositor.state;
+
+    if (fullscreen) {
+        _restoreFSX = _x;
+        _restoreFSY = _y;
+
+        struct wlr_output *output =
+            wlr_output_layout_output_at(cs->output_layout, _x + 100, _y + 100);
+        if (!output)
+            output = wlr_output_layout_get_center_output(cs->output_layout);
+        if (!output) return;
+
+        struct wlr_box ob = {0};
+        wlr_output_layout_get_box(cs->output_layout, output, &ob);
+
+        /* Raise window above the menu bar */
+        wlr_scene_node_reparent(&_state->scene_tree->node, cs->scene_layer_fullscreen);
+
+        /* Hide server-side decoration */
+        if (_decoration)
+            wlr_scene_node_set_enabled(&_decoration.scene_tree->node, false);
+
+        /* Tell the client to fill the output */
+        wlr_xdg_toplevel_set_fullscreen(_state->xdg_toplevel, true);
+        wlr_xdg_toplevel_set_size(_state->xdg_toplevel,
+                                  (uint32_t)ob.width, (uint32_t)ob.height);
+        [self moveTo:ob.x y:ob.y];
+        _isFullscreen = YES;
+    } else {
+        /* Return to the normal windows layer */
+        wlr_scene_node_reparent(&_state->scene_tree->node, cs->scene_layer_windows);
+
+        /* Restore decoration */
+        if (_decoration)
+            wlr_scene_node_set_enabled(&_decoration.scene_tree->node, true);
+
+        wlr_xdg_toplevel_set_fullscreen(_state->xdg_toplevel, false);
+        /* size 0,0 lets the client choose its preferred size */
+        wlr_xdg_toplevel_set_size(_state->xdg_toplevel, 0, 0);
+        [self moveTo:_restoreFSX y:_restoreFSY];
+        _isFullscreen = NO;
+    }
+
+    wlr_xdg_surface_schedule_configure(_state->xdg_toplevel->base);
+}
+
+- (void)toggleFullscreen
+{
+    [self _setFullscreen:!_isFullscreen];
+}
+
+/* ---------------------------------------------------------------------- */
 #pragma mark - Maximize helpers
 
 /**
@@ -483,9 +554,7 @@ check_title:
 {
     if (!_state->xdg_toplevel->base->initialized)
         return;
-    BOOL doFull = _state->xdg_toplevel->requested.fullscreen;
-    wlr_xdg_toplevel_set_fullscreen(_state->xdg_toplevel, doFull);
-    wlr_xdg_surface_schedule_configure(_state->xdg_toplevel->base);
+    [self _setFullscreen:_state->xdg_toplevel->requested.fullscreen];
 }
 
 - (void)handleSetTitle

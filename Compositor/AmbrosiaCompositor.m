@@ -30,6 +30,11 @@
 - (void)_applySessionPrefsUpdate;
 /** Called from handle_desktop_pipe on the wl_event_loop thread. */
 - (void)_applyDesktopPrefsUpdate;
+/** Pointer constraint management */
+- (void)handleNewConstraint:(struct wlr_pointer_constraint_v1 *)constraint;
+- (void)activateConstraintForSurface:(struct wlr_surface *)surface;
+- (void)deactivateActiveConstraint;
+- (void)handleActiveConstraintDestroy;
 @end
 
 /* --------------------------------------------------------------------------
@@ -64,6 +69,14 @@ static void handle_output_manager_test(struct wl_listener *listener, void *data)
         wl_container_of(listener, s, output_manager_test);
     AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)s->objc_compositor;
     [c handleOutputManagerTest:(struct wlr_output_configuration_v1 *)data];
+}
+
+static void handle_drm_lease_request(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_compositor_state *s =
+        wl_container_of(listener, s, drm_lease_request);
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)s->objc_compositor;
+    [c handleDrmLeaseRequest:(struct wlr_drm_lease_request_v1 *)data];
 }
 
 static void handle_new_xdg_toplevel(struct wl_listener *listener, void *data)
@@ -295,6 +308,26 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
 }
 
 /* --------------------------------------------------------------------------
+ * Pointer constraint C-level callbacks
+ * -------------------------------------------------------------------------- */
+
+static void handle_new_pointer_constraint(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_compositor_state *s =
+        wl_container_of(listener, s, new_constraint);
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)s->objc_compositor;
+    [c handleNewConstraint:(struct wlr_pointer_constraint_v1 *)data];
+}
+
+static void handle_active_constraint_destroy(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_compositor_state *s =
+        wl_container_of(listener, s, constraint_destroy);
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)s->objc_compositor;
+    [c handleActiveConstraintDestroy];
+}
+
+/* --------------------------------------------------------------------------
  * XWayland C-level callbacks
  * -------------------------------------------------------------------------- */
 
@@ -461,11 +494,12 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
      * wlr_scene_node_raise_to_top() on a window only moves it within that
      * sub-tree, so it can never rise above scene_layer_top (the menu bar).
      */
-    _state->scene_layer_bg      = wlr_scene_tree_create(&_state->scene->tree);
-    _state->scene_layer_bottom  = wlr_scene_tree_create(&_state->scene->tree);
-    _state->scene_layer_windows = wlr_scene_tree_create(&_state->scene->tree);
-    _state->scene_layer_top     = wlr_scene_tree_create(&_state->scene->tree);
-    _state->scene_layer_overlay = wlr_scene_tree_create(&_state->scene->tree);
+    _state->scene_layer_bg          = wlr_scene_tree_create(&_state->scene->tree);
+    _state->scene_layer_bottom      = wlr_scene_tree_create(&_state->scene->tree);
+    _state->scene_layer_windows     = wlr_scene_tree_create(&_state->scene->tree);
+    _state->scene_layer_top         = wlr_scene_tree_create(&_state->scene->tree);
+    _state->scene_layer_fullscreen  = wlr_scene_tree_create(&_state->scene->tree);
+    _state->scene_layer_overlay     = wlr_scene_tree_create(&_state->scene->tree);
     _state->usable_top = 0;
     wlr_log(WLR_DEBUG, "Scene graph initialised (layered sub-trees created)");
 
@@ -511,6 +545,36 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
      * transform, enable/disable, adaptive sync).                                 */
     _state->output_manager = wlr_output_manager_v1_create(_state->display);
     wlr_log(WLR_DEBUG, "Output manager created");
+
+    /* wp-drm-lease-device-v1 — allows VR runtimes (e.g. Monado/OpenXR) to
+     * acquire a DRM lease for non-desktop connectors (VR headsets).  Returns
+     * NULL when not running on a DRM backend; that is harmless.              */
+    _state->drm_lease_manager =
+        wlr_drm_lease_v1_manager_create(_state->display, _state->backend);
+    if (_state->drm_lease_manager) {
+        _state->drm_lease_request.notify = handle_drm_lease_request;
+        wl_signal_add(&_state->drm_lease_manager->events.request,
+                      &_state->drm_lease_request);
+        wlr_log(WLR_INFO, "DRM lease manager created (VR headset support enabled)");
+    } else {
+        wlr_log(WLR_DEBUG, "DRM lease manager not available (non-DRM backend)");
+    }
+
+    /* zwp_relative_pointer_manager_v1 — lets clients receive unclipped relative
+     * pointer deltas (used by SteamVR for the desktop mirror overlay and by
+     * games that capture the mouse).                                          */
+    _state->relative_pointer_manager =
+        wlr_relative_pointer_manager_v1_create(_state->display);
+    wlr_log(WLR_DEBUG, "Relative pointer manager created");
+
+    /* zwp_pointer_constraints_v1 — lets clients lock or confine the pointer
+     * (used by SteamVR desktop mirror and by first-person games/apps).       */
+    _state->pointer_constraints =
+        wlr_pointer_constraints_v1_create(_state->display);
+    _state->new_constraint.notify = handle_new_pointer_constraint;
+    wl_signal_add(&_state->pointer_constraints->events.new_constraint,
+                  &_state->new_constraint);
+    wlr_log(WLR_DEBUG, "Pointer constraints created");
 
     /* Seat */
     _state->seat = wlr_seat_create(_state->display, "seat0");
@@ -573,8 +637,9 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     _input = [[AmbrosiaInput alloc] initWithCompositor:self];
 
     /* XWayland — started lazily; Xwayland process spawns when first X11 client
-     * connects.  display_name is determined at creation; DISPLAY is set in the
-     * ready callback once the XWM handshake is complete.                      */
+     * connects.  display_name is determined at creation time (the X socket is
+     * opened synchronously) so DISPLAY can be exported before the session
+     * starts.  The ready callback merely completes the XWM handshake.        */
     _state->xwayland = wlr_xwayland_create(_state->display, _state->compositor, false);
     if (_state->xwayland) {
         _state->xwayland_ready.notify = handle_xwayland_ready;
@@ -689,6 +754,11 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
     setenv("WAYLAND_DISPLAY", socket, 1);
     wlr_log(WLR_INFO, "Ambrosia compositor running on WAYLAND_DISPLAY=%s", socket);
+
+    if (_state->xwayland && _state->xwayland->display_name) {
+        setenv("DISPLAY", _state->xwayland->display_name, 1);
+        wlr_log(WLR_INFO, "XWayland socket ready: DISPLAY=%s", _state->xwayland->display_name);
+    }
 
     /* Start the session manager — launches AmbrosiaDock and GFinder,
      * restarting either automatically if they exit unexpectedly.     */
@@ -886,6 +956,9 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
         [_focusedView activateFocus:NO];
     }
 
+    /* Release any active pointer constraint before transferring focus. */
+    [self deactivateActiveConstraint];
+
     _focusedView = view;
 
     if (!view) {
@@ -905,13 +978,15 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
     /* Notify seat keyboard */
     struct wlr_keyboard *kb = wlr_seat_get_keyboard(_state->seat);
-    if (kb) {
-        struct wlr_surface *target = surface ?: [view surface];
-        if (target) {
-            wlr_seat_keyboard_notify_enter(_state->seat,
-                target, kb->keycodes, kb->num_keycodes, &kb->modifiers);
-        }
+    struct wlr_surface *focusSurface = surface ?: [view surface];
+    if (kb && focusSurface) {
+        wlr_seat_keyboard_notify_enter(_state->seat,
+            focusSurface, kb->keycodes, kb->num_keycodes, &kb->modifiers);
     }
+
+    /* Re-activate any pointer constraint registered for this surface. */
+    if (focusSurface)
+        [self activateConstraintForSurface:focusSurface];
 
     /* Redraw decoration to show focused state */
     [view updateTitle];
@@ -1027,7 +1102,15 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
      *   3. LAYER_BOTTOM / LAYER_BACKGROUND surfaces
      *
      * This ensures the menu bar always receives pointer events even when
-     * a window's geometry overlaps its coordinate range.               */
+     * a window's geometry overlaps its coordinate range.
+     *
+     * Cursor reset rule: only reset to the default xcursor when the pointer
+     * enters a DIFFERENT surface.  If still over the same surface, leave the
+     * cursor image alone so that a client-set cursor (e.g. a game crosshair
+     * or an invisible cursor for pointer-locked apps) is not overwritten on
+     * every frame.                                                           */
+    struct wlr_surface *prev_focused = _state->seat->pointer_state.focused_surface;
+
     {
         double lsx = 0, lsy = 0;
         struct wlr_surface *top_ls =
@@ -1065,9 +1148,10 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
                 }
             }
             if (!skipLayerPointer) {
+                if (top_ls != prev_focused)
+                    wlr_cursor_set_xcursor(_state->cursor, _state->cursor_mgr, "default");
                 wlr_seat_pointer_notify_enter(_state->seat, top_ls, lsx, lsy);
                 wlr_seat_pointer_notify_motion(_state->seat, time, lsx, lsy);
-                wlr_cursor_set_xcursor(_state->cursor, _state->cursor_mgr, "default");
                 return;
             }
         }
@@ -1083,7 +1167,6 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
             AmbrosiaDecorationHit hit = [view.decoration hitTestX:(cx - view.x) y:(cy - view.y)];
             if (hit != AmbrosiaDecorationHitNone) {
                 wlr_seat_pointer_notify_clear_focus(_state->seat);
-                /* Change cursor to appropriate resize cursor */
                 const char *cursor_name = "default";
                 switch (hit) {
                     case AmbrosiaDecorationHitResizeTop:         cursor_name = "n-resize";  break;
@@ -1101,25 +1184,78 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
             }
         }
         if (surface) {
+            /* Only reset to default on surface entry; leave client cursor alone
+             * during normal motion over the same surface.                      */
+            if (surface != prev_focused)
+                wlr_cursor_set_xcursor(_state->cursor, _state->cursor_mgr, "default");
             wlr_seat_pointer_notify_enter(_state->seat, surface, sx, sy);
             wlr_seat_pointer_notify_motion(_state->seat, time, sx, sy);
         } else {
             wlr_seat_pointer_notify_clear_focus(_state->seat);
+            wlr_cursor_set_xcursor(_state->cursor, _state->cursor_mgr, "default");
         }
-        wlr_cursor_set_xcursor(_state->cursor, _state->cursor_mgr, "default");
     } else {
         /* No xdg toplevel at this position — check lower layer surfaces */
         double lsx = 0, lsy = 0;
         struct wlr_surface *ls_surface =
             [self layerSurfaceAtX:cx y:cy localX:&lsx localY:&lsy];
         if (ls_surface) {
+            if (ls_surface != prev_focused)
+                wlr_cursor_set_xcursor(_state->cursor, _state->cursor_mgr, "default");
             wlr_seat_pointer_notify_enter(_state->seat, ls_surface, lsx, lsy);
             wlr_seat_pointer_notify_motion(_state->seat, time, lsx, lsy);
         } else {
             wlr_seat_pointer_notify_clear_focus(_state->seat);
+            wlr_cursor_set_xcursor(_state->cursor, _state->cursor_mgr, "default");
         }
-        wlr_cursor_set_xcursor(_state->cursor, _state->cursor_mgr, "default");
     }
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Pointer constraint management
+
+- (void)handleNewConstraint:(struct wlr_pointer_constraint_v1 *)constraint
+{
+    /* Activate immediately if the constrained surface is already pointer-focused. */
+    struct wlr_surface *focused = _state->seat->pointer_state.focused_surface;
+    if (focused && focused == constraint->surface)
+        [self activateConstraintForSurface:constraint->surface];
+}
+
+- (void)activateConstraintForSurface:(struct wlr_surface *)surface
+{
+    if (!_state->pointer_constraints || !surface) return;
+    struct wlr_pointer_constraint_v1 *constraint =
+        wlr_pointer_constraints_v1_constraint_for_surface(
+            _state->pointer_constraints, surface, _state->seat);
+    if (!constraint || constraint == _state->active_constraint) return;
+
+    [self deactivateActiveConstraint];
+
+    _state->active_constraint = constraint;
+    _state->constraint_destroy.notify = handle_active_constraint_destroy;
+    wl_signal_add(&constraint->events.destroy, &_state->constraint_destroy);
+    wlr_pointer_constraint_v1_send_activated(constraint);
+    wlr_log(WLR_DEBUG, "Pointer constraint activated (%s)",
+            constraint->type == WLR_POINTER_CONSTRAINT_V1_LOCKED
+                ? "locked" : "confined");
+}
+
+- (void)deactivateActiveConstraint
+{
+    if (!_state->active_constraint) return;
+    wl_list_remove(&_state->constraint_destroy.link);
+    wlr_pointer_constraint_v1_send_deactivated(_state->active_constraint);
+    wlr_log(WLR_DEBUG, "Pointer constraint deactivated");
+    _state->active_constraint = NULL;
+}
+
+- (void)handleActiveConstraintDestroy
+{
+    /* Constraint was destroyed by the client — clear without sending deactivated. */
+    wl_list_remove(&_state->constraint_destroy.link);
+    _state->active_constraint = NULL;
+    wlr_log(WLR_DEBUG, "Active pointer constraint destroyed by client");
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1127,7 +1263,31 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
 - (void)handleNewOutput:(struct wlr_output *)output
 {
-    wlr_log(WLR_INFO, "New output: %s", output->name);
+    wlr_log(WLR_INFO, "New output: %s%s", output->name,
+            output->non_desktop ? " [non-desktop]" : "");
+
+    /* Non-desktop connectors (VR headsets) are offered to the DRM lease
+     * manager so an OpenXR runtime can acquire them directly.  They are not
+     * added to the output layout or rendered by the compositor.             */
+    if (output->non_desktop) {
+        wlr_log(WLR_INFO, "Non-desktop output detected: %s (VR headset / direct-mode display)",
+                output->name);
+        if (_state->drm_lease_manager) {
+            if (wlr_drm_lease_v1_manager_offer_output(_state->drm_lease_manager, output)) {
+                wlr_log(WLR_INFO, "Output %s offered via wp-drm-lease-device-v1 "
+                                  "(VR runtimes can now request a DRM lease)", output->name);
+            } else {
+                wlr_log(WLR_ERROR, "Failed to offer non-desktop output %s for DRM lease — "
+                                   "check that the backend is a DRM backend and the output "
+                                   "belongs to it", output->name);
+            }
+        } else {
+            wlr_log(WLR_INFO, "Output %s is non-desktop but DRM lease manager unavailable "
+                              "(not running on a DRM backend?); ignoring", output->name);
+        }
+        return;
+    }
+
     wlr_output_init_render(output, _state->allocator, _state->renderer);
 
     struct wlr_output_state state;
@@ -1259,6 +1419,37 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 }
 
 /* ---------------------------------------------------------------------- */
+#pragma mark - DRM lease (wp-drm-lease-device-v1 / VR headset support)
+
+/**
+ * A client (e.g. an OpenXR runtime like Monado) is requesting a DRM lease
+ * for one or more non-desktop connectors.  Grant it unconditionally — the
+ * lease manager already validated that all requested connectors are offered
+ * and not already leased.  The wlr_output objects for the leased connectors
+ * are destroyed for the duration of the lease and re-emitted via
+ * backend->events.new_output when the lease ends.
+ */
+- (void)handleDrmLeaseRequest:(struct wlr_drm_lease_request_v1 *)request
+{
+    for (size_t i = 0; i < request->n_connectors; i++) {
+        struct wlr_output *out = request->connectors[i]->output;
+        wlr_log(WLR_INFO, "DRM lease request: connector[%zu] = %s",
+                i, out ? out->name : "(null)");
+    }
+    wlr_log(WLR_INFO, "DRM lease: granting request for %zu connector(s)",
+            request->n_connectors);
+
+    struct wlr_drm_lease_v1 *lease = wlr_drm_lease_request_v1_grant(request);
+    if (lease) {
+        wlr_log(WLR_INFO, "DRM lease granted — VR client now has direct display access");
+    } else {
+        wlr_log(WLR_ERROR, "DRM lease grant failed (drmModeCreateLease returned error); "
+                           "rejecting — check kernel logs for CRTC/connector routing issues");
+        wlr_drm_lease_request_v1_reject(request);
+    }
+}
+
+/* ---------------------------------------------------------------------- */
 
 - (void)handleNewXdgToplevel:(struct wlr_xdg_toplevel *)toplevel
 {
@@ -1363,11 +1554,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
 - (void)handleXWaylandReady
 {
-    const char *display_name = _state->xwayland->display_name;
-    if (display_name) {
-        setenv("DISPLAY", display_name, 1);
-        wlr_log(WLR_INFO, "XWayland ready: DISPLAY=%s", display_name);
-    }
+    wlr_log(WLR_INFO, "XWayland ready: DISPLAY=%s", _state->xwayland->display_name ?: "(nil)");
     wlr_xwayland_set_seat(_state->xwayland, _state->seat);
 }
 
@@ -1532,6 +1719,19 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
 - (void)handleCursorMotionTime:(uint32_t)time dx:(double)dx dy:(double)dy
 {
+    /* Always forward relative motion — games consume this regardless of lock state. */
+    if (_state->relative_pointer_manager)
+        wlr_relative_pointer_manager_v1_send_relative_motion(
+            _state->relative_pointer_manager, _state->seat,
+            (uint64_t)time * 1000, dx, dy, dx, dy);
+
+    /* When the pointer is locked, do not move the physical cursor and do not
+     * deliver absolute wl_pointer::motion events — the client uses only the
+     * relative_motion events above.                                          */
+    if (_state->active_constraint &&
+        _state->active_constraint->type == WLR_POINTER_CONSTRAINT_V1_LOCKED)
+        return;
+
     wlr_cursor_move(_state->cursor, NULL, dx, dy);
     [self processCursorMotionTime:time];
 }
@@ -1539,6 +1739,12 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 - (void)handleCursorMotionAbsoluteTime:(uint32_t)time x:(double)x y:(double)y
                                output:(struct wlr_output *)output
 {
+    /* Absolute motion (e.g. touchpad or nested backend) is also suppressed
+     * while a pointer lock is active.                                        */
+    if (_state->active_constraint &&
+        _state->active_constraint->type == WLR_POINTER_CONSTRAINT_V1_LOCKED)
+        return;
+
     wlr_cursor_warp_absolute(_state->cursor, NULL, x, y);
     [self processCursorMotionTime:time];
 }

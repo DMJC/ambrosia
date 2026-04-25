@@ -25,6 +25,9 @@
 #include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_output_management_v1.h>
+#include <wlr/types/wlr_drm_lease_v1.h>
+#include <wlr/types/wlr_relative_pointer_v1.h>
+#include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/backend/session.h>
 #include <wlr/xwayland.h>
 
@@ -56,11 +59,12 @@ struct ambrosia_compositor_state {
      * wlr-layer-shell-v1 layer numbering and ensures layer-TOP surfaces
      * (e.g. the Ambrosia menu bar) always render above regular windows.
      */
-    struct wlr_scene_tree       *scene_layer_bg;       /* ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND */
-    struct wlr_scene_tree       *scene_layer_bottom;   /* ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM     */
-    struct wlr_scene_tree       *scene_layer_windows;  /* xdg-toplevel windows (tiling layer)  */
-    struct wlr_scene_tree       *scene_layer_top;      /* ZWLR_LAYER_SHELL_V1_LAYER_TOP        */
-    struct wlr_scene_tree       *scene_layer_overlay;  /* ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY    */
+    struct wlr_scene_tree       *scene_layer_bg;         /* ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND */
+    struct wlr_scene_tree       *scene_layer_bottom;     /* ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM     */
+    struct wlr_scene_tree       *scene_layer_windows;    /* xdg-toplevel windows (tiling layer)  */
+    struct wlr_scene_tree       *scene_layer_top;        /* ZWLR_LAYER_SHELL_V1_LAYER_TOP        */
+    struct wlr_scene_tree       *scene_layer_fullscreen; /* fullscreen apps — above menu bar     */
+    struct wlr_scene_tree       *scene_layer_overlay;    /* ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY    */
 
     /* Usable screen area: top margin reserved by LAYER_TOP exclusive zones
      * (e.g. 24 px while the Ambrosia menu bar is running).  Used to clamp
@@ -76,6 +80,9 @@ struct ambrosia_compositor_state {
     struct wlr_viewporter            *viewporter;
     struct wlr_xdg_output_manager_v1 *xdg_output_manager;
     struct wlr_output_manager_v1     *output_manager;
+    struct wlr_drm_lease_v1_manager  *drm_lease_manager;
+    struct wlr_relative_pointer_manager_v1 *relative_pointer_manager;
+    struct wlr_pointer_constraints_v1      *pointer_constraints;
     struct wlr_seat                  *seat;
     struct wlr_cursor           *cursor;
     struct wlr_xcursor_manager  *cursor_mgr;
@@ -97,6 +104,7 @@ struct ambrosia_compositor_state {
     struct wl_listener request_set_selection;
     struct wl_listener output_manager_apply;
     struct wl_listener output_manager_test;
+    struct wl_listener drm_lease_request;
 
     /* Grab / resize state */
     AmbrosiaCursorMode  cursor_mode;
@@ -109,6 +117,11 @@ struct ambrosia_compositor_state {
     struct wlr_xwayland         *xwayland;
     struct wl_listener           xwayland_ready;
     struct wl_listener           new_xwayland_surface;
+
+    /* Pointer constraints (zwp_pointer_constraints_v1) */
+    struct wl_listener                new_constraint;
+    struct wlr_pointer_constraint_v1 *active_constraint;
+    struct wl_listener                constraint_destroy;
 
     /* Logout self-pipe: background notification thread → wl_event_loop */
     int                  logout_pipe[2];
@@ -191,6 +204,7 @@ struct ambrosia_compositor_state {
 - (void)handleRequestSetSelection:(struct wlr_seat_request_set_selection_event *)event;
 - (void)handleOutputManagerApply:(struct wlr_output_configuration_v1 *)config;
 - (void)handleOutputManagerTest:(struct wlr_output_configuration_v1 *)config;
+- (void)handleDrmLeaseRequest:(struct wlr_drm_lease_request_v1 *)request;
 
 /** Broadcast the current output configuration to all wlr-output-management clients. */
 - (void)notifyOutputManager;

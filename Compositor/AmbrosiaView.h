@@ -39,6 +39,7 @@ struct ambrosia_view_state {
 @property (nonatomic) int y;
 @property (nonatomic, readonly) BOOL isMapped;
 @property (nonatomic, readonly) BOOL isMiniaturized;      /**< YES → scene node hidden by minimize button */
+@property (nonatomic, readonly) BOOL isFullscreen;        /**< YES → covering entire output, above menu bar */
 @property (nonatomic, readonly) BOOL isMenu;              /**< YES → skip decorations (menu/dock/desktop) */
 @property (nonatomic, readonly) BOOL isDockWindow;        /**< YES → position at bottom-centre of output */
 @property (nonatomic, readonly) BOOL isDesktopBackground; /**< YES → pin to output origin, behind all windows */
@@ -74,6 +75,14 @@ struct ambrosia_view_state {
  * Saves the current position on first maximize and restores it on unmaximize.
  */
 - (void)toggleMaximize;
+
+/**
+ * Toggle fullscreen state.
+ * When entering fullscreen the window is moved to the fullscreen scene layer
+ * (above the menu bar), sized to cover the entire output, and its decoration
+ * is hidden.  Restores position/size/decoration on exit.
+ */
+- (void)toggleFullscreen;
 
 /** Update title in the decoration (if any) */
 - (void)updateTitle;
