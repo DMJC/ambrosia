@@ -273,6 +273,7 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
     if (_state->scene_tree) {
         wlr_scene_node_set_position(&_state->scene_tree->node, x, y);
     }
+    [_compositor updateFractionalScaleForSurface:[self surface] x:x y:y];
     /* Sync X11 window position for managed windows. */
     if (!_isMenu) {
         struct wlr_xwayland_surface *xs = _state->xwayland_surface;

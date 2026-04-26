@@ -23,6 +23,7 @@
 #include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_viewporter.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_output_management_v1.h>
 #include <wlr/types/wlr_drm_lease_v1.h>
@@ -78,6 +79,7 @@ struct ambrosia_compositor_state {
     struct wlr_layer_shell_v1        *layer_shell;
     struct wlr_screencopy_manager_v1 *screencopy_manager;
     struct wlr_viewporter            *viewporter;
+    struct wlr_fractional_scale_manager_v1 *fractional_scale_manager;
     struct wlr_xdg_output_manager_v1 *xdg_output_manager;
     struct wlr_output_manager_v1     *output_manager;
     struct wlr_drm_lease_v1_manager  *drm_lease_manager;
@@ -208,6 +210,12 @@ struct ambrosia_compositor_state {
 
 /** Broadcast the current output configuration to all wlr-output-management clients. */
 - (void)notifyOutputManager;
+/** Update preferred wp-fractional-scale-v1 for a surface based on its monitor. */
+- (void)updateFractionalScaleForSurface:(nullable struct wlr_surface *)surface
+                                      x:(int)x
+                                      y:(int)y;
+/** Recompute preferred wp-fractional-scale-v1 for all known views. */
+- (void)refreshFractionalScaleForAllViews;
 
 /* XWayland callbacks */
 - (void)handleXWaylandReady;
