@@ -21,6 +21,69 @@ static BOOL ReadMenuBarPref(NSString *key)
     return [prefs[key] boolValue];
 }
 
+/* Shared plist path for monitor configuration written by SystemPreferences. */
+static NSString *SystemPreferencesPath(void)
+{
+    return [NSHomeDirectory() stringByAppendingPathComponent:
+            @"GNUstep/Defaults/SystemPreferences.plist"];
+}
+
+static NSDictionary *PrimaryMonitorFromSystemPreferences(void)
+{
+    NSDictionary *prefs =
+        [NSDictionary dictionaryWithContentsOfFile:SystemPreferencesPath()];
+    if (![prefs isKindOfClass:[NSDictionary class]]) return nil;
+
+    NSArray *keyCandidates = @[@"Monitors", @"monitors", @"Monitor", @"monitor"];
+    NSArray *monitors = nil;
+    for (NSString *key in keyCandidates) {
+        id value = prefs[key];
+        if ([value isKindOfClass:[NSArray class]]) {
+            monitors = (NSArray *)value;
+            break;
+        }
+    }
+    if (!monitors.count) return nil;
+
+    for (id entry in monitors) {
+        if (![entry isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *monitor = (NSDictionary *)entry;
+        BOOL isPrimary =
+            [monitor[@"primary"] boolValue]  ||
+            [monitor[@"Primary"] boolValue]  ||
+            [monitor[@"isPrimary"] boolValue]||
+            [monitor[@"IsPrimary"] boolValue];
+        if (isPrimary) return monitor;
+    }
+    return nil;
+}
+
+static NSRect MenuBarRectForStartupScreen(void)
+{
+    NSScreen *screen = [NSScreen mainScreen];
+    NSRect sf = screen ? screen.frame : NSZeroRect;
+
+    NSDictionary *primaryMonitor = PrimaryMonitorFromSystemPreferences();
+    if (primaryMonitor) {
+        double width =
+            [primaryMonitor[@"width"] doubleValue] ?: [primaryMonitor[@"Width"] doubleValue];
+        double scale =
+            [primaryMonitor[@"scale"] doubleValue] ?: [primaryMonitor[@"Scale"] doubleValue];
+
+        if (width > 0.0) {
+            sf.size.width = (scale > 0.0) ? (CGFloat)(width / scale) : (CGFloat)width;
+        }
+    }
+
+    if (sf.size.width  < 32) sf.size.width  = kFallbackWidth;
+    if (sf.size.height < 32) sf.size.height = kFallbackScreenH;
+
+    return NSMakeRect(sf.origin.x,
+                      sf.origin.y + sf.size.height - kBarHeight,
+                      sf.size.width,
+                      kBarHeight);
+}
+
 /* ---------------------------------------------------------------------- */
 
 @implementation MenuBarController {
@@ -140,11 +203,6 @@ static BOOL ReadMenuBarPref(NSString *key)
 
 - (void)_createPanel
 {
-    NSScreen *screen = [NSScreen mainScreen];
-    NSRect sf = screen ? screen.frame : NSZeroRect;
-    if (sf.size.width  < 32) sf.size.width  = kFallbackWidth;
-    if (sf.size.height < 32) sf.size.height = kFallbackScreenH;
-
     /*
      * GNUstep uses a bottom-left coordinate origin; y increases upward.
      *
@@ -158,10 +216,7 @@ static BOOL ReadMenuBarPref(NSString *key)
      * surface (namespace "gnustep-mainmenu", layer LAYER_TOP) with a 0 px
      * margin from the top edge of the output.
      */
-    NSRect barRect = NSMakeRect(sf.origin.x,
-                                sf.origin.y + sf.size.height - kBarHeight,
-                                sf.size.width,
-                                kBarHeight);
+    NSRect barRect = MenuBarRectForStartupScreen();
 
     _menuPanel = [[NSPanel alloc]
                   initWithContentRect:barRect
@@ -463,15 +518,7 @@ static BOOL ReadMenuBarPref(NSString *key)
 - (void)contractPanelDropdown
 {
     /* Restore to the standard kBarHeight-pixel bar. */
-    NSScreen *screen = [NSScreen mainScreen];
-    NSRect sf = screen ? screen.frame : NSZeroRect;
-    if (sf.size.width  < 32) sf.size.width  = kFallbackWidth;
-    if (sf.size.height < 32) sf.size.height = kFallbackScreenH;
-
-    NSRect barRect = NSMakeRect(sf.origin.x,
-                                sf.origin.y + sf.size.height - kBarHeight,
-                                sf.size.width,
-                                kBarHeight);
+    NSRect barRect = MenuBarRectForStartupScreen();
     [_menuPanel setFrame:barRect display:YES animate:NO];
 }
 
