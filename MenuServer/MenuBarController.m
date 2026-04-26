@@ -189,10 +189,9 @@ static CGFloat ReadNumericValue(id raw)
         CGFloat scale = ReadNumericValue(entry[@"scale"]);
         if (scale <= 0.01) scale = 1.0;
         CGFloat logicalW = rw / scale;
-        CGFloat logicalH = rh / scale;
         CGFloat barH = kBarHeight;
-        if (logicalW < 32 || logicalH < 32) continue;
-        NSRect barRect = NSMakeRect(sx, sy + logicalH - barH, logicalW, barH);
+        if (logicalW < 32 || rh < 32) continue;
+        NSRect barRect = NSMakeRect(sx, sy + rh - barH, logicalW, barH);
         [barRects addObject:[NSValue valueWithRect:barRect]];
     }
 
