@@ -21,11 +21,37 @@ static BOOL ReadMenuBarPref(NSString *key)
     return [prefs[key] boolValue];
 }
 
+static NSString *SystemPreferencesPath(void)
+{
+    return [NSHomeDirectory() stringByAppendingPathComponent:
+            @"GNUstep/Defaults/SystemPreferences.plist"];
+}
+
+static CGFloat ReadNumericValue(id raw)
+{
+    if ([raw isKindOfClass:[NSNumber class]]) return [raw doubleValue];
+    if (![raw isKindOfClass:[NSString class]]) return 0.0;
+    NSString *s = (NSString *)raw;
+    NSScanner *scanner = [NSScanner scannerWithString:s];
+    double v = 0.0;
+    if ([scanner scanDouble:&v]) return v;
+    NSRange r = [s rangeOfCharacterFromSet:
+                 [NSCharacterSet characterSetWithCharactersInString:@"0123456789.-"]];
+    if (r.location == NSNotFound) return 0.0;
+    NSString *tail = [s substringFromIndex:r.location];
+    scanner = [NSScanner scannerWithString:tail];
+    return [scanner scanDouble:&v] ? v : 0.0;
+}
+
 /* ---------------------------------------------------------------------- */
 
 @implementation MenuBarController {
     NSPanel              *_menuPanel;
     MenuBarView          *_menuBarView;
+    NSMutableArray<NSPanel *> *_menuPanels;
+    NSMutableArray<MenuBarView *> *_menuBarViews;
+    NSMapTable<MenuBarView *, NSPanel *> *_panelByView;
+    NSMapTable<NSPanel *, NSValue *> *_baseFrameByPanel;
     NSConnection         *_doConnection;
     NSString             *_activeAppName;
     NSArray              *_activeMenuItems;
@@ -77,7 +103,9 @@ static BOOL ReadMenuBarPref(NSString *key)
 /* TrayManagerDelegate */
 - (void)trayManagerDidUpdateItems:(TrayManager *)manager
 {
-    _menuBarView.trayItems = manager.trayItems;
+    for (MenuBarView *view in _menuBarViews) {
+        view.trayItems = manager.trayItems;
+    }
 }
 
 - (TrayManager *)trayManager { return _trayManager; }
@@ -89,30 +117,32 @@ static BOOL ReadMenuBarPref(NSString *key)
 {
     /* Always show Bluetooth. Wi-Fi and Volume are opt-in via SystemPreferences
      * checkboxes; they write ShowWiFiMenu / ShowVolumeMenu to the plist below. */
-    _bluetoothItem = [[BluetoothStatusItem alloc] init];
-    _bluetoothItem.pluginDelegate = _menuBarView;
+    for (MenuBarView *view in _menuBarViews) {
+        _bluetoothItem = [[BluetoothStatusItem alloc] init];
+        _bluetoothItem.pluginDelegate = view;
 
-    NSMutableArray *plugins = [NSMutableArray arrayWithObject:_bluetoothItem];
+        NSMutableArray *plugins = [NSMutableArray arrayWithObject:_bluetoothItem];
 
-    /* Plugins are drawn right-to-left: index 0 is rightmost (closest to clock).
-     * Desired bar order (right→left): BT | Wi-Fi | Vol               */
-    if (ReadMenuBarPref(@"ShowWiFiMenu")) {
-        _wifiItem = [[WiFiStatusItem alloc] init];
-        _wifiItem.pluginDelegate = _menuBarView;
-        [plugins insertObject:_wifiItem atIndex:0];
-    } else {
-        _wifiItem = nil;
+        /* Plugins are drawn right-to-left: index 0 is rightmost (closest to clock).
+         * Desired bar order (right→left): BT | Wi-Fi | Vol               */
+        if (ReadMenuBarPref(@"ShowWiFiMenu")) {
+            _wifiItem = [[WiFiStatusItem alloc] init];
+            _wifiItem.pluginDelegate = view;
+            [plugins insertObject:_wifiItem atIndex:0];
+        } else {
+            _wifiItem = nil;
+        }
+
+        if (ReadMenuBarPref(@"ShowVolumeMenu")) {
+            _volumeItem = [[VolumeStatusItem alloc] init];
+            _volumeItem.pluginDelegate = view;
+            [plugins insertObject:_volumeItem atIndex:0];
+        } else {
+            _volumeItem = nil;
+        }
+
+        view.statusPlugins = plugins;
     }
-
-    if (ReadMenuBarPref(@"ShowVolumeMenu")) {
-        _volumeItem = [[VolumeStatusItem alloc] init];
-        _volumeItem.pluginDelegate = _menuBarView;
-        [plugins insertObject:_volumeItem atIndex:0];
-    } else {
-        _volumeItem = nil;
-    }
-
-    _menuBarView.statusPlugins = plugins;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -140,53 +170,72 @@ static BOOL ReadMenuBarPref(NSString *key)
 
 - (void)_createPanel
 {
-    NSScreen *screen = [NSScreen mainScreen];
-    NSRect sf = screen ? screen.frame : NSZeroRect;
-    if (sf.size.width  < 32) sf.size.width  = kFallbackWidth;
-    if (sf.size.height < 32) sf.size.height = kFallbackScreenH;
+    _menuPanels = [NSMutableArray array];
+    _menuBarViews = [NSMutableArray array];
+    _panelByView = [NSMapTable weakToWeakObjectsMapTable];
+    _baseFrameByPanel = [NSMapTable weakToStrongObjectsMapTable];
 
-    /*
-     * GNUstep uses a bottom-left coordinate origin; y increases upward.
-     *
-     * For a 24 px bar sitting flush at the TOP of a 1 080 px screen:
-     *   y_gnustep = screenH − barHeight = 1056
-     *
-     * gnustep-back (Wayland path) converts this to Wayland screen-space:
-     *   top_margin = screenH − (y_gnustep + barHeight) = 0
-     *
-     * wlr_scene_layer_surface_v1_configure then positions the layer-shell
-     * surface (namespace "gnustep-mainmenu", layer LAYER_TOP) with a 0 px
-     * margin from the top edge of the output.
-     */
-    NSRect barRect = NSMakeRect(sf.origin.x,
-                                sf.origin.y + sf.size.height - kBarHeight,
-                                sf.size.width,
-                                kBarHeight);
+    NSArray *screensConfig = [NSDictionary dictionaryWithContentsOfFile:SystemPreferencesPath()][@"Screens"];
+    NSMutableArray<NSValue *> *barRects = [NSMutableArray array];
 
-    _menuPanel = [[NSPanel alloc]
-                  initWithContentRect:barRect
-                            styleMask:NSWindowStyleMaskBorderless
-                              backing:NSBackingStoreBuffered
-                                defer:NO];
+    for (NSDictionary *entry in screensConfig) {
+        if (![entry isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *loc = entry[@"location"];
+        NSDictionary *res = entry[@"resolution"];
+        CGFloat sx = ReadNumericValue(loc[@"x"]);
+        CGFloat sy = ReadNumericValue(loc[@"y"]);
+        CGFloat rw = ReadNumericValue(res[@"width"]);
+        CGFloat rh = ReadNumericValue(res[@"height"]);
+        CGFloat scale = ReadNumericValue(entry[@"scale"]);
+        if (scale <= 0.01) scale = 1.0;
+        CGFloat logicalW = rw / scale;
+        CGFloat barH = kBarHeight;
+        if (logicalW < 32 || rh < 32) continue;
+        NSRect barRect = NSMakeRect(sx, sy + rh - barH, logicalW, barH);
+        [barRects addObject:[NSValue valueWithRect:barRect]];
+    }
 
-    /* Window level NSMainMenuWindowLevel (= 20) causes gnustep-back to
-     * create a wlr-layer-shell surface at ZWLR_LAYER_SHELL_V1_LAYER_TOP
-     * with the namespace "gnustep-mainmenu".                             */
-    _menuPanel.level           = NSMainMenuWindowLevel;
-    _menuPanel.title           = @"AmbrosiaMenuServer";
-    _menuPanel.opaque          = NO;
-    _menuPanel.backgroundColor = [NSColor clearColor];
-    _menuPanel.hasShadow       = NO;
-    /* Prevent the panel from stealing keyboard focus from app windows. */
-    [_menuPanel setBecomesKeyOnlyIfNeeded:YES];
+    if (barRects.count == 0) {
+        NSScreen *screen = [NSScreen mainScreen];
+        NSRect sf = screen ? screen.frame : NSZeroRect;
+        if (sf.size.width  < 32) sf.size.width  = kFallbackWidth;
+        if (sf.size.height < 32) sf.size.height = kFallbackScreenH;
+        NSRect barRect = NSMakeRect(sf.origin.x,
+                                    sf.origin.y + sf.size.height - kBarHeight,
+                                    sf.size.width,
+                                    kBarHeight);
+        [barRects addObject:[NSValue valueWithRect:barRect]];
+    }
 
-    _menuBarView = [[MenuBarView alloc]
-                    initWithFrame:((NSView *)_menuPanel.contentView).bounds];
-    _menuBarView.controller        = self;
-    _menuBarView.autoresizingMask  = NSViewWidthSizable | NSViewHeightSizable;
+    for (NSValue *rectValue in barRects) {
+        NSRect barRect = [rectValue rectValue];
+        NSPanel *panel = [[NSPanel alloc]
+                          initWithContentRect:barRect
+                                    styleMask:NSWindowStyleMaskBorderless
+                                      backing:NSBackingStoreBuffered
+                                        defer:NO];
+        panel.level           = NSMainMenuWindowLevel;
+        panel.title           = @"AmbrosiaMenuServer";
+        panel.opaque          = NO;
+        panel.backgroundColor = [NSColor clearColor];
+        panel.hasShadow       = NO;
+        [panel setBecomesKeyOnlyIfNeeded:YES];
 
-    [_menuPanel.contentView addSubview:_menuBarView];
-    [_menuPanel makeKeyAndOrderFront:nil];
+        MenuBarView *view = [[MenuBarView alloc]
+                             initWithFrame:((NSView *)panel.contentView).bounds];
+        view.controller        = self;
+        view.autoresizingMask  = NSViewWidthSizable | NSViewHeightSizable;
+        [panel.contentView addSubview:view];
+        [panel makeKeyAndOrderFront:nil];
+
+        [_menuPanels addObject:panel];
+        [_menuBarViews addObject:view];
+        [_panelByView setObject:panel forKey:view];
+        [_baseFrameByPanel setObject:[NSValue valueWithRect:barRect] forKey:panel];
+    }
+
+    _menuPanel = _menuPanels.firstObject;
+    _menuBarView = _menuBarViews.firstObject;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -265,7 +314,9 @@ static BOOL ReadMenuBarPref(NSString *key)
     _activeAppName   = [appName copy];
     _activeMenuItems = [items copy];
     _activeClientPID = pid;
-    [_menuBarView setActiveAppName:_activeAppName menuItems:_activeMenuItems];
+    for (MenuBarView *view in _menuBarViews) {
+        [view setActiveAppName:_activeAppName menuItems:_activeMenuItems];
+    }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -451,28 +502,31 @@ static BOOL ReadMenuBarPref(NSString *key)
 
 - (void)expandPanelByDropdownHeight:(CGFloat)dropH
 {
-    /* Grow the panel downward (decrease origin.y, increase height).
-     * The layer-shell compositor keeps the top edge anchored at the top of
-     * the screen; gnustep-back will update the wlr_layer_surface_v1 size.  */
-    NSRect f = _menuPanel.frame;
-    f.origin.y    -= dropH;
-    f.size.height += dropH;
-    [_menuPanel setFrame:f display:YES animate:NO];
+    [self expandPanelForView:_menuBarView dropdownHeight:dropH];
 }
 
 - (void)contractPanelDropdown
 {
-    /* Restore to the standard kBarHeight-pixel bar. */
-    NSScreen *screen = [NSScreen mainScreen];
-    NSRect sf = screen ? screen.frame : NSZeroRect;
-    if (sf.size.width  < 32) sf.size.width  = kFallbackWidth;
-    if (sf.size.height < 32) sf.size.height = kFallbackScreenH;
+    [self contractPanelForView:_menuBarView];
+}
 
-    NSRect barRect = NSMakeRect(sf.origin.x,
-                                sf.origin.y + sf.size.height - kBarHeight,
-                                sf.size.width,
-                                kBarHeight);
-    [_menuPanel setFrame:barRect display:YES animate:NO];
+- (void)expandPanelForView:(MenuBarView *)view dropdownHeight:(CGFloat)dropH
+{
+    NSPanel *panel = [_panelByView objectForKey:view] ?: _menuPanel;
+    if (!panel) return;
+    NSRect f = panel.frame;
+    f.origin.y    -= dropH;
+    f.size.height += dropH;
+    [panel setFrame:f display:YES animate:NO];
+}
+
+- (void)contractPanelForView:(MenuBarView *)view
+{
+    NSPanel *panel = [_panelByView objectForKey:view] ?: _menuPanel;
+    if (!panel) return;
+    NSValue *baseFrameValue = [_baseFrameByPanel objectForKey:panel];
+    NSRect baseFrame = baseFrameValue ? [baseFrameValue rectValue] : panel.frame;
+    [panel setFrame:baseFrame display:YES animate:NO];
 }
 
 /* ---------------------------------------------------------------------- */

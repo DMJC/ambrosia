@@ -873,7 +873,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
         [_dropdownRects removeAllObjects];
         _hoveredIdx = -1;
         /* Panel is already expanded; we'll resize it below. */
-        [_controller contractPanelDropdown];
+        [_controller contractPanelForView:self];
     }
 
     /* Tray items forward clicks directly to the SNI item; no dropdown. */
@@ -935,7 +935,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     _hoveredIdx      = -1;
 
     CGFloat dropH = [self _dropdownTotalHeight];
-    [_controller expandPanelByDropdownHeight:dropH];
+    [_controller expandPanelForView:self dropdownHeight:dropH];
 
     /* Enable mouse-moved events so hover tracking works */
     [self.window setAcceptsMouseMovedEvents:YES];
@@ -951,7 +951,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     _openPluginIdx   = -1;
     [_dropdownRects removeAllObjects];
     _hoveredIdx = -1;
-    [_controller contractPanelDropdown];
+    [_controller contractPanelForView:self];
     [self setNeedsDisplay:YES];
 }
 
