@@ -71,6 +71,11 @@ struct ambrosia_xwayland_view_state {
 - (nullable struct wl_client *)waylandClient;
 - (pid_t)clientPid;
 
+/* Decoration management */
+- (void)attachDecorationWithRenderer:(struct wlr_renderer *)renderer
+                              colors:(nullable NSDictionary *)colors;
+- (void)removeDecoration;
+
 /* Callbacks invoked from C listeners */
 - (void)handleAssociate;
 - (void)handleDissociate;

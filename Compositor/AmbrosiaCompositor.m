@@ -35,6 +35,10 @@
 - (void)activateConstraintForSurface:(struct wlr_surface *)surface;
 - (void)deactivateActiveConstraint;
 - (void)handleActiveConstraintDestroy;
+/** Compositor prefs (X11 decorations etc.) */
+- (void)_handleCompPrefsNotification:(NSNotification *)note;
+- (void)_applyCompPrefsUpdate;
+- (void)_applyX11DecorationsEnabled:(BOOL)enabled colors:(NSDictionary *)colors;
 @end
 
 /* --------------------------------------------------------------------------
@@ -225,6 +229,16 @@ static int handle_desktop_pipe(int fd, uint32_t mask, void *data)
     return 0;
 }
 
+/* Compositor-prefs pipe watcher — called on the compositor's wl_event_loop thread */
+static int handle_comp_pipe(int fd, uint32_t mask, void *data)
+{
+    char byte;
+    while (read(fd, &byte, 1) == 1) {}
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)data;
+    [c _applyCompPrefsUpdate];
+    return 0;
+}
+
 /* --------------------------------------------------------------------------
  * Per-popup state: wlroots 0.18+ requires the compositor to send a configure
  * in response to initial_commit for popups just as it does for toplevels.
@@ -378,14 +392,24 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
      * consumed by the compositor's wl_event_loop thread.              */
     NSDictionary *_pendingDesktopPrefs;
     NSLock       *_desktopLock;
+
+    /* Pending compositor-prefs update */
+    NSDictionary *_pendingCompPrefs;
+    NSLock       *_compLock;
+
+    /* Current X11 decoration state (applied on compositor thread) */
+    BOOL          _x11Decorations;
+    NSDictionary *_x11DecorationColors;
 }
 
-@synthesize state         = _state;
-@synthesize session       = _session;
-@synthesize background    = _background;
-@synthesize views         = _views;
-@synthesize outputs       = _outputs;
-@synthesize layerSurfaces = _layerSurfaces;
+@synthesize state               = _state;
+@synthesize session             = _session;
+@synthesize background          = _background;
+@synthesize views               = _views;
+@synthesize outputs             = _outputs;
+@synthesize layerSurfaces       = _layerSurfaces;
+@synthesize x11Decorations      = _x11Decorations;
+@synthesize x11DecorationColors = _x11DecorationColors;
 
 - (instancetype)init
 {
@@ -398,6 +422,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     _activateLock  = [[NSLock alloc] init];
     _sessionLock   = [[NSLock alloc] init];
     _desktopLock   = [[NSLock alloc] init];
+    _compLock      = [[NSLock alloc] init];
     _state   = calloc(1, sizeof(struct ambrosia_compositor_state));
     if (!_state) return nil;
 
@@ -737,6 +762,51 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
         handle_desktop_pipe,
         (__bridge void *)self);
 
+    /* Compositor-prefs self-pipe: background notification thread → wl_event_loop */
+    if (pipe(_state->comp_pipe) != 0) {
+        wlr_log(WLR_ERROR, "Failed to create comp pipe: %s", strerror(errno));
+        if (error) *error = [NSError errorWithDomain:@"AmbrosiaCompositor"
+                                                code:9
+                                            userInfo:@{NSLocalizedDescriptionKey:@"Failed to create comp pipe"}];
+        return NO;
+    }
+    for (int i = 0; i < 2; i++) {
+        fcntl(_state->comp_pipe[i], F_SETFD, FD_CLOEXEC);
+        fcntl(_state->comp_pipe[i], F_SETFL,
+              fcntl(_state->comp_pipe[i], F_GETFL) | O_NONBLOCK);
+    }
+    _state->comp_source = wl_event_loop_add_fd(
+        _state->event_loop,
+        _state->comp_pipe[0],
+        WL_EVENT_READABLE,
+        handle_comp_pipe,
+        (__bridge void *)self);
+
+    /* Load initial compositor prefs from disk */
+    {
+        NSString *prefsDir = nil;
+        const char *userLib = getenv("GNUSTEP_USER_LIBRARY");
+        if (userLib && userLib[0])
+            prefsDir = [[NSString stringWithUTF8String:userLib]
+                        stringByAppendingPathComponent:@"Preferences"];
+        else {
+            NSArray *dirs = NSSearchPathForDirectoriesInDomains(
+                NSLibraryDirectory, NSUserDomainMask, YES);
+            prefsDir = [[dirs.firstObject ?: NSHomeDirectory()
+                         stringByAppendingPathComponent:@"Preferences"]
+                        copy];
+        }
+        NSString *plistPath = [prefsDir
+            stringByAppendingPathComponent:@"org.gnustep.AmbrosiaCompositor.plist"];
+        NSDictionary *p = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+        if (p) {
+            _x11Decorations     = [p[@"x11Decorations"] boolValue];
+            _x11DecorationColors = p;
+            wlr_log(WLR_INFO, "Compositor prefs loaded: x11Decorations=%s",
+                    _x11Decorations ? "YES" : "NO");
+        }
+    }
+
     wlr_log(WLR_INFO, "Ambrosia: compositor setup complete");
     return YES;
 }
@@ -812,6 +882,12 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     }
     close(_state->desktop_pipe[0]);
     close(_state->desktop_pipe[1]);
+    if (_state->comp_source) {
+        wl_event_source_remove(_state->comp_source);
+        _state->comp_source = NULL;
+    }
+    close(_state->comp_pipe[0]);
+    close(_state->comp_pipe[1]);
     [_background stop];
     _background = nil;
 
@@ -879,13 +955,15 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
         }
 
         /* The titlebar/borders are compositor-drawn rects, not Wayland surfaces.
-         * Check whether the cursor is inside the decorated bounding box.      */
+         * Check whether the cursor is inside the decorated bounding box.
+         * The decoration extends insets.left left and insets.top above the
+         * surface, so shift to frame-relative coordinates for the test.      */
         if (view.decoration) {
             struct wlr_box geo = [view geometry];
             double frameW = insets.left + geo.width  + insets.right;
             double frameH = insets.top  + geo.height + insets.bottom;
-            double dx = x - view.x;
-            double dy = y - view.y;
+            double dx = x - view.x + insets.left;   /* frame-relative x */
+            double dy = y - view.y + insets.top;    /* frame-relative y */
             if (dx >= 0 && dx < frameW && dy >= 0 && dy < frameH) {
                 if (surfaceOut) *surfaceOut = NULL;
                 if (lx) *lx = 0;
@@ -1115,6 +1193,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
      * cursor image alone so that a client-set cursor (e.g. a game crosshair
      * or an invisible cursor for pointer-locked apps) is not overwritten on
      * every frame.                                                           */
+    NSEdgeInsets insets       = [AmbrosiaDecoration frameInsets];
     struct wlr_surface *prev_focused = _state->seat->pointer_state.focused_surface;
 
     {
@@ -1170,7 +1249,8 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     if (view) {
         /* Check if pointer is over a decoration */
         if (view.decoration) {
-            AmbrosiaDecorationHit hit = [view.decoration hitTestX:(cx - view.x) y:(cy - view.y)];
+            AmbrosiaDecorationHit hit = [view.decoration hitTestX:(cx - view.x + insets.left)
+                                                                  y:(cy - view.y + insets.top)];
             if (hit != AmbrosiaDecorationHitNone) {
                 wlr_seat_pointer_notify_clear_focus(_state->seat);
                 const char *cursor_name = "default";
@@ -1846,7 +1926,9 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
     /* Check decoration hit */
     if (view.decoration) {
-        AmbrosiaDecorationHit hit = [view.decoration hitTestX:(cx - view.x) y:(cy - view.y)];
+        NSEdgeInsets insets = [AmbrosiaDecoration frameInsets];
+        AmbrosiaDecorationHit hit = [view.decoration hitTestX:(cx - view.x + insets.left)
+                                                            y:(cy - view.y + insets.top)];
         switch (hit) {
             case AmbrosiaDecorationHitTitlebar:
                 [self focusView:view surface:surface];
@@ -1983,9 +2065,13 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
            selector:@selector(_handleDesktopPrefsNotification:)
                name:@"AmbrosiaDesktopPrefsChanged"
              object:nil];
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_handleCompPrefsNotification:)
+               name:@"AmbrosiaCompositorPrefsChanged"
+             object:nil];
     wlr_log(WLR_DEBUG,
-        "Notification listener running (AmbrosiaLogoutRequest, AmbrosiaActivateApplication,"
-        " AmbrosiaSessionPrefsChanged, AmbrosiaDesktopPrefsChanged)");
+        "Notification listener running (Logout, Activate, Session, Desktop, Compositor)");
     /* Runs until the process exits; the observer keeps the loop alive. */
     [[NSRunLoop currentRunLoop] run];
 }
@@ -2063,6 +2149,48 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
     wlr_log(WLR_INFO, "background: applying desktop prefs update");
     [_background applyPreferences:prefs];
+}
+
+- (void)_handleCompPrefsNotification:(NSNotification *)note
+{
+    NSDictionary *prefs = note.userInfo ?: @{};
+    [_compLock lock];
+    _pendingCompPrefs = prefs;
+    [_compLock unlock];
+    char byte = 1;
+    (void)write(_state->comp_pipe[1], &byte, 1);
+}
+
+- (void)_applyCompPrefsUpdate
+{
+    [_compLock lock];
+    NSDictionary *prefs = _pendingCompPrefs;
+    _pendingCompPrefs = nil;
+    [_compLock unlock];
+
+    BOOL enabled = [prefs[@"x11Decorations"] boolValue];
+    wlr_log(WLR_INFO, "compositor prefs: x11Decorations=%s", enabled ? "YES" : "NO");
+    [self _applyX11DecorationsEnabled:enabled colors:prefs];
+}
+
+- (void)_applyX11DecorationsEnabled:(BOOL)enabled colors:(NSDictionary *)colors
+{
+    _x11Decorations      = enabled;
+    _x11DecorationColors = colors;
+
+    for (id<AmbrosiaWindowView> view in _views) {
+        if (![view isKindOfClass:[AmbrosiaXWaylandView class]]) continue;
+        AmbrosiaXWaylandView *xw = (AmbrosiaXWaylandView *)view;
+        if (!xw.isMapped || xw.isMenu || xw.isFullscreen) continue;
+
+        if (enabled && !xw.decoration) {
+            [xw attachDecorationWithRenderer:_state->renderer colors:colors];
+        } else if (!enabled && xw.decoration) {
+            [xw removeDecoration];
+        } else if (enabled && xw.decoration) {
+            [xw.decoration updateColorsFromDictionary:colors];
+        }
+    }
 }
 
 /**

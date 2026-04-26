@@ -147,6 +147,12 @@ struct ambrosia_compositor_state {
     int                  desktop_pipe[2];
     struct wl_event_source *desktop_source;
 
+    /* Compositor-prefs self-pipe: background notification thread → wl_event_loop
+     * Written when "AmbrosiaCompositorPrefsChanged" arrives so x11Decorations
+     * and related settings are applied on the compositor's main thread.      */
+    int                  comp_pipe[2];
+    struct wl_event_source *comp_source;
+
     /* Back-reference (not retained – ObjC object owns this struct) */
     void               *objc_compositor;
 };
@@ -160,6 +166,11 @@ struct ambrosia_compositor_state {
 @property (readonly, nullable) id<AmbrosiaWindowView>  focusedView;
 @property (readonly)           AmbrosiaSession         *session;
 @property (readonly)           AmbrosiaBackground      *background;
+
+/** Whether server-side decorations should be drawn on XWayland managed windows. */
+@property (readonly) BOOL           x11Decorations;
+/** Colour prefs for X11 decorations (hex strings keyed to titlebarActiveColor etc.) */
+@property (readonly, nullable) NSDictionary *x11DecorationColors;
 
 - (instancetype)init;
 - (BOOL)setup:(NSError **)error;

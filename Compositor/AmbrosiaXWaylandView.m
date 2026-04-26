@@ -2,6 +2,8 @@
 #import "AmbrosiaCompositor.h"
 #import "AmbrosiaDecoration.h"
 
+#include <wlr/render/wlr_renderer.h>
+
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/util/log.h>
 #include <stdlib.h>
@@ -274,11 +276,21 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
         wlr_scene_node_set_position(&_state->scene_tree->node, x, y);
     }
     [_compositor updateFractionalScaleForSurface:[self surface] x:x y:y];
+
+    /* When a decoration is active x,y is the FRAME top-left.
+     * The scene tree (containing the XWayland surface) must sit at the
+     * surface origin, which is inset by (B, T) from the frame.          */
+    int surfX = x + (_decoration ? AMBROSIA_BORDER_WIDTH   : 0);
+    int surfY = y + (_decoration ? AMBROSIA_TITLEBAR_HEIGHT : 0);
+
+    if (_state->scene_tree)
+        wlr_scene_node_set_position(&_state->scene_tree->node, surfX, surfY);
+
     /* Sync X11 window position for managed windows. */
     if (!_isMenu) {
         struct wlr_xwayland_surface *xs = _state->xwayland_surface;
         wlr_xwayland_surface_configure(xs,
-            (int16_t)x, (int16_t)y, xs->width, xs->height);
+            (int16_t)surfX, (int16_t)surfY, xs->width, xs->height);
     }
 }
 
@@ -305,9 +317,9 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
 - (void)updateTitle
 {
     if (!_decoration) return;
-    struct wlr_box geo = [self geometry];
-    const char *raw = _state->xwayland_surface->title;
-    NSString *title = raw ? [NSString stringWithUTF8String:raw] : @"";
+    struct wlr_box geo  = [self geometry];
+    const char    *raw  = _state->xwayland_surface->title;
+    NSString      *title = raw ? [NSString stringWithUTF8String:raw] : @"";
     [_decoration updateWithWidth:geo.width height:geo.height title:title];
 }
 
@@ -339,8 +351,15 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
     struct wlr_surface *surf = _state->xwayland_surface->surface;
     if (!surf) return NULL;
 
+    /* (x - _x, y - _y) is frame-relative when a decoration is present.
+     * Subtract the insets to obtain surface-local coordinates.          */
+    NSEdgeInsets insets = [AmbrosiaDecoration frameInsets];
     double view_sx = x - _x;
     double view_sy = y - _y;
+    if (_decoration) {
+        view_sx -= insets.left;
+        view_sy -= insets.top;
+    }
     double sx = 0, sy = 0;
     struct wlr_surface *found =
         wlr_surface_surface_at(surf, view_sx, view_sy, &sx, &sy);
@@ -361,6 +380,33 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
 - (pid_t)clientPid
 {
     return _state->xwayland_surface->pid;
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Decoration management
+
+- (void)attachDecorationWithRenderer:(struct wlr_renderer *)renderer
+                              colors:(nullable NSDictionary *)colors
+{
+    if (_decoration || !_state->scene_tree) return;
+    _decoration = [[AmbrosiaDecoration alloc]
+                   initWithRenderer:renderer
+                          sceneTree:_state->scene_tree];
+    if (colors)
+        [_decoration updateColorsFromDictionary:colors];
+
+    struct wlr_box geo = [self geometry];
+    NSString *title = _state->xwayland_surface->title
+        ? [NSString stringWithUTF8String:_state->xwayland_surface->title] : @"";
+    [_decoration updateWithWidth:geo.width height:geo.height title:title];
+    _decoration.focused = (_compositor.focusedView == self);
+}
+
+- (void)removeDecoration
+{
+    if (!_decoration) return;
+    wlr_scene_node_destroy(&_decoration.scene_tree->node);
+    _decoration = nil;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -470,13 +516,22 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
         return;
     }
 
-    /* Normal managed window: cascade below the menu bar. */
+    /* Normal managed window: cascade below the menu bar.
+     * When X11 decorations are enabled the title bar sits T pixels above the
+     * surface, so add that offset to keep the frame clear of the menu bar.  */
     static int cascade = 0;
     int usableTop = _compositor.state->usable_top;
-    int startX = 60  + cascade * 30;
-    int startY = MAX(usableTop + 8, 50) + cascade * 30;
+    int startX = 60 + cascade * 30;
+    int titlebarH = _compositor.x11Decorations ? AMBROSIA_TITLEBAR_HEIGHT : 0;
+    int startY = MAX(usableTop + titlebarH + 8, 50 + titlebarH) + cascade * 30;
     cascade = (cascade + 1) % 8;
     [self moveTo:startX y:startY];
+
+    /* Attach server-side decoration if the compositor pref is active. */
+    if (_compositor.x11Decorations) {
+        [self attachDecorationWithRenderer:_compositor.state->renderer
+                                    colors:_compositor.x11DecorationColors];
+    }
 
     [_compositor focusView:self surface:self.surface];
 }
@@ -618,15 +673,18 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
         wlr_xwayland_surface_set_fullscreen(xs, false);
         _isFullscreen = NO;
 
-        /* Restore the pre-fullscreen size and position. */
+        /* Restore the pre-fullscreen size and position.
+         * _restoreFSX/Y are the frame coordinates (surface when undecorated).
+         * With decoration, the scene tree sits at (frame + B, frame + T).   */
         _x = _restoreFSX;
         _y = _restoreFSY;
+        int rSurfX = _restoreFSX + (_decoration ? AMBROSIA_BORDER_WIDTH   : 0);
+        int rSurfY = _restoreFSY + (_decoration ? AMBROSIA_TITLEBAR_HEIGHT : 0);
         wlr_xwayland_surface_configure(xs,
-            (int16_t)_restoreFSX, (int16_t)_restoreFSY,
+            (int16_t)rSurfX, (int16_t)rSurfY,
             _restoreFSW, _restoreFSH);
         if (_state->scene_tree)
-            wlr_scene_node_set_position(&_state->scene_tree->node,
-                                        _restoreFSX, _restoreFSY);
+            wlr_scene_node_set_position(&_state->scene_tree->node, rSurfX, rSurfY);
     }
 }
 
