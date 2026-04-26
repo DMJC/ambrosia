@@ -68,4 +68,8 @@
  */
 - (void)contractPanelDropdown;
 
+/* Multi-monitor aware variants used by MenuBarView. */
+- (void)expandPanelForView:(MenuBarView *)view dropdownHeight:(CGFloat)dropH;
+- (void)contractPanelForView:(MenuBarView *)view;
+
 @end
