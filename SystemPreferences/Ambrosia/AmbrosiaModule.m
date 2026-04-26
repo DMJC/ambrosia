@@ -252,6 +252,15 @@ static NSString *intervalLabel(NSInteger secs)
     [tab addSubview:_enableBlurCheck];
     y += MV_ROW_H + MV_ROW_GAP;
 
+    _x11DecorationsCheck = MakeCheckbox(@"X11 Decorations (theme-styled borders for XWayland windows)");
+    _x11DecorationsCheck.frame = NSMakeRect(MV_MARGIN, y,
+                                            MV_TAB_W - MV_MARGIN * 2, MV_ROW_H);
+    _x11DecorationsCheck.autoresizingMask = NSViewWidthSizable;
+    [_x11DecorationsCheck setTarget:self];
+    [_x11DecorationsCheck setAction:@selector(toggleX11Decorations:)];
+    [tab addSubview:_x11DecorationsCheck];
+    y += MV_ROW_H + MV_ROW_GAP;
+
     /* Color wells */
     _titlebarColorWell = MakeColorWell();
     [_titlebarColorWell setTarget:self];
@@ -639,6 +648,9 @@ static NSString *intervalLabel(NSInteger secs)
     BOOL blur = [_compPrefs[@"enableBlur"] boolValue];
     _enableBlurCheck.state = blur ? NSControlStateValueOn : NSControlStateValueOff;
 
+    BOOL x11Dec = [_compPrefs[@"x11Decorations"] boolValue];
+    _x11DecorationsCheck.state = x11Dec ? NSControlStateValueOn : NSControlStateValueOff;
+
     NSString *theme = _compPrefs[@"decorationTheme"] ?: @"Default";
     [_decorationThemePopUp removeAllItems];
     [_decorationThemePopUp addItemsWithTitles:@[@"Default", @"Dark", @"Light", @"Minimal"]];
@@ -744,6 +756,7 @@ static NSString *intervalLabel(NSInteger secs)
 - (IBAction)toggleDecorations:(id)sender { }
 - (IBAction)decorationThemeChanged:(id)sender { }
 - (IBAction)toggleBlur:(id)sender { }
+- (IBAction)toggleX11Decorations:(id)sender { }
 - (IBAction)titlebarColorChanged:(id)sender { }
 - (IBAction)borderColorChanged:(id)sender { }
 - (IBAction)buttonColorsChanged:(id)sender { }
@@ -882,11 +895,93 @@ static NSString *intervalLabel(NSInteger secs)
 }
 
 /* ---------------------------------------------------------------------- */
+#pragma mark - GNUstep theme colour extraction
+
+/**
+ * Read the visual parameters from the currently active GNUstep theme and
+ * return a dictionary of RRGGBBAA hex strings for every key the compositor's
+ * AmbrosiaDecoration.updateColorsFromDictionary: understands.
+ *
+ * For the Milk theme the gradient and stroke colours are taken directly from
+ * the Milk source (Milk+Drawings.m / Milk.m) because they are hardcoded there
+ * and not exposed through the standard NSColor named-colour lookup.
+ * For all other themes we fall back to the system named colours.
+ */
+- (NSDictionary *)currentThemeDecorationColors
+{
+    /* Determine active theme name via GSTheme if available */
+    NSString *themeName = @"";
+    Class gsThemeClass = NSClassFromString(@"GSTheme");
+    if (gsThemeClass) {
+        id theme = [gsThemeClass performSelector:@selector(theme)];
+        if (theme && [theme respondsToSelector:@selector(name)])
+            themeName = [theme performSelector:@selector(name)] ?: @"";
+    }
+
+    BOOL isMilk = ([themeName rangeOfString:@"Milk"
+                                    options:NSCaseInsensitiveSearch].location != NSNotFound);
+
+    if (isMilk) {
+        /* Exact values from Milk+Drawings.m _windowTitlebarGradient
+         * and Milk.m controlStrokeColor / ThemeColors windowBackgroundColor. */
+        return @{
+            /* Active gradient: white → (0.863, 0.863, 0.871) */
+            @"titlebarGradientTopColor":    @"FFFFFFFF",
+            @"titlebarGradientBottomColor": @"DCDCDEFF",
+            /* Inactive: subtle neutral grey fade */
+            @"titlebarInactiveTopColor":    @"F0F0F0FF",
+            @"titlebarInactiveBottomColor": @"E0E0E0FF",
+            /* controlStrokeColor = (0.4, 0.4, 0.4) */
+            @"titlebarSeparatorColor":      @"666666FF",
+            @"windowBorderColor":           @"666666FF",
+            /* windowBackgroundColor ≈ (0.863, 0.863, 0.863) */
+            @"windowBodyColor":             @"DCDCDCFF",
+            /* Standard bezel button colours — no colour coding in Milk */
+            @"buttonActiveColor":           @"D9D9D9FF",
+            @"buttonInactiveColor":         @"B8B8B8B3",
+        };
+    }
+
+    /* --- Generic fallback: derive from current theme's named colours --- */
+    NSColor *wfColor = [[NSColor windowFrameColor]
+                         colorUsingColorSpaceName:NSCalibratedRGBColorSpace]
+                    ?: [NSColor colorWithCalibratedWhite:0.22f alpha:0.96f];
+    NSColor *bgColor = [[NSColor windowBackgroundColor]
+                         colorUsingColorSpaceName:NSCalibratedRGBColorSpace]
+                    ?: [NSColor colorWithCalibratedWhite:0.86f alpha:1.f];
+    NSColor *shColor = [[NSColor controlShadowColor]
+                         colorUsingColorSpaceName:NSCalibratedRGBColorSpace]
+                    ?: [NSColor colorWithCalibratedWhite:0.40f alpha:1.f];
+
+    /* Gradient top: highlight the frame colour; bottom = frame colour itself */
+    NSColor *gradTop = [wfColor highlightWithLevel:0.60f]
+                    ?: [NSColor colorWithCalibratedWhite:0.80f alpha:1.f];
+    NSColor *gradBot = wfColor;
+    NSColor *gradTopI = [wfColor highlightWithLevel:0.80f] ?: gradTop;
+    NSColor *gradBotI = [wfColor highlightWithLevel:0.40f] ?: gradBot;
+    NSColor *btnA  = [bgColor shadowWithLevel:0.10f] ?: bgColor;
+    NSColor *btnI  = [bgColor shadowWithLevel:0.25f] ?: bgColor;
+
+    return @{
+        @"titlebarGradientTopColor":    [self hexStringFromColor:gradTop],
+        @"titlebarGradientBottomColor": [self hexStringFromColor:gradBot],
+        @"titlebarInactiveTopColor":    [self hexStringFromColor:gradTopI],
+        @"titlebarInactiveBottomColor": [self hexStringFromColor:gradBotI],
+        @"titlebarSeparatorColor":      [self hexStringFromColor:shColor],
+        @"windowBorderColor":           [self hexStringFromColor:shColor],
+        @"windowBodyColor":             [self hexStringFromColor:bgColor],
+        @"buttonActiveColor":           [self hexStringFromColor:btnA],
+        @"buttonInactiveColor":         [self hexStringFromColor:btnI],
+    };
+}
+
+/* ---------------------------------------------------------------------- */
 #pragma mark - Apply / Revert
 
 - (IBAction)applyChanges:(id)sender
 {
     /* ---- Compositor ---- */
+    BOOL x11Dec = (_x11DecorationsCheck.state == NSControlStateValueOn);
     _compPrefs[@"windowTransparency"]    = @(_transparencySlider.doubleValue);
     _compPrefs[@"serverSideDecorations"] = @(_enableDecorationsCheck.state == NSControlStateValueOn);
     _compPrefs[@"enableBlur"]            = @(_enableBlurCheck.state == NSControlStateValueOn);
@@ -896,6 +991,15 @@ static NSString *intervalLabel(NSInteger secs)
     _compPrefs[@"buttonCloseColor"]      = [self hexStringFromColor:_buttonCloseColorWell.color];
     _compPrefs[@"buttonMinColor"]        = [self hexStringFromColor:_buttonMinColorWell.color];
     _compPrefs[@"buttonMaxColor"]        = [self hexStringFromColor:_buttonMaxColorWell.color];
+    _compPrefs[@"x11Decorations"]        = @(x11Dec);
+
+    /* When X11 decorations are enabled, bake in the current GNUstep theme
+     * colours so the compositor can draw them without needing AppKit.     */
+    if (x11Dec) {
+        NSDictionary *themeColors = [self currentThemeDecorationColors];
+        [_compPrefs addEntriesFromDictionary:themeColors];
+    }
+
     SavePlist(_compPrefs, _compPrefsPath);
 
     /* ---- Dock ---- */
@@ -927,12 +1031,23 @@ static NSString *intervalLabel(NSInteger secs)
                  userInfo:dockNotif
      deliverImmediately:YES];
 
-    NSDictionary *compNotif = @{
+    /* Build compositor notification — include all keys the compositor reads. */
+    NSMutableDictionary *compNotif = [@{
         @"windowTransparency":    _compPrefs[@"windowTransparency"],
         @"serverSideDecorations": _compPrefs[@"serverSideDecorations"],
         @"enableBlur":            _compPrefs[@"enableBlur"],
         @"decorationTheme":       _compPrefs[@"decorationTheme"],
-    };
+        @"x11Decorations":        _compPrefs[@"x11Decorations"] ?: @NO,
+    } mutableCopy];
+    /* Propagate all theme colour keys recognised by AmbrosiaDecoration */
+    NSSet *colorKeys = [NSSet setWithObjects:
+        @"titlebarGradientTopColor", @"titlebarGradientBottomColor",
+        @"titlebarInactiveTopColor", @"titlebarInactiveBottomColor",
+        @"titlebarSeparatorColor",   @"windowBorderColor",
+        @"windowBodyColor",          @"buttonActiveColor", @"buttonInactiveColor", nil];
+    for (NSString *key in colorKeys) {
+        if (_compPrefs[key]) compNotif[key] = _compPrefs[key];
+    }
     [[NSDistributedNotificationCenter defaultCenter]
      postNotificationName:kCompPrefsChanged
                    object:nil
