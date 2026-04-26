@@ -38,6 +38,7 @@ static BOOL ReadMenuBarPref(NSString *key)
     NSString             *_gfinderLaunchPath; /* path seen at launch time */
     id                    _gfinderLaunchObs;
     id                    _gfinderTerminateObs;
+    id                    _screenParamsObserver;
     /* Status item plugins */
     BluetoothStatusItem  *_bluetoothItem;
     WiFiStatusItem       *_wifiItem;
@@ -58,6 +59,7 @@ static BOOL ReadMenuBarPref(NSString *key)
     [self _createPanel];
     [self _startDOServer];
     [self _observeWorkspace];
+    [self _observeScreenParameters];
     [self _startTrackingGFinder];
     [self _setupStatusPlugins];
     [self _observeMenuBarPrefs];
@@ -138,12 +140,22 @@ static BOOL ReadMenuBarPref(NSString *key)
 /* ---------------------------------------------------------------------- */
 #pragma mark - Panel creation
 
-- (void)_createPanel
+- (NSRect)_barRectForMainScreen
 {
     NSScreen *screen = [NSScreen mainScreen];
     NSRect sf = screen ? screen.frame : NSZeroRect;
     if (sf.size.width  < 32) sf.size.width  = kFallbackWidth;
     if (sf.size.height < 32) sf.size.height = kFallbackScreenH;
+
+    return NSMakeRect(sf.origin.x,
+                      sf.origin.y + sf.size.height - kBarHeight,
+                      sf.size.width,
+                      kBarHeight);
+}
+
+- (void)_createPanel
+{
+    NSRect barRect = [self _barRectForMainScreen];
 
     /*
      * GNUstep uses a bottom-left coordinate origin; y increases upward.
@@ -158,11 +170,6 @@ static BOOL ReadMenuBarPref(NSString *key)
      * surface (namespace "gnustep-mainmenu", layer LAYER_TOP) with a 0 px
      * margin from the top edge of the output.
      */
-    NSRect barRect = NSMakeRect(sf.origin.x,
-                                sf.origin.y + sf.size.height - kBarHeight,
-                                sf.size.width,
-                                kBarHeight);
-
     _menuPanel = [[NSPanel alloc]
                   initWithContentRect:barRect
                             styleMask:NSWindowStyleMaskBorderless
@@ -187,6 +194,42 @@ static BOOL ReadMenuBarPref(NSString *key)
 
     [_menuPanel.contentView addSubview:_menuBarView];
     [_menuPanel makeKeyAndOrderFront:nil];
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Screen geometry updates
+
+- (void)_observeScreenParameters
+{
+    __weak typeof(self) weakSelf = self;
+    _screenParamsObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSApplicationDidChangeScreenParametersNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) {
+        __strong typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        (void)note;
+        [strongSelf _updatePanelFrameForMainScreen];
+    }];
+}
+
+- (void)_updatePanelFrameForMainScreen
+{
+    if (!_menuPanel) return;
+
+    NSRect barRect = [self _barRectForMainScreen];
+    NSRect frame   = _menuPanel.frame;
+
+    /* Preserve current dropdown expansion, if any, while syncing to the
+     * latest output width / origin from NSScreen. */
+    CGFloat dropdownH = MAX(0.0, frame.size.height - kBarHeight);
+    frame.origin.x    = barRect.origin.x;
+    frame.size.width  = barRect.size.width;
+    frame.size.height = kBarHeight + dropdownH;
+    frame.origin.y    = barRect.origin.y - dropdownH;
+
+    [_menuPanel setFrame:frame display:YES animate:NO];
 }
 
 /* ---------------------------------------------------------------------- */
@@ -463,16 +506,16 @@ static BOOL ReadMenuBarPref(NSString *key)
 - (void)contractPanelDropdown
 {
     /* Restore to the standard kBarHeight-pixel bar. */
-    NSScreen *screen = [NSScreen mainScreen];
-    NSRect sf = screen ? screen.frame : NSZeroRect;
-    if (sf.size.width  < 32) sf.size.width  = kFallbackWidth;
-    if (sf.size.height < 32) sf.size.height = kFallbackScreenH;
-
-    NSRect barRect = NSMakeRect(sf.origin.x,
-                                sf.origin.y + sf.size.height - kBarHeight,
-                                sf.size.width,
-                                kBarHeight);
+    NSRect barRect = [self _barRectForMainScreen];
     [_menuPanel setFrame:barRect display:YES animate:NO];
+}
+
+- (void)dealloc
+{
+    if (_screenParamsObserver) {
+        [[NSNotificationCenter defaultCenter] removeObserver:_screenParamsObserver];
+        _screenParamsObserver = nil;
+    }
 }
 
 /* ---------------------------------------------------------------------- */
