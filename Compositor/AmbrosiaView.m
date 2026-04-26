@@ -270,6 +270,7 @@ check_title:
     _x = x;
     _y = y;
     wlr_scene_node_set_position(&_state->scene_tree->node, x, y);
+    [_compositor updateFractionalScaleForSurface:[self surface] x:x y:y];
 }
 
 - (void)updateTitle

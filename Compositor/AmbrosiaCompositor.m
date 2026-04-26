@@ -559,6 +559,12 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     _state->viewporter = wlr_viewporter_create(_state->display);
     wlr_log(WLR_DEBUG, "Viewporter created");
 
+    /* wp-fractional-scale-v1 — advertise preferred per-output fractional
+     * scales so clients can render crisp buffers on mixed-DPI setups. */
+    _state->fractional_scale_manager =
+        wlr_fractional_scale_manager_v1_create(_state->display, 1);
+    wlr_log(WLR_DEBUG, "Fractional scale manager created");
+
     /* xdg-output-manager (zxdg_output_manager_v1) — lets clients query logical
      * output geometry (position, size, name) from the compositor's output layout. */
     _state->xdg_output_manager =
@@ -1400,6 +1406,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     /* Render the desktop background on this output. */
     [_background handleOutputAdded:output];
 
+    [self refreshFractionalScaleForAllViews];
     [self notifyOutputManager];
 }
 
@@ -1427,6 +1434,32 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
     /* Transfers ownership of config to the manager. */
     wlr_output_manager_v1_set_configuration(_state->output_manager, config);
+}
+
+- (void)updateFractionalScaleForSurface:(struct wlr_surface *)surface
+                                      x:(int)x
+                                      y:(int)y
+{
+    if (!surface) return;
+
+    struct wlr_output *output =
+        wlr_output_layout_output_at(_state->output_layout, (double)x, (double)y);
+    if (!output) {
+        output = wlr_output_layout_get_center_output(_state->output_layout);
+    }
+    if (!output) return;
+
+    wlr_fractional_scale_v1_notify_scale(surface, output->scale);
+}
+
+- (void)refreshFractionalScaleForAllViews
+{
+    for (id<AmbrosiaWindowView> view in _views) {
+        struct wlr_box geo = [view geometry];
+        int centerX = view.x + geo.width / 2;
+        int centerY = view.y + geo.height / 2;
+        [self updateFractionalScaleForSurface:[view surface] x:centerX y:centerY];
+    }
 }
 
 /**
@@ -1473,6 +1506,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     wlr_output_configuration_v1_destroy(config);
 
     /* Broadcast updated state regardless of success so clients stay in sync. */
+    [self refreshFractionalScaleForAllViews];
     [self notifyOutputManager];
 }
 
