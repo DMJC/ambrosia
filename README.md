@@ -5,6 +5,27 @@ Designed to be a functional modern Desktop based on GNUstep, Wayland, Pipewire a
 
 Provides a Stacking Compositor and Dock for GNUstep Applications running on Wayland. Designed for use with NSMacintoshMenuStyle. 
 
+## Dependencies
+Ambrosia is organized as GNUstep subprojects (Compositor, Dock, MenuServer, SystemPreferences modules, and AmbrosiaMenus) and depends on the following build/runtime libraries:
+
+- **GNUstep toolchain and frameworks**
+  - `gnustep-make`
+  - `gnustep-base`
+  - `gnustep-gui`
+  - `gnustep-back` (with Wayland support)
+- **Wayland compositor stack (Compositor)**
+  - `wlroots-0.20` (via `pkg-config`)
+  - `wayland-server`
+  - `xkbcommon`
+  - `cairo`
+  - `xcb`, `xcb-icccm`, `xcb-ewmh`
+  - `libdrm` (`-ldrm`)
+  - `libjpeg` (`-ljpeg`)
+- **Menu/status integration (MenuServer)**
+  - `dbus-1`
+- **Build tooling**
+  - `pkg-config` (used to resolve compiler/linker flags)
+
 Screenshot of Desktop Environment:
 
 <img width="2552" height="1543" alt="Ambrosia-Desktop" src="https://github.com/user-attachments/assets/f467db09-3bf3-48c6-bd37-574bdc0319b4" />
