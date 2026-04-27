@@ -319,6 +319,15 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
     [_decoration updateWithWidth:geo.width height:geo.height title:title];
 }
 
+- (void)_updateDecorationForSurfaceWidth:(uint16_t)width
+                                  height:(uint16_t)height
+{
+    if (!_decoration) return;
+    const char *raw = _state->xwayland_surface->title;
+    NSString *title = raw ? [NSString stringWithUTF8String:raw] : @"";
+    [_decoration updateWithWidth:(int)width height:(int)height title:title];
+}
+
 - (void)activateFocus:(BOOL)focused
 {
     if (focused) {
@@ -590,13 +599,17 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
             wlr_scene_node_set_position(&_state->scene_tree->node, event->x, event->y);
         _x = event->x;
         _y = event->y;
+        [self _updateDecorationForSurfaceWidth:event->width height:event->height];
         return;
     }
     /* Managed window (mapped or fullscreen): honour the requested size but
      * keep our compositor-assigned position.                                 */
+    int surfX = _x + (_decoration ? AMBROSIA_BORDER_WIDTH : 0);
+    int surfY = _y + (_decoration ? AMBROSIA_TITLEBAR_HEIGHT : 0);
     wlr_xwayland_surface_configure(event->surface,
-                                   (int16_t)_x, (int16_t)_y,
+                                   (int16_t)surfX, (int16_t)surfY,
                                    event->width, event->height);
+    [self _updateDecorationForSurfaceWidth:event->width height:event->height];
 }
 
 - (void)handleRequestMove
