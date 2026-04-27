@@ -1,0 +1,13 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE = 1
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	. /usr/share/GNUstep/Makefiles/GNUstep.sh && $(MAKE)
+
+override_dh_auto_install:
+	. /usr/share/GNUstep/Makefiles/GNUstep.sh && $(MAKE) install DESTDIR=$(CURDIR)/debian/ambrosia
+	install -D -m 0755 ambrosia-session $(CURDIR)/debian/ambrosia/usr/bin/ambrosia-session
