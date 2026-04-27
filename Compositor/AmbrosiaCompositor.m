@@ -1168,6 +1168,13 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
             wlr_xwayland_surface_configure(xw.state->xwayland_surface,
                 (int16_t)new_geo.x, (int16_t)new_geo.y,
                 (uint16_t)new_geo.width, (uint16_t)new_geo.height);
+            if (xw.decoration) {
+                const char *raw = xw.state->xwayland_surface->title;
+                NSString *title = raw ? [NSString stringWithUTF8String:raw] : @"";
+                [xw.decoration updateWithWidth:new_geo.width
+                                        height:new_geo.height
+                                         title:title];
+            }
         }
         return;
     }
