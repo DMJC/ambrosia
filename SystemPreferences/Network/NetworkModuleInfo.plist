@@ -1,0 +1,9 @@
+
+{
+  CFBundleIdentifier = org.gnustep.usernetworkprefs;
+  NSExecutable = NetworkModule;
+  NSMainNibFile = "NetworkModule.gorm";
+  NSPrefPaneIconFile = "Network.tiff";
+  NSPrefPaneIconLabel = Network;
+  NSPrincipalClass = NetworkModule;
+}

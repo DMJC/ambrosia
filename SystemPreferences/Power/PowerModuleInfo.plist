@@ -1,0 +1,9 @@
+
+{
+  CFBundleIdentifier = org.gnustep.userpowerprefs;
+  NSExecutable = PowerModule;
+  NSMainNibFile = "PowerModule.gorm";
+  NSPrefPaneIconFile = "Power.tiff";
+  NSPrefPaneIconLabel = Power;
+  NSPrincipalClass = PowerModule;
+}
