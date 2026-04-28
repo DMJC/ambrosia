@@ -220,27 +220,12 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
     CGFloat panelW = _iconSize * _zoomFactor + 44.0;
 
     if ([_dockPosition isEqualToString:@"left"]) {
-        NSUInteger count = MAX((NSUInteger)1, _items.count);
-        CGFloat itemSlot = _iconSize + 8.0;
-        CGFloat vh = MAX(160.0, count * itemSlot + 38.0);
-        vh = MIN(vh, sf.size.height - 40.0);
-        CGFloat anchorY = _hasConfiguredDockPoint
-            ? _configuredDockY
-            : (sf.origin.y + floor(sf.size.height * 0.5));
-        CGFloat y = floor(anchorY - vh * 0.5);
-        return NSMakeRect(sf.origin.x, y, panelW, vh);
+        return NSMakeRect(sf.origin.x, sf.origin.y,
+                          _iconSize * _zoomFactor + 44.0, sf.size.height);
     }
     if ([_dockPosition isEqualToString:@"right"]) {
-        NSUInteger count = MAX((NSUInteger)1, _items.count);
-        CGFloat itemSlot = _iconSize + 8.0;
-        CGFloat vh = MAX(160.0, count * itemSlot + 38.0);
-        vh = MIN(vh, sf.size.height - 40.0);
-        CGFloat anchorY = _hasConfiguredDockPoint
-            ? _configuredDockY
-            : (sf.origin.y + floor(sf.size.height * 0.5));
-        CGFloat y = floor(anchorY - vh * 0.5);
-        CGFloat rightX = _hasConfiguredDockPoint ? _configuredDockX : NSMaxX(sf);
-        return NSMakeRect(rightX - panelW, y, panelW, vh);
+        CGFloat panelW = _iconSize * _zoomFactor + 44.0;
+        return NSMakeRect(NSMaxX(sf) - panelW, sf.origin.y, panelW, sf.size.height);
     }
 
     /* Bottom-centre: count only non-recycler items for regular slots;
@@ -254,12 +239,9 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
     CGFloat w = MAX(120.0, regularCount * itemSlot + (_iconSize + 24.0) + 20.0);
     w = MIN(w, sf.size.width - 40.0);
 
-    CGFloat anchorX = _hasConfiguredDockPoint
-        ? _configuredDockX
-        : (sf.origin.x + floor(sf.size.width * 0.5));
-    CGFloat y = _hasConfiguredDockPoint ? _configuredDockY : sf.origin.y;
-    CGFloat x = floor(anchorX - w * 0.5);
-    return NSMakeRect(x, y, w, h);
+    CGFloat x = sf.origin.x + floor((sf.size.width * 0.5)- w);
+    NSLog(@"sf.size.width = %f, sf.size.height = %f, sf.origin.x = %f, sf.origin.y = %f, w = %f, x = %f", sf.size.width, sf.size.height, sf.origin.x, sf.origin.y, w, x);
+    return NSMakeRect(x, sf.origin.y, w, h);
 }
 
 /* ---------------------------------------------------------------------- */

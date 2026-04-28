@@ -31,6 +31,7 @@ struct ambrosia_xwayland_view_state {
     /* wlr_surface-level listeners (registered on associate, removed on dissociate) */
     struct wl_listener surface_map;
     struct wl_listener surface_unmap;
+    struct wl_listener surface_commit; /* updates decoration frame on resize   */
 
     BOOL surface_listeners_active;
 
@@ -91,6 +92,7 @@ struct ambrosia_xwayland_view_state {
 - (void)handleRequestClose;
 - (void)handleSetTitle;
 - (void)handleSetOverrideRedirect;
+- (void)handleSurfaceCommit;
 
 @end
 
