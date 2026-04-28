@@ -70,6 +70,12 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
     BOOL _showRunningDots;
     ForceQuitController *_forceQuitController;
     NSTimer *_runningAppsSweepTimer;
+    CGFloat _primaryScreenWidth;
+    CGFloat _primaryScreenHeight;
+    CGFloat _configuredDockX;
+    CGFloat _configuredDockY;
+    BOOL    _hasConfiguredDockX;
+    BOOL    _hasConfiguredDockY;
 }
 
 @synthesize dockPanel       = _dockPanel;
@@ -92,6 +98,12 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
     _dockPosition    = @"bottom";
     _autoHide        = NO;
     _showRunningDots = YES;
+    _primaryScreenWidth  = 0.0;
+    _primaryScreenHeight = 0.0;
+    _configuredDockX     = 0.0;
+    _configuredDockY     = 0.0;
+    _hasConfiguredDockX = NO;
+    _hasConfiguredDockY = NO;
 
     NSArray *domainDirs = NSSearchPathForDirectoriesInDomains(
         NSLibraryDirectory, NSUserDomainMask, YES);
@@ -136,6 +148,18 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
         } else if ([flag isEqualToString:@"-AmbrosiaZoomFactor"]) {
             double v = [val doubleValue];
             if (v > 0) _zoomFactor = v;
+        } else if ([flag isEqualToString:@"-AmbrosiaPrimaryWidth"]) {
+            double v = [val doubleValue];
+            if (v > 0) _primaryScreenWidth = v;
+        } else if ([flag isEqualToString:@"-AmbrosiaPrimaryHeight"]) {
+            double v = [val doubleValue];
+            if (v > 0) _primaryScreenHeight = v;
+        } else if ([flag isEqualToString:@"-AmbrosiaDockX"]) {
+            _configuredDockX = [val doubleValue];
+            _hasConfiguredDockX = YES;
+        } else if ([flag isEqualToString:@"-AmbrosiaDockY"]) {
+            _configuredDockY = [val doubleValue];
+            _hasConfiguredDockY = YES;
         }
     }
 }
@@ -189,18 +213,36 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
 - (NSRect)dockRectForScreen:(NSScreen *)screen
 {
     NSRect sf = screen ? screen.frame : NSZeroRect;
+    if (_primaryScreenWidth  > 32) sf.size.width  = _primaryScreenWidth;
+    if (_primaryScreenHeight > 32) sf.size.height = _primaryScreenHeight;
     if (sf.size.width  < 32) sf.size.width  = 1920;
     if (sf.size.height < 32) sf.size.height = 1080;
 
     CGFloat h = _iconSize * _zoomFactor + 44.0;
+    CGFloat panelW = _iconSize * _zoomFactor + 44.0;
 
     if ([_dockPosition isEqualToString:@"left"]) {
-        return NSMakeRect(sf.origin.x, sf.origin.y,
-                          _iconSize * _zoomFactor + 44.0, sf.size.height);
+        NSUInteger count = MAX((NSUInteger)1, _items.count);
+        CGFloat itemSlot = _iconSize + 8.0;
+        CGFloat vh = MAX(160.0, count * itemSlot + 38.0);
+        vh = MIN(vh, sf.size.height - 40.0);
+        CGFloat anchorY = _hasConfiguredDockY
+            ? _configuredDockY
+            : (sf.origin.y + floor(sf.size.height * 0.5));
+        CGFloat y = floor(anchorY - vh * 0.5);
+        return NSMakeRect(sf.origin.x, y, panelW, vh);
     }
     if ([_dockPosition isEqualToString:@"right"]) {
-        CGFloat panelW = _iconSize * _zoomFactor + 44.0;
-        return NSMakeRect(NSMaxX(sf) - panelW, sf.origin.y, panelW, sf.size.height);
+        NSUInteger count = MAX((NSUInteger)1, _items.count);
+        CGFloat itemSlot = _iconSize + 8.0;
+        CGFloat vh = MAX(160.0, count * itemSlot + 38.0);
+        vh = MIN(vh, sf.size.height - 40.0);
+        CGFloat anchorY = _hasConfiguredDockY
+            ? _configuredDockY
+            : (sf.origin.y + floor(sf.size.height * 0.5));
+        CGFloat y = floor(anchorY - vh * 0.5);
+        CGFloat rightX = _hasConfiguredDockX ? _configuredDockX : NSMaxX(sf);
+        return NSMakeRect(rightX - panelW, y, panelW, vh);
     }
 
     /* Bottom-centre: count only non-recycler items for regular slots;
@@ -214,7 +256,10 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
     CGFloat w = MAX(120.0, regularCount * itemSlot + (_iconSize + 24.0) + 20.0);
     w = MIN(w, sf.size.width - 40.0);
 
-    CGFloat x = sf.origin.x + floor((sf.size.width - w) * 0.5);
+    CGFloat anchorX = _hasConfiguredDockX
+        ? _configuredDockX
+        : (sf.origin.x + floor(sf.size.width * 0.5));
+    CGFloat x = floor(anchorX - w * 0.5);
     return NSMakeRect(x, sf.origin.y, w, h);
 }
 
@@ -942,6 +987,7 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
     [_dockPanel setFrame:rect display:YES animate:NO];
     _dockView.baseIconSize  = _iconSize;
     _dockView.maxZoomFactor = _zoomFactor;
+    _dockView.verticalLayout = ![_dockPosition isEqualToString:@"bottom"];
     [_dockView setFrame:((NSView *)_dockPanel.contentView).bounds];
     [_dockView setNeedsDisplay:YES];
 }

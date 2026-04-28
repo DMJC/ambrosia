@@ -1,4 +1,5 @@
 #import "AmbrosiaModule.h"
+#include <stdlib.h>
 
 /* Plist file names written by each component */
 static NSString *const kCompPlistName    = @"org.gnustep.AmbrosiaCompositor.plist";
@@ -84,6 +85,17 @@ static BOOL SavePlist(NSMutableDictionary *dict, NSString *path)
                                                attributes:nil
                                                     error:nil];
     return [dict writeToFile:path atomically:YES];
+}
+
+/* Terminate Dock so the compositor can relaunch it with fresh startup args. */
+static void KillRunningDockProcess(void)
+{
+    /* Prefer exact-name match; fallback without -x for environments that
+     * report process names differently. */
+    int rc = system("pkill -TERM -x AmbrosiaDock >/dev/null 2>&1");
+    if (rc != 0) {
+        (void)system("pkill -TERM AmbrosiaDock >/dev/null 2>&1");
+    }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1004,6 +1016,7 @@ static NSString *intervalLabel(NSInteger secs)
 
     /* ---- Dock ---- */
     NSString *pos = @"bottom";
+    NSString *previousPos = _dockPrefs[@"dockPosition"] ?: @"bottom";
     switch (_positionControl.selectedSegment) {
         case 1:  pos = @"left";  break;
         case 2:  pos = @"right"; break;
@@ -1016,6 +1029,9 @@ static NSString *intervalLabel(NSInteger secs)
     _dockPrefs[@"showRunningDots"] = @(_showRunningIndicatorCheck.state == NSControlStateValueOn);
     _dockPrefs[@"items"]           = [_dockItems copy];
     SavePlist(_dockPrefs, _dockPrefsPath);
+    if (![previousPos isEqualToString:pos]) {
+        KillRunningDockProcess();
+    }
 
     /* Broadcast changes */
     NSDictionary *dockNotif = @{

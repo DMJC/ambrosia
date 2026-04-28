@@ -30,6 +30,108 @@ static NSString *gnustepPrefsDirectory(void)
 }
 
 /**
+ * Return the SystemPreferences plist path used by the Video module.
+ */
+static NSString *systemPreferencesPath(void)
+{
+    NSString *defaultsDir = [NSHomeDirectory()
+                             stringByAppendingPathComponent:@"GNUstep/Defaults"];
+    return [defaultsDir stringByAppendingPathComponent:@"SystemPreferences.plist"];
+}
+
+/**
+ * Read primary output resolution from SystemPreferences.plist.
+ * Falls back to 1920x1080 if not present.
+ */
+static NSSize primaryMonitorSizeFromPreferences(void)
+{
+    CGFloat width = 1920.0;
+    CGFloat height = 1080.0;
+
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:systemPreferencesPath()];
+    NSArray *screens = [prefs[@"Screens"] isKindOfClass:[NSArray class]]
+        ? prefs[@"Screens"] : nil;
+
+    if (screens.count > 0) {
+        NSDictionary *primary = nil;
+        for (NSDictionary *screen in screens) {
+            if (![screen isKindOfClass:[NSDictionary class]]) continue;
+            NSNumber *isPrimary = [screen[@"primary"] isKindOfClass:[NSNumber class]]
+                ? screen[@"primary"] : screen[@"Primary"];
+            if ([isPrimary boolValue]) {
+                primary = screen;
+                break;
+            }
+        }
+        if (!primary) {
+            NSDictionary *first = screens.firstObject;
+            if ([first isKindOfClass:[NSDictionary class]]) primary = first;
+        }
+
+        NSDictionary *resolution = [primary[@"resolution"] isKindOfClass:[NSDictionary class]]
+            ? primary[@"resolution"] : primary[@"Resolution"];
+        NSNumber *rw = resolution[@"width"] ?: resolution[@"Width"];
+        NSNumber *rh = resolution[@"height"] ?: resolution[@"Height"];
+        if ([rw respondsToSelector:@selector(doubleValue)] && [rw doubleValue] > 32)
+            width = [rw doubleValue];
+        if ([rh respondsToSelector:@selector(doubleValue)] && [rh doubleValue] > 32)
+            height = [rh doubleValue];
+    }
+
+    return NSMakeSize(width, height);
+}
+
+/**
+ * Return launch arguments for GNUstep apps that must use the Wayland backend.
+ */
+static NSArray<NSString *> *gnustepWaylandArgs(void)
+{
+    return @[@"-GSBackend", @"libgnustep-wayland"];
+}
+
+/**
+ * Build AmbrosiaDock launch arguments from current on-disk preferences.
+ * This is intentionally evaluated at each launch attempt so dock geometry
+ * tracks the latest SystemPreferences and Dock plist contents.
+ */
+static NSArray<NSString *> *currentDockLaunchArguments(void)
+{
+    NSString *prefsDir = gnustepPrefsDirectory();
+    NSString *dockPlistPath = [prefsDir
+                               stringByAppendingPathComponent:
+                               @"org.gnustep.AmbrosiaDock.plist"];
+    NSDictionary *dockPrefs = [NSDictionary dictionaryWithContentsOfFile:dockPlistPath]
+                              ?: @{};
+
+    NSString *dockPosition = dockPrefs[@"dockPosition"] ?: @"bottom";
+    double    iconSize     = [dockPrefs[@"iconSize"]    doubleValue];
+    double    zoomFactor   = [dockPrefs[@"zoomFactor"]  doubleValue];
+    NSSize    primarySize  = primaryMonitorSizeFromPreferences();
+    if (iconSize   <= 0) iconSize   = 48.0;
+    if (zoomFactor <= 0) zoomFactor = 1.7;
+
+    CGFloat dockX = floor(primarySize.width * 0.5);
+    CGFloat dockY = 0.0;
+    if ([dockPosition isEqualToString:@"left"]) {
+        dockX = 0.0;
+        dockY = floor(primarySize.height * 0.5);
+    } else if ([dockPosition isEqualToString:@"right"]) {
+        dockX = primarySize.width;
+        dockY = floor(primarySize.height * 0.5);
+    }
+
+    return [gnustepWaylandArgs() arrayByAddingObjectsFromArray:@[
+        @"-AmbrosiaPosition",   dockPosition,
+        @"-AmbrosiaIconSize",   [NSString stringWithFormat:@"%.1f", iconSize],
+        @"-AmbrosiaZoomFactor", [NSString stringWithFormat:@"%.2f", zoomFactor],
+        @"-AmbrosiaPrimaryWidth",  [NSString stringWithFormat:@"%.0f", primarySize.width],
+        @"-AmbrosiaPrimaryHeight", [NSString stringWithFormat:@"%.0f", primarySize.height],
+        @"-AmbrosiaDockX", [NSString stringWithFormat:@"%.0f", dockX],
+        @"-AmbrosiaDockY", [NSString stringWithFormat:@"%.0f", dockY],
+    ]];
+}
+
+/**
  * Search a set of candidate paths and return the first that exists.
  * Returns nil if none found.
  */
@@ -313,6 +415,10 @@ done:
                 [process.name UTF8String]);
         return;
     }
+    if ([process.name isEqualToString:@"AmbrosiaDock"]) {
+        /* Re-read Dock + SystemPreferences plists on every launch attempt. */
+        process.arguments = currentDockLaunchArguments();
+    }
     wlr_log(WLR_INFO, "session: restarting '%s'", [process.name UTF8String]);
     [process launch];
 }
@@ -413,11 +519,8 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
 {
     AmbrosiaSession *session = [[AmbrosiaSession alloc] initWithEventLoop:loop];
 
-    /* Force gnustep-back to use the Wayland display server.  Without this,
-     * gnustep-back defaults to its X11 backend, causing apps to crash when
-     * DISPLAY is unset or to connect to Xwayland on the host compositor
-     * instead of our own WAYLAND_DISPLAY socket.                           */
-    NSArray<NSString *> *gnustepWaylandArgs = @[@"-GSBackend", @"libgnustep-wayland"];
+    /* Force gnustep-back to use the Wayland display server. */
+    NSArray<NSString *> *baseArgs = gnustepWaylandArgs();
 
     /* ---- MenuServer ---- */
     NSString *menuServerExec = findExecutable(candidatePaths(@"MenuServer.app",
@@ -427,33 +530,13 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
     AmbrosiaSessionProcess *menuServer =
         [session addProcessNamed:@"MenuServer"
                         execPath:menuServerExec
-                       arguments:gnustepWaylandArgs];
+                       arguments:baseArgs];
     menuServer.restartDelaySecs = 2;
 
     /* ---- AmbrosiaDock ---- */
 
-    /* Read dock preferences so the Compositor can pass authoritative geometry
-     * to the Dock at launch.  The Dock uses these args rather than computing
-     * its own position, keeping the Compositor as the single source of truth. */
     NSString *prefsDir = gnustepPrefsDirectory();
-    NSString *dockPlistPath = [prefsDir
-                               stringByAppendingPathComponent:
-                               @"org.gnustep.AmbrosiaDock.plist"];
-    NSDictionary *dockPrefs = [NSDictionary dictionaryWithContentsOfFile:dockPlistPath]
-                              ?: @{};
-
-    NSString *dockPosition = dockPrefs[@"dockPosition"] ?: @"bottom";
-    double    iconSize     = [dockPrefs[@"iconSize"]    doubleValue];
-    double    zoomFactor   = [dockPrefs[@"zoomFactor"]  doubleValue];
-    if (iconSize   <= 0) iconSize   = 48.0;
-    if (zoomFactor <= 0) zoomFactor = 1.7;
-
-    NSArray<NSString *> *dockArgs =
-        [gnustepWaylandArgs arrayByAddingObjectsFromArray:@[
-            @"-AmbrosiaPosition",   dockPosition,
-            @"-AmbrosiaIconSize",   [NSString stringWithFormat:@"%.1f", iconSize],
-            @"-AmbrosiaZoomFactor", [NSString stringWithFormat:@"%.2f", zoomFactor],
-        ]];
+    NSArray<NSString *> *dockArgs = currentDockLaunchArguments();
 
     NSString *dockExec = findExecutable(candidatePaths(@"AmbrosiaDock.app",
                                                        @"AmbrosiaDock"));
@@ -462,7 +545,7 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
     AmbrosiaSessionProcess *dock =
         [session addProcessNamed:@"AmbrosiaDock"
                         execPath:dockExec
-                       arguments:dockArgs];
+                           arguments:dockArgs];
     dock.restartDelaySecs = 2;
 
     /* ---- User-configured apps from the session plist ---- */
@@ -505,8 +588,8 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
                                             stringByDeletingPathExtension];
         AmbrosiaSessionProcess *proc =
             [session addProcessNamed:name
-                            execPath:path
-                           arguments:gnustepWaylandArgs];
+                           execPath:path
+                           arguments:baseArgs];
         proc.userManaged      = YES;
         proc.restartDelaySecs = 2;
         wlr_log(WLR_INFO, "session: registered user app '%s' from plist",
