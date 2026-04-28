@@ -26,6 +26,7 @@ static const CGFloat kRecyclerGap    = 18.0;
 @synthesize controller      = _controller;
 @synthesize baseIconSize    = _baseIconSize;
 @synthesize maxZoomFactor   = _maxZoomFactor;
+@synthesize verticalLayout  = _verticalLayout;
 @synthesize isDragging      = _isDragging;
 
 - (instancetype)initWithFrame:(NSRect)frame
@@ -34,6 +35,7 @@ static const CGFloat kRecyclerGap    = 18.0;
     if (!self) return nil;
     _baseIconSize      = 48.0;
     _maxZoomFactor     = 1.7;
+    _verticalLayout    = NO;
     _hoveredIndex      = -1;
     _draggingFromIndex = -1;
     _dropTargetIndex   = -1;
@@ -76,7 +78,9 @@ static const CGFloat kRecyclerGap    = 18.0;
     if (item.itemType == DockItemTypeRecycler) return 1.0;
     if (_hoveredIndex < 0) return 1.0;
     NSRect r = [self rectForIndex:idx useBaseSize:YES];
-    CGFloat dist = fabs(_mouseLocation.x - NSMidX(r));
+    CGFloat dist = _verticalLayout
+        ? fabs(_mouseLocation.y - NSMidY(r))
+        : fabs(_mouseLocation.x - NSMidX(r));
     if (dist >= kZoomRadius) return 1.0;
     CGFloat t = 1.0 - dist / kZoomRadius;
     return 1.0 + (_maxZoomFactor - 1.0) * sin(t * M_PI_2);
@@ -90,18 +94,27 @@ static const CGFloat kRecyclerGap    = 18.0;
 {
     NSArray *items = _controller.items;
     CGFloat x = kDockPadding;
+    CGFloat y = kDockPadding;
     for (NSInteger i = 0; i < (NSInteger)items.count; i++) {
         DockItem *item = items[(NSUInteger)i];
         /* Insert separator gap immediately before the recycler */
-        if (item.itemType == DockItemTypeRecycler)
-            x += kRecyclerGap;
+        if (item.itemType == DockItemTypeRecycler) {
+            if (_verticalLayout) y += kRecyclerGap;
+            else x += kRecyclerGap;
+        }
         CGFloat size = useBase ? _baseIconSize
                                : (_baseIconSize * [self zoomForIndex:i]);
         if (i == idx) {
-            CGFloat y = kDockPadding + kRunningDotSize + kRunningDotGap;
-            return NSMakeRect(x, y, size, size);
+            if (_verticalLayout) {
+                return NSMakeRect(kDockPadding + kRunningDotSize + kRunningDotGap,
+                                  y, size, size);
+            }
+            return NSMakeRect(x,
+                              kDockPadding + kRunningDotSize + kRunningDotGap,
+                              size, size);
         }
-        x += size + kItemPadding;
+        if (_verticalLayout) y += size + kItemPadding;
+        else x += size + kItemPadding;
     }
     return NSZeroRect;
 }
@@ -178,7 +191,9 @@ static const CGFloat kRecyclerGap    = 18.0;
 {
     NSRect bounds = self.bounds;
     CGFloat bgH   = _baseIconSize + 22.0;
-    NSRect bgRect = NSMakeRect(0, 0, bounds.size.width, bgH);
+    NSRect bgRect = _verticalLayout
+        ? NSMakeRect(0, 0, bgH, bounds.size.height)
+        : NSMakeRect(0, 0, bounds.size.width, bgH);
 
     NSBezierPath *bg = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(bgRect, 2, 2)
                                                        xRadius:12 yRadius:12];
@@ -198,9 +213,14 @@ static const CGFloat kRecyclerGap    = 18.0;
         /* ---- Recycler: separator line + special drawing ---- */
         if (item.itemType == DockItemTypeRecycler) {
             /* Thin separator line midway through the gap */
-            CGFloat sepX = iconRect.origin.x - kRecyclerGap * 0.5;
             [[NSColor colorWithCalibratedWhite:0.55 alpha:0.45] set];
-            NSRectFill(NSMakeRect(sepX, kDockPadding, 1.0, _baseIconSize + 4));
+            if (_verticalLayout) {
+                CGFloat sepY = iconRect.origin.y - kRecyclerGap * 0.5;
+                NSRectFill(NSMakeRect(kDockPadding, sepY, _baseIconSize + 4, 1.0));
+            } else {
+                CGFloat sepX = iconRect.origin.x - kRecyclerGap * 0.5;
+                NSRectFill(NSMakeRect(sepX, kDockPadding, 1.0, _baseIconSize + 4));
+            }
 
             BOOL highlighted = (i == _dropTargetIndex);
             [self _drawRecyclerInRect:iconRect highlighted:highlighted];
@@ -216,8 +236,14 @@ static const CGFloat kRecyclerGap    = 18.0;
         /* ---- Drop insertion indicator (blue bar) ---- */
         if (i == _dropTargetIndex) {
             [[NSColor colorWithCalibratedRed:0.3 green:0.6 blue:1.0 alpha:0.7] set];
-            NSRectFill(NSMakeRect(iconRect.origin.x - 2,
-                                  iconRect.origin.y, 2, iconRect.size.height));
+            if (_verticalLayout) {
+                NSRectFill(NSMakeRect(iconRect.origin.x,
+                                      iconRect.origin.y - 2,
+                                      iconRect.size.width, 2));
+            } else {
+                NSRectFill(NSMakeRect(iconRect.origin.x - 2,
+                                      iconRect.origin.y, 2, iconRect.size.height));
+            }
         }
 
         if (!item.icon) continue;
@@ -237,8 +263,12 @@ static const CGFloat kRecyclerGap    = 18.0;
 
         /* ---- Running dot ---- */
         if (item.isRunning) {
-            CGFloat dotX = NSMidX(iconRect) - kRunningDotSize * 0.5;
-            CGFloat dotY = kDockPadding * 0.4;
+            CGFloat dotX = _verticalLayout
+                ? kDockPadding * 0.4
+                : (NSMidX(iconRect) - kRunningDotSize * 0.5);
+            CGFloat dotY = _verticalLayout
+                ? (NSMidY(iconRect) - kRunningDotSize * 0.5)
+                : (kDockPadding * 0.4);
             [[NSColor colorWithCalibratedWhite:0.9 alpha:0.85] set];
             [[NSBezierPath bezierPathWithOvalInRect:
               NSMakeRect(dotX, dotY, kRunningDotSize, kRunningDotSize)] fill];
@@ -263,9 +293,13 @@ static const CGFloat kRecyclerGap    = 18.0;
         NSForegroundColorAttributeName: [NSColor whiteColor],
     };
     NSSize ts  = [label sizeWithAttributes:attrs];
-    NSRect lr  = NSMakeRect(NSMidX(iconRect) - ts.width * 0.5 - 4,
-                            NSMaxY(iconRect) + 4,
-                            ts.width + 8, ts.height + 4);
+    NSRect lr  = _verticalLayout
+        ? NSMakeRect(NSMaxX(iconRect) + 6,
+                     NSMidY(iconRect) - (ts.height + 4) * 0.5,
+                     ts.width + 8, ts.height + 4)
+        : NSMakeRect(NSMidX(iconRect) - ts.width * 0.5 - 4,
+                     NSMaxY(iconRect) + 4,
+                     ts.width + 8, ts.height + 4);
     NSBezierPath *lbg = [NSBezierPath bezierPathWithRoundedRect:lr xRadius:4 yRadius:4];
     [[NSColor colorWithCalibratedWhite:0.1 alpha:0.85] set];
     [lbg fill];
