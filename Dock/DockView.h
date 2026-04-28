@@ -18,6 +18,9 @@
 /** Maximum zoom multiplier for the magnification effect */
 @property (nonatomic) CGFloat maxZoomFactor;
 
+/** YES when dock is laid out vertically (left/right position) */
+@property (nonatomic) BOOL verticalLayout;
+
 /** YES while a drag is in progress originating from this dock */
 @property (nonatomic, readonly) BOOL isDragging;
 
