@@ -35,10 +35,13 @@ static const DBusObjectPathVTable kWatcherVTable = {
 /* ---------------------------------------------------------------------- */
 
 @implementation TrayManager {
-    DBusConnection           *_conn;
+    DBusConnection             *_conn;
     NSMutableArray<TrayItem *> *_items;
-    dispatch_queue_t           _dbusQueue;
+    dispatch_queue_t            _dbusQueue;
+    dispatch_source_t           _dispatchSource; /* GCD timer drives D-Bus dispatch */
 }
+
+@synthesize dbusQueue = _dbusQueue;
 
 @synthesize delegate = _delegate;
 
@@ -54,6 +57,10 @@ static const DBusObjectPathVTable kWatcherVTable = {
 
 - (void)dealloc
 {
+    if (_dispatchSource) {
+        dispatch_source_cancel(_dispatchSource);
+        _dispatchSource = nil;
+    }
     if (_conn) {
         dbus_connection_close(_conn);
         dbus_connection_unref(_conn);
@@ -73,6 +80,10 @@ static const DBusObjectPathVTable kWatcherVTable = {
 
 - (void)_startOnQueue
 {
+    /* Enable libdbus thread safety so internal data structures are locked.
+     * Must be called before any other libdbus function.                    */
+    dbus_threads_init_default();
+
     DBusError err;
     dbus_error_init(&err);
 
@@ -139,16 +150,41 @@ static const DBusObjectPathVTable kWatcherVTable = {
                                (__bridge void *)self, NULL);
     dbus_connection_flush(_conn);
 
-    /* Dispatch loop — runs on _dbusQueue forever */
-    [self _runDispatchLoop];
+    /* Replace the old blocking while-loop with a GCD timer that fires on
+     * _dbusQueue every 20 ms.  Because _dbusQueue is serial, the timer
+     * handler and any blocking D-Bus calls dispatched to the same queue
+     * cannot run concurrently — eliminating the reply-stealing race that
+     * caused send_with_reply_and_block to time out.                        */
+    [self _startDispatchTimer];
 }
 
-- (void)_runDispatchLoop
+- (void)_startDispatchTimer
 {
-    while (_conn && dbus_connection_get_is_connected(_conn)) {
-        dbus_connection_read_write_dispatch(_conn, 100 /* ms timeout */);
-    }
-    NSLog(@"TrayManager: D-Bus connection lost.");
+    _dispatchSource = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _dbusQueue);
+
+    dispatch_source_set_timer(_dispatchSource,
+        DISPATCH_TIME_NOW,
+        20 * NSEC_PER_MSEC,   /* 20 ms interval — low latency for signals  */
+        5  * NSEC_PER_MSEC);  /* 5 ms leeway                               */
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_set_event_handler(_dispatchSource, ^{
+        __strong typeof(self) strongSelf = weakSelf;
+        if (!strongSelf || !strongSelf->_conn) return;
+        if (!dbus_connection_get_is_connected(strongSelf->_conn)) {
+            NSLog(@"TrayManager: D-Bus connection lost.");
+            dispatch_source_cancel(strongSelf->_dispatchSource);
+            return;
+        }
+        /* Non-blocking read from the socket, then dispatch pending messages */
+        dbus_connection_read_write(strongSelf->_conn, 0);
+        while (dbus_connection_dispatch(strongSelf->_conn) ==
+               DBUS_DISPATCH_DATA_REMAINS) {}
+    });
+
+    dispatch_resume(_dispatchSource);
+    NSLog(@"TrayManager: D-Bus dispatch timer started (20 ms interval).");
 }
 
 /* ---------------------------------------------------------------------- */

@@ -1072,13 +1072,32 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     /* Broadcast AmbrosiaApplicationActivated when the active app changes.
      *
      * Keyed on client PID — this works for both Wayland (one pid per process)
-     * and XWayland (each X11 app has a distinct pid via xsurface->pid).      */
+     * and XWayland (each X11 app has a distinct pid via xsurface->pid).
+     * Also include a best-effort app name so the menu bar can label non-GNUstep
+     * windows without needing a /proc lookup: XDG uses app_id, XWayland uses
+     * WM_CLASS (the class field), with title as fallback for both.            */
     pid_t newPid = [view clientPid];
     if (newPid > 0 && newPid != prevPid) {
+        NSMutableDictionary *activateInfo =
+            [@{ @"pid": @((int32_t)newPid) } mutableCopy];
+
+        const char *rawName = NULL;
+        if ([view isKindOfClass:[AmbrosiaView class]]) {
+            AmbrosiaView *xdg = (AmbrosiaView *)view;
+            rawName = xdg.state->xdg_toplevel->app_id
+                   ?: xdg.state->xdg_toplevel->title;
+        } else if ([view isKindOfClass:[AmbrosiaXWaylandView class]]) {
+            AmbrosiaXWaylandView *xw = (AmbrosiaXWaylandView *)view;
+            rawName = xw.state->xwayland_surface->class
+                   ?: xw.state->xwayland_surface->title;
+        }
+        if (rawName && rawName[0])
+            activateInfo[@"appName"] = @(rawName);
+
         [[NSDistributedNotificationCenter defaultCenter]
             postNotificationName:@"AmbrosiaApplicationActivated"
                           object:nil
-                        userInfo:@{ @"pid": @((int32_t)newPid) }
+                        userInfo:activateInfo
               deliverImmediately:YES];
     }
 }

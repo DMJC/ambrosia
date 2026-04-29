@@ -660,15 +660,72 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
         NSRect r = [_trayRects[i] rectValue];
         if (r.size.width == 0) continue;
         if (NSPointInRect(pt, r)) {
-            TrayItem *item = _trayItems[(NSUInteger)i];
-            NSPoint screenPt = [self.window convertBaseToScreen:
-                                [self convertPoint:pt toView:nil]];
-            [item contextMenuAtX:(int)screenPt.x
-                               y:(int)screenPt.y
-                      connection:_controller.trayManager.dbusConnection];
+            [self _openTrayMenuForItemIndex:(NSInteger)i clickPoint:pt];
             return;
         }
     }
+}
+
+/**
+ * Fetch the dbusmenu layout for tray item at index |ti| and show it in the
+ * MenuServer's own dropdown.  Falls back to the SNI ContextMenu(x,y) call
+ * when the item has no dbusmenu object path.
+ */
+- (void)_openTrayMenuForItemIndex:(NSInteger)ti clickPoint:(NSPoint)pt
+{
+    NSArray<TrayItem *> *items = _trayItems;
+    if (ti < 0 || ti >= (NSInteger)items.count) return;
+    TrayItem *trayItem = items[(NSUInteger)ti];
+    void             *conn      = _controller.trayManager.dbusConnection;
+    dispatch_queue_t  dbusQueue = _controller.trayManager.dbusQueue;
+
+    __weak typeof(self) weakSelf = self;
+    [trayItem fetchMenuItemsWithConnection:conn
+                                 dbusQueue:dbusQueue
+                                completion:^(NSArray<NSDictionary *> *menuItems) {
+        __strong typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        if (menuItems.count == 0) {
+            /* No dbusmenu — ask the app to show its own menu */
+            NSPoint screenPt =
+                [strongSelf.window convertBaseToScreen:
+                 [strongSelf convertPoint:pt toView:nil]];
+            [trayItem contextMenuAtX:(int)screenPt.x
+                                   y:(int)screenPt.y
+                          connection:conn];
+            return;
+        }
+
+        /* Close any currently open dropdown first */
+        if (strongSelf->_openTag != MenuBarRegionNone)
+            [strongSelf _closeDropdown];
+
+        /* Align dropdown to the left edge of the tray icon slot */
+        NSRect slot = NSZeroRect;
+        if (ti < (NSInteger)strongSelf->_trayRects.count)
+            slot = [strongSelf->_trayRects[(NSUInteger)ti] rectValue];
+
+        strongSelf->_openTag         = MenuBarRegionTrayItem + ti;
+        strongSelf->_openDescriptors = menuItems;
+        strongSelf->_dropdownX       = slot.origin.x;
+        strongSelf->_openPluginIdx   = -1;
+        strongSelf->_hoveredIdx      = -1;
+
+        CGFloat dropH = [strongSelf _dropdownTotalHeight];
+        [strongSelf->_controller expandPanelByDropdownHeight:dropH];
+        [strongSelf.window setAcceptsMouseMovedEvents:YES];
+        [strongSelf setNeedsDisplay:YES];
+    }];
+}
+
+/** Find the TrayItem whose bus name matches, or nil. */
+- (nullable TrayItem *)_trayItemForBusName:(NSString *)busName
+{
+    for (TrayItem *it in _trayItems) {
+        if ([it.busName isEqualToString:busName]) return it;
+    }
+    return nil;
 }
 
 - (void)mouseDown:(NSEvent *)event
@@ -960,8 +1017,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 
 - (void)_activateDropdownItem:(NSDictionary *)item pluginIdx:(NSInteger)pluginIdx
 {
-    /* Plugin items: route to the plugin that owned this dropdown.
-     * pluginIdx is captured before _closeDropdown clears _openPluginIdx. */
+    /* Plugin items: route to the plugin that owned this dropdown. */
     if (pluginIdx >= 0) {
         NSArray<id<AmbrosiaStatusItemPlugin>> *plugins = _statusPlugins;
         if (pluginIdx < (NSInteger)plugins.count) {
@@ -971,12 +1027,27 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
         return;
     }
 
+    /* dbusmenu tray items carry a bus name and integer item id.
+     * Trigger via com.canonical.dbusmenu Event() instead of a notification. */
+    NSString *trayBusName = item[@"_trayBusName"];
+    if (trayBusName.length) {
+        NSNumber *menuItemId = item[@"_dbusMenuId"];
+        if (menuItemId) {
+            TrayItem *trayItem = [self _trayItemForBusName:trayBusName];
+            if (trayItem) {
+                [trayItem triggerMenuItemId:(int32_t)[menuItemId intValue]
+                                connection:_controller.trayManager.dbusConnection
+                                 dbusQueue:_controller.trayManager.dbusQueue];
+            }
+        }
+        return;
+    }
+
     /* System-menu items carry a selector name */
     NSString *selName = item[kSysItemSel];
     if (selName.length) {
         SEL sel = NSSelectorFromString(selName);
         if ([self respondsToSelector:sel]) {
-            /* performSelector with id return — cast suppresses ARC warning */
             IMP imp = [self methodForSelector:sel];
             ((void (*)(id, SEL))imp)(self, sel);
         }
