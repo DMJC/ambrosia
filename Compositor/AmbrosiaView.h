@@ -13,6 +13,13 @@ struct ambrosia_view_state {
     struct wlr_xdg_toplevel *xdg_toplevel;
     struct wlr_scene_tree   *scene_tree;
 
+    /**
+     * Back-reference to the xdg-decoration object, set by the compositor when
+     * a decoration is negotiated.  NULL when no decoration object exists.
+     * Used by handleMap to know whether SSD mode was already agreed.
+     */
+    struct wlr_xdg_toplevel_decoration_v1 *xdg_decoration;
+
     struct wl_listener surface_commit; /* fires initial configure (wlroots 0.18+) */
     struct wl_listener map;
     struct wl_listener unmap;
@@ -86,6 +93,16 @@ struct ambrosia_view_state {
 
 /** Update title in the decoration (if any) */
 - (void)updateTitle;
+
+/**
+ * Attach server-side decoration using the given renderer and optional theme
+ * colour dictionary.  Called by the compositor when SSD mode is negotiated.
+ */
+- (void)attachDecorationWithRenderer:(struct wlr_renderer *)renderer
+                              colors:(nullable NSDictionary *)colors;
+
+/** Remove server-side decoration (switch back to CSD). */
+- (void)removeDecoration;
 
 /** Called by C callbacks */
 - (void)handleMap;
