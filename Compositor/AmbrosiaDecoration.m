@@ -10,6 +10,8 @@
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
+#include <cairo/cairo.h>
+#import <AppKit/AppKit.h>
 
 /* DRM_FORMAT_ARGB8888: little-endian 0xAARRGGBB */
 #ifndef DRM_FORMAT_ARGB8888
@@ -136,65 +138,67 @@ static struct ambrosia_shm_buf *ambrosia_shm_buf_create(int w, int h)
  * Output is premultiplied ARGB8888 into the buffer's mmap'd data.
  * -------------------------------------------------------------------------- */
 
-static inline float lerpf(float a, float b, float t) { return a + (b - a) * t; }
-
 static void render_titlebar(struct ambrosia_shm_buf *sb,
                              const float gradTop[4],
-                             const float gradBot[4])
+                             const float gradBot[4],
+                             const float button[4],
+                             const char *title,
+                             const char *fontName,
+                             float fontSize)
 {
-    const int   W = sb->width;
-    const int   H = sb->height;
-    const float R = MILK_CORNER_RADIUS;
-    uint32_t   *px = (uint32_t *)sb->data;
+    const int W = sb->width, H = sb->height;
+    const int S = AMBROSIA_BTN_SIZE, PD = AMBROSIA_BTN_PAD_SIDE, PT = AMBROSIA_BTN_PAD_TOP;
+    cairo_surface_t *surf = cairo_image_surface_create_for_data((unsigned char *)sb->data,
+        CAIRO_FORMAT_ARGB32, W, H, (int)sb->stride);
+    cairo_t *cr = cairo_create(surf);
 
-    for (int y = 0; y < H; y++) {
-        float t  = (H > 1) ? (float)y / (float)(H - 1) : 0.f;
-        float cr = lerpf(gradTop[0], gradBot[0], t);
-        float cg = lerpf(gradTop[1], gradBot[1], t);
-        float cb = lerpf(gradTop[2], gradBot[2], t);
-        float ca = lerpf(gradTop[3], gradBot[3], t);
+    cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+    cairo_set_source_rgba(cr, 0, 0, 0, 0);
+    cairo_paint(cr);
 
-        for (int x = 0; x < W; x++) {
-            float alpha = ca;
+    cairo_new_path(cr);
+    cairo_move_to(cr, MILK_CORNER_RADIUS, 0);
+    cairo_line_to(cr, W - MILK_CORNER_RADIUS, 0);
+    cairo_arc(cr, W - MILK_CORNER_RADIUS, MILK_CORNER_RADIUS, MILK_CORNER_RADIUS, -M_PI_2, 0);
+    cairo_line_to(cr, W, H);
+    cairo_line_to(cr, 0, H);
+    cairo_line_to(cr, 0, MILK_CORNER_RADIUS);
+    cairo_arc(cr, MILK_CORNER_RADIUS, MILK_CORNER_RADIUS, MILK_CORNER_RADIUS, M_PI, -M_PI_2);
+    cairo_close_path(cr);
+    cairo_clip(cr);
 
-            /* Sample from pixel centre */
-            float sx = (float)x + 0.5f;
-            float sy = (float)y + 0.5f;
+    cairo_pattern_t *grad = cairo_pattern_create_linear(0, 0, 0, H);
+    cairo_pattern_add_color_stop_rgba(grad, 0, gradTop[0], gradTop[1], gradTop[2], gradTop[3]);
+    cairo_pattern_add_color_stop_rgba(grad, 1, gradBot[0], gradBot[1], gradBot[2], gradBot[3]);
+    cairo_set_source(cr, grad);
+    cairo_paint(cr);
+    cairo_pattern_destroy(grad);
 
-            /* Top-left rounded corner — arc centre at (R, R) */
-            if (sx < R && sy < R) {
-                float dx   = sx - R;
-                float dy   = sy - R;
-                float dist = sqrtf(dx * dx + dy * dy);
-                if (dist >= R) {
-                    alpha = 0.f;
-                } else if (dist > R - 1.f) {
-                    alpha *= (R - dist); /* 1-px feathered AA */
-                }
-            }
+    float radius = (float)S * 0.5f;
+    float cy = PT + radius;
+    float leftCx = PD + radius;
+    float rightCx = W - PD - radius;
+    cairo_set_source_rgba(cr, button[0], button[1], button[2], button[3]);
+    cairo_arc(cr, leftCx, cy, radius, 0, 2 * M_PI);
+    cairo_fill(cr);
+    cairo_arc(cr, rightCx, cy, radius, 0, 2 * M_PI);
+    cairo_fill(cr);
 
-            /* Top-right rounded corner — arc centre at (W-R, R) */
-            if (sx > (float)W - R && sy < R) {
-                float dx   = sx - ((float)W - R);
-                float dy   = sy - R;
-                float dist = sqrtf(dx * dx + dy * dy);
-                if (dist >= R) {
-                    alpha = 0.f;
-                } else if (dist > R - 1.f) {
-                    alpha *= (R - dist);
-                }
-            }
-
-            /* Premultiplied ARGB8888 */
-            uint8_t A  = (uint8_t)(alpha * 255.f + 0.5f);
-            uint8_t R8 = (uint8_t)(cr * alpha * 255.f + 0.5f);
-            uint8_t G8 = (uint8_t)(cg * alpha * 255.f + 0.5f);
-            uint8_t B8 = (uint8_t)(cb * alpha * 255.f + 0.5f);
-            px[y * W + x] = ((uint32_t)A << 24) |
-                             ((uint32_t)R8 << 16) |
-                             ((uint32_t)G8 << 8)  | B8;
-        }
+    if (title && title[0] != '\0') {
+        cairo_text_extents_t ext;
+        cairo_select_font_face(cr, (fontName && fontName[0]) ? fontName : "Sans",
+            CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+        cairo_set_font_size(cr, fontSize > 1.0f ? fontSize : 12.0f);
+        cairo_text_extents(cr, title, &ext);
+        double tx = ((double)W - ext.width) * 0.5 - ext.x_bearing;
+        double ty = ((double)H - ext.height) * 0.5 - ext.y_bearing;
+        cairo_set_source_rgba(cr, 0.05, 0.05, 0.05, 1.0);
+        cairo_move_to(cr, tx, ty);
+        cairo_show_text(cr, title);
     }
+
+    cairo_destroy(cr);
+    cairo_surface_destroy(surf);
 }
 
 /* --------------------------------------------------------------------------
@@ -277,6 +281,7 @@ static BOOL parseHexColor(NSString *hex, float out[4])
     float _bodyFill[4];
     float _btnActive[4];
     float _btnInactive[4];
+    NSString *_title;
 }
 
 @synthesize focused    = _focused;
@@ -333,6 +338,7 @@ static BOOL parseHexColor(NSString *hex, float out[4])
 
 - (void)updateWithWidth:(int)sw height:(int)sh title:(NSString *)title
 {
+    _title = title ?: @"";
     if (sw > 0) _surfaceWidth  = sw;
     if (sh > 0) _surfaceHeight = sh;
 
@@ -378,9 +384,11 @@ static BOOL parseHexColor(NSString *hex, float out[4])
     wlr_scene_node_set_position(&_strokeBottom->node, 0,          totalH - 1);
 
     /* ---- Buttons ---- */
-    wlr_scene_rect_set_size(_btnMinimize, S, S);
+    /* Buttons are now rasterized as circles into the titlebar buffer; keep
+     * scene_rect nodes non-visible while preserving hit-testing geometry. */
+    wlr_scene_rect_set_size(_btnMinimize, 0, 0);
     wlr_scene_node_set_position(&_btnMinimize->node, PD,              PT);
-    wlr_scene_rect_set_size(_btnClose, S, S);
+    wlr_scene_rect_set_size(_btnClose, 0, 0);
     wlr_scene_node_set_position(&_btnClose->node,    totalW - PD - S, PT);
 
     [self _applyRectColors];
@@ -391,11 +399,14 @@ static BOOL parseHexColor(NSString *hex, float out[4])
 {
     const float *gradTop = _focused ? _gradTopActive : _gradTopInactive;
     const float *gradBot = _focused ? _gradBotActive : _gradBotInactive;
+    const float *btn     = _focused ? _btnActive     : _btnInactive;
 
     struct ambrosia_shm_buf *buf = ambrosia_shm_buf_create(w, h);
     if (!buf) return;
 
-    render_titlebar(buf, gradTop, gradBot);
+    NSFont *themeFont = [NSFont titleBarFontOfSize:0];
+    if (!themeFont) themeFont = [NSFont boldSystemFontOfSize:12.0];
+    render_titlebar(buf, gradTop, gradBot, btn, _title.UTF8String, themeFont.fontName.UTF8String, themeFont.pointSize);
     wlr_scene_buffer_set_buffer(_titleSceneBuf, &buf->base);
     /* Drop the producer reference — the scene now holds the only lock. */
     wlr_buffer_drop(&buf->base);
