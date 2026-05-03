@@ -20,7 +20,9 @@ static void handle_surface_commit(struct wl_listener *listener, void *data)
     struct wlr_xdg_surface *xdg = s->xdg_toplevel->base;
     if (xdg->initial_commit) {
         wlr_xdg_surface_schedule_configure(xdg);
+        return;
     }
+    [(__bridge AmbrosiaView *)s->objc_view handleSurfaceCommit];
 }
 
 static void handle_view_map(struct wl_listener *listener, void *data)
@@ -289,6 +291,12 @@ check_title:
     [_decoration updateWithWidth:geo.width height:geo.height title:title];
 }
 
+- (void)handleSurfaceCommit
+{
+    if (!_decoration || !_isMapped || _isFullscreen) return;
+    [self updateTitle];
+}
+
 /* ---------------------------------------------------------------------- */
 #pragma mark - Decoration management
 
@@ -324,6 +332,49 @@ check_title:
 }
 
 /* ---------------------------------------------------------------------- */
+#pragma mark - Dock positioning
+
+/**
+ * Position the Dock on the correct edge of the primary output, respecting
+ * the configured dock position ("bottom", "left", "right").
+ *
+ * Uses the xdg surface geometry when available, falling back to the committed
+ * surface buffer dimensions.  Both can be zero on the first map frame if the
+ * client hasn't committed real content yet; in that case the dock lands at a
+ * reasonable fallback and the compositor relies on subsequent commits to correct
+ * it via handleSetTitle / handleSetAppId re-classification if needed.
+ */
+- (void)_positionDock
+{
+    struct wlr_output *output =
+        wlr_output_layout_get_center_output(_compositor.state->output_layout);
+    struct wlr_box ob = {0};
+    if (output) wlr_output_layout_get_box(_compositor.state->output_layout, output, &ob);
+
+    struct wlr_box geo = [self geometry];
+    struct wlr_surface *surf = _state->xdg_toplevel->base->surface;
+    int dockW = geo.width  > 0 ? geo.width
+              : (surf ? (int)surf->current.width  : 0);
+    int dockH = geo.height > 0 ? geo.height
+              : (surf ? (int)surf->current.height : 0);
+
+    NSString *dockPos = _compositor.dockPosition ?: @"bottom";
+    int dockX, dockY;
+    if ([dockPos isEqualToString:@"left"]) {
+        dockX = ob.x;
+        dockY = ob.y;
+    } else if ([dockPos isEqualToString:@"right"]) {
+        dockX = ob.x + ob.width - (dockW > 0 ? dockW : 0);
+        dockY = ob.y;
+    } else {
+        /* bottom (default) */
+        dockX = ob.x + (dockW > 0 ? (ob.width - dockW) / 2 : 0);
+        dockY = ob.y + ob.height - (dockH > 0 ? dockH : 64);
+    }
+    [self moveTo:dockX y:dockY];
+}
+
+/* ---------------------------------------------------------------------- */
 #pragma mark - Event handlers
 
 - (void)handleMap
@@ -355,16 +406,7 @@ check_title:
 
     /* ---- Dock ---- */
     if (_isDockWindow) {
-        struct wlr_output *output =
-            wlr_output_layout_get_center_output(_compositor.state->output_layout);
-        struct wlr_box ob = {0};
-        if (output) wlr_output_layout_get_box(_compositor.state->output_layout, output, &ob);
-        struct wlr_box geo = [self geometry];
-        int dockW = geo.width  > 0 ? geo.width  : ob.width;
-        int dockH = geo.height > 0 ? geo.height : 64;
-        int dockX = ob.x + (ob.width  - dockW) / 2;
-        int dockY = ob.y +  ob.height - dockH;
-        [self moveTo:dockX y:dockY];
+        [self _positionDock];
         /* Dock does not steal keyboard focus on map */
         return;
     }
@@ -624,14 +666,29 @@ check_title:
 - (void)handleSetTitle
 {
     [self updateTitle];
+
+    /* Re-classify: the title may have arrived after the map event (race).
+     * If we just identified this as the dock, position it now. */
+    BOOL wasDock = _isDockWindow;
+    _isDockWindow        = isDock(_state->xdg_toplevel);
+    _isDesktopBackground = isDesktopToplevel(_state->xdg_toplevel);
+    _isMenu = isMenuToplevel(_state->xdg_toplevel) || _isDockWindow || _isDesktopBackground;
+
+    if (!wasDock && _isDockWindow && _isMapped) {
+        [self _positionDock];
+    }
 }
 
 - (void)handleSetAppId
 {
-    /* Re-classify all roles */
+    BOOL wasDock = _isDockWindow;
     _isDockWindow        = isDock(_state->xdg_toplevel);
     _isDesktopBackground = isDesktopToplevel(_state->xdg_toplevel);
     _isMenu              = isMenuToplevel(_state->xdg_toplevel) || _isDockWindow || _isDesktopBackground;
+
+    if (!wasDock && _isDockWindow && _isMapped) {
+        [self _positionDock];
+    }
 }
 
 /* ---------------------------------------------------------------------- */

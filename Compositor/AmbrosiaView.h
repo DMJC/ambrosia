@@ -105,6 +105,7 @@ struct ambrosia_view_state {
 - (void)removeDecoration;
 
 /** Called by C callbacks */
+- (void)handleSurfaceCommit;
 - (void)handleMap;
 - (void)handleUnmap;
 - (void)handleDestroy;

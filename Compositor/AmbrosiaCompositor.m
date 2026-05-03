@@ -437,6 +437,10 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     /* Current X11 decoration state (applied on compositor thread) */
     BOOL          _x11Decorations;
     NSDictionary *_x11DecorationColors;
+
+    /* Dock position preference, cached at launch so AmbrosiaView can
+     * position the dock correctly when it maps ("bottom", "left", "right"). */
+    NSString     *_dockPosition;
 }
 
 @synthesize state               = _state;
@@ -447,6 +451,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 @synthesize layerSurfaces       = _layerSurfaces;
 @synthesize x11Decorations      = _x11Decorations;
 @synthesize x11DecorationColors = _x11DecorationColors;
+@synthesize dockPosition        = _dockPosition;
 
 - (instancetype)init
 {
@@ -865,6 +870,21 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     if (_state->xwayland && _state->xwayland->display_name) {
         setenv("DISPLAY", _state->xwayland->display_name, 1);
         wlr_log(WLR_INFO, "XWayland socket ready: DISPLAY=%s", _state->xwayland->display_name);
+    }
+
+    /* Cache dock position so AmbrosiaView can position the Dock on map. */
+    {
+        const char *userLib = getenv("GNUSTEP_USER_LIBRARY");
+        NSString *prefsDir = (userLib && userLib[0])
+            ? [[NSString stringWithUTF8String:userLib]
+               stringByAppendingPathComponent:@"Preferences"]
+            : [NSHomeDirectory()
+               stringByAppendingPathComponent:@"GNUstep/Library/Preferences"];
+        NSString *plistPath =
+            [prefsDir stringByAppendingPathComponent:@"org.gnustep.AmbrosiaDock.plist"];
+        NSDictionary *prefs =
+            [NSDictionary dictionaryWithContentsOfFile:plistPath] ?: @{};
+        _dockPosition = prefs[@"dockPosition"] ?: @"bottom";
     }
 
     /* Start the session manager — launches AmbrosiaDock and GFinder,
@@ -1712,7 +1732,8 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
     if (mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE) {
         if (!view.decoration)
-            [view attachDecorationWithRenderer:_state->renderer colors:nil];
+            [view attachDecorationWithRenderer:_state->renderer
+                                        colors:_x11DecorationColors];
     } else {
         if (view.decoration)
             [view removeDecoration];
@@ -2272,16 +2293,21 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     _x11DecorationColors = colors;
 
     for (id<AmbrosiaWindowView> view in _views) {
-        if (![view isKindOfClass:[AmbrosiaXWaylandView class]]) continue;
-        AmbrosiaXWaylandView *xw = (AmbrosiaXWaylandView *)view;
-        if (!xw.isMapped || xw.isMenu || xw.isFullscreen) continue;
-
-        if (enabled && !xw.decoration) {
-            [xw attachDecorationWithRenderer:_state->renderer colors:colors];
-        } else if (!enabled && xw.decoration) {
-            [xw removeDecoration];
-        } else if (enabled && xw.decoration) {
-            [xw.decoration updateColorsFromDictionary:colors];
+        if ([view isKindOfClass:[AmbrosiaXWaylandView class]]) {
+            AmbrosiaXWaylandView *xw = (AmbrosiaXWaylandView *)view;
+            if (!xw.isMapped || xw.isMenu || xw.isFullscreen) continue;
+            if (enabled && !xw.decoration) {
+                [xw attachDecorationWithRenderer:_state->renderer colors:colors];
+            } else if (!enabled && xw.decoration) {
+                [xw removeDecoration];
+            } else if (enabled && xw.decoration) {
+                [xw.decoration updateColorsFromDictionary:colors];
+            }
+        } else if ([view isKindOfClass:[AmbrosiaView class]]) {
+            /* Propagate colour updates to any already-attached SSD decorations */
+            AmbrosiaView *av = (AmbrosiaView *)view;
+            if (av.decoration && colors)
+                [av.decoration updateColorsFromDictionary:colors];
         }
     }
 }
