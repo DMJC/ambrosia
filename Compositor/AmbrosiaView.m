@@ -427,14 +427,26 @@ check_title:
 
     /* ---- Normal windows: cascade below the menu bar ---- */
 
-    /* Attach server-side decoration if SSD mode was already agreed before map.
-     * The decoration must be attached before moveTo: so that the scene tree is
-     * offset correctly by (B, T) when decoration is present.                  */
-    if (_state->xdg_decoration &&
-        _state->xdg_decoration->current.mode ==
-            WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE &&
-        !_decoration) {
-        [self attachDecorationWithRenderer:_compositor.state->renderer colors:nil];
+    /* Attach server-side decoration before initial placement so moveTo:
+     * applies the (B, T) inset correctly.
+     *
+     * We decorate when either:
+     *   - xdg-decoration negotiated SERVER_SIDE, or
+     *   - no xdg-decoration object exists (e.g. client uses only
+     *     org_kde_kwin_server_decoration), where the compositor default is SSD.
+     */
+    BOOL shouldAttachSSD = NO;
+    if (_state->xdg_decoration) {
+        shouldAttachSSD =
+            (_state->xdg_decoration->current.mode ==
+             WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    } else {
+        shouldAttachSSD = YES;
+    }
+
+    if (shouldAttachSSD && !_decoration) {
+        [self attachDecorationWithRenderer:_compositor.state->renderer
+                                    colors:_compositor.x11DecorationColors];
     }
 
     static int cascade = 0;
