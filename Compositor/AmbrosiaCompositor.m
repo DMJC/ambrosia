@@ -1201,6 +1201,24 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
         if (rawName && rawName[0])
             activateInfo[@"appName"] = @(rawName);
 
+        /* Include a per-app window list for MenuServer "Windows" menu. */
+        NSMutableArray *windowList = [NSMutableArray array];
+        int idx = 0;
+        for (id<AmbrosiaWindowView> wv in _views) {
+            if (!wv.isMapped || wv.isMenu || wv.isDockWindow || wv.isDesktopBackground) continue;
+            if ([wv clientPid] != newPid) continue;
+            NSString *title = @"Window";
+            if ([wv isKindOfClass:[AmbrosiaView class]]) {
+                const char *t = ((AmbrosiaView *)wv).state->xdg_toplevel->title;
+                if (t && t[0]) title = @(t);
+            } else if ([wv isKindOfClass:[AmbrosiaXWaylandView class]]) {
+                const char *t = ((AmbrosiaXWaylandView *)wv).state->xwayland_surface->title;
+                if (t && t[0]) title = @(t);
+            }
+            [windowList addObject:@{@"index": @(idx++), @"title": title}];
+        }
+        activateInfo[@"windows"] = windowList;
+
         [[NSDistributedNotificationCenter defaultCenter]
             postNotificationName:@"AmbrosiaApplicationActivated"
                           object:nil
@@ -2237,6 +2255,11 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
              object:nil];
     [[NSDistributedNotificationCenter defaultCenter]
         addObserver:self
+           selector:@selector(_handleActivateWindowNotification:)
+               name:@"AmbrosiaActivateWindow"
+             object:nil];
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
            selector:@selector(_handleSessionPrefsNotification:)
                name:@"AmbrosiaSessionPrefsChanged"
              object:nil];
@@ -2288,6 +2311,27 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     [_sessionLock unlock];
     char byte = 1;
     (void)write(_state->session_pipe[1], &byte, 1);
+}
+
+- (void)_handleActivateWindowNotification:(NSNotification *)note
+{
+    NSDictionary *info = note.userInfo ?: @{};
+    int32_t pid = (int32_t)[info[@"pid"] intValue];
+    NSInteger index = [info[@"index"] integerValue];
+    if (pid <= 0 || index < 0) return;
+
+    NSInteger seen = 0;
+    for (NSInteger i = (NSInteger)_views.count - 1; i >= 0; i--) {
+        id<AmbrosiaWindowView> v = _views[(NSUInteger)i];
+        if (!v.isMapped || v.isMenu || v.isDockWindow || v.isDesktopBackground) continue;
+        if ([v clientPid] != pid) continue;
+        if (seen == index) {
+            if (v.isMiniaturized) [v deminiaturize];
+            [self focusView:v surface:[v surface]];
+            return;
+        }
+        seen++;
+    }
 }
 
 /**
