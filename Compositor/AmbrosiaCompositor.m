@@ -2033,8 +2033,20 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
 - (void)handleCursorButtonTime:(uint32_t)time button:(uint32_t)button state:(uint32_t)state
 {
+    /* Sticky titlebar move mode:
+     *  - first titlebar click enters move mode
+     *  - pointer releases are ignored while moving
+     *  - second left-click exits move mode */
+    if (_state->cursor_mode == AmbrosiaCursorModeMove) {
+        if (button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED) {
+            _state->cursor_mode = AmbrosiaCursorModePassthrough;
+        }
+        return; /* consume events while compositor-grabbing */
+    }
+
     if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
-        _state->cursor_mode = AmbrosiaCursorModePassthrough;
+        if (_state->cursor_mode == AmbrosiaCursorModeResize)
+            _state->cursor_mode = AmbrosiaCursorModePassthrough;
         wlr_seat_pointer_notify_button(_state->seat, time, button,
                                        (enum wl_pointer_button_state)state);
         return;
