@@ -581,9 +581,19 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     _state->xdg_shell = wlr_xdg_shell_create(_state->display, 3);
     wlr_log(WLR_DEBUG, "XDG shell created");
 
-    /* Server-side decoration manager */
+    /* Server-side decoration managers:
+     * - zxdg_decoration_manager_v1 (xdg-decoration-unstable-v1)
+     * - org_kde_kwin_server_decoration_manager
+     *
+     * Some GTK3 clients only bind the KDE protocol, so we advertise both. */
     _state->decoration_manager = wlr_xdg_decoration_manager_v1_create(_state->display);
-    wlr_log(WLR_DEBUG, "Decoration manager created");
+    _state->server_decoration_manager = wlr_server_decoration_manager_create(_state->display);
+    if (_state->server_decoration_manager) {
+        wlr_server_decoration_manager_set_default_mode(
+            _state->server_decoration_manager,
+            WLR_SERVER_DECORATION_MANAGER_MODE_SERVER);
+    }
+    wlr_log(WLR_DEBUG, "Decoration managers created (xdg + kde)");
 
     /* Layer shell (wlr-layer-shell-v1) — used by GNUstep for the menu bar,
      * desktop background, and screen saver windows.                        */

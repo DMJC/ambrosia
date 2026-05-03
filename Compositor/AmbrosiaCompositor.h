@@ -15,6 +15,7 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_server_decoration.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_xcursor_manager.h>
@@ -75,6 +76,7 @@ struct ambrosia_compositor_state {
     struct wlr_data_device_manager *data_device_manager;
     struct wlr_xdg_shell        *xdg_shell;
     struct wlr_xdg_decoration_manager_v1 *decoration_manager;
+    struct wlr_server_decoration_manager  *server_decoration_manager;
     struct wlr_layer_shell_v1        *layer_shell;
     struct wlr_screencopy_manager_v1 *screencopy_manager;
     struct wlr_viewporter            *viewporter;
