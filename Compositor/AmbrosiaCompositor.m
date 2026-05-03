@@ -1757,8 +1757,12 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 {
     enum wlr_xdg_toplevel_decoration_v1_mode mode;
 
-    /* Special windows must always use CSD */
-    if (view && (view.isMenu || view.isDockWindow || view.isDesktopBackground)) {
+    /* Decoration policy by window role */
+    if (view && view.isDockWindow) {
+        /* Dock must be borderless: ask client to suppress its own CSD by
+         * selecting SERVER mode, but skip compositor frame attachment below. */
+        mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
+    } else if (view && (view.isMenu || view.isDesktopBackground || view.isGNUstepWindow)) {
         mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
     } else if (deco->requested_mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE) {
         mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
@@ -1781,7 +1785,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     if (!view || !view.isMapped) return;
 
     if (mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE) {
-        if (!view.decoration)
+        if (!view.isDockWindow && !view.decoration)
             [view attachDecorationWithRenderer:_state->renderer
                                         colors:(_x11DecorationColors ?: ambrosia_gnustep_decoration_palette())];
     } else {
