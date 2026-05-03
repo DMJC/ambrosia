@@ -389,13 +389,18 @@ static NSString * const kForeignWindowIdentifierPrefix = @"__ambrosia_foreign_wi
     _activeForeignPID  = pid;
     _activeForeignName = [name copy];
 
-    /* Synthetic menu: app menu + optional Windows submenu. */
+    /* Synthetic menu: app menu plus a separate top-level Windows menu. */
     NSString *quitTitle = [NSString stringWithFormat:@"Quit %@", name];
-    NSMutableArray *children = [NSMutableArray arrayWithObject:@{
+    NSMutableArray *appChildren = [NSMutableArray arrayWithObject:@{
         kMenuItemTitle:      quitTitle,
         kMenuItemIdentifier: kForeignQuitIdentifier,
         kMenuItemKeyEquiv:   @"q",
     }];
+    NSMutableArray *syntheticItems = [NSMutableArray arrayWithObject:@{
+        kMenuItemTitle:    name,
+        kMenuItemChildren: appChildren,
+    }];
+
     if (windows.count > 0) {
         NSMutableArray *windowItems = [NSMutableArray array];
         for (NSDictionary *w in windows) {
@@ -407,15 +412,11 @@ static NSString * const kForeignWindowIdentifierPrefix = @"__ambrosia_foreign_wi
                                       kForeignWindowIdentifierPrefix, pid, (long)idx],
             }];
         }
-        [children addObject:@{
+        [syntheticItems addObject:@{
             kMenuItemTitle: @"Windows",
             kMenuItemChildren: windowItems,
         }];
     }
-    NSArray *syntheticItems = @[@{
-        kMenuItemTitle:    name,
-        kMenuItemChildren: children,
-    }];
 
     [self _updateActiveApp:name menuItems:syntheticItems pid:0];
 }
