@@ -116,8 +116,9 @@ static void handle_xw_set_title(struct wl_listener *listener, void *data)
 
 static void handle_xw_set_class(struct wl_listener *listener, void *data)
 {
-    /* class change treated same as title for logging */
-    (void)listener; (void)data;
+    struct ambrosia_xwayland_view_state *s =
+        wl_container_of(listener, s, set_class);
+    [(__bridge AmbrosiaXWaylandView *)s->objc_view handleSetTitle];
 }
 
 static void handle_xw_set_override_redirect(struct wl_listener *listener, void *data)
@@ -134,6 +135,15 @@ static void handle_xw_set_override_redirect(struct wl_listener *listener, void *
 static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
 {
     return xs->override_redirect ? YES : NO;
+}
+
+static BOOL isDockXWayland(struct wlr_xwayland_surface *xs)
+{
+    const char *klass = xs->class;
+    const char *title = xs->title;
+    if (klass && strstr(klass, "AmbrosiaDock") != NULL) return YES;
+    if (title && strstr(title, "AmbrosiaDock") != NULL) return YES;
+    return NO;
 }
 
 /* --------------------------------------------------------------------------
@@ -181,6 +191,7 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
     _state->objc_view        = (__bridge void *)self;
 
     _isMenu = isOverrideRedirect(xsurface);
+    _isDockWindow = isDockXWayland(xsurface);
 
     /* xwayland_surface-level listeners */
     _state->associate.notify = handle_xw_associate;
@@ -495,12 +506,13 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
 
     struct wlr_xwayland_surface *xs = _state->xwayland_surface;
     _isMenu = isOverrideRedirect(xs);
+    _isDockWindow = isDockXWayland(xs);
 
     wlr_log(WLR_INFO, "XWayland map: title='%s' class='%s' OR=%d fullscreen=%d",
             xs->title ?: "(nil)", xs->class ?: "(nil)",
             xs->override_redirect, xs->fullscreen);
 
-    if (_isMenu) {
+    if (_isMenu || _isDockWindow) {
         /* Override-redirect: honour the X11-requested position. */
         [self moveTo:xs->x y:xs->y];
 
@@ -544,7 +556,7 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
     [self moveTo:startX y:startY];
 
     /* Attach server-side decoration if the compositor pref is active. */
-    if (_compositor.x11Decorations) {
+    if (_compositor.x11Decorations && !_isDockWindow) {
         [self attachDecorationWithRenderer:_compositor.state->renderer
                                     colors:_compositor.x11DecorationColors];
     }
@@ -749,6 +761,8 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
 
 - (void)handleSetTitle
 {
+    _isDockWindow = isDockXWayland(_state->xwayland_surface);
+    if (_isDockWindow && _decoration) [self removeDecoration];
     [self updateTitle];
 }
 
