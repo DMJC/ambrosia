@@ -11,7 +11,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <cairo/cairo.h>
-#import <AppKit/AppKit.h>
 
 /* DRM_FORMAT_ARGB8888: little-endian 0xAARRGGBB */
 #ifndef DRM_FORMAT_ARGB8888
@@ -228,6 +227,34 @@ static BOOL parseHexColor(NSString *hex, float out[4])
     return YES;
 }
 
+static void ambrosia_theme_title_font(NSString **familyOut, float *sizeOut)
+{
+    NSString *family = @"Sans";
+    float size = 12.0f;
+
+    NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
+    id raw = [defs objectForKey:@"TitleBarFont"];
+    if (![raw isKindOfClass:[NSString class]]) raw = [defs objectForKey:@"NSFont"];
+
+    if ([raw isKindOfClass:[NSString class]]) {
+        NSString *spec = (NSString *)raw;
+        NSArray<NSString *> *parts = [spec componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        NSMutableArray<NSString *> *tokens = [NSMutableArray array];
+        for (NSString *p in parts) if (p.length) [tokens addObject:p];
+        if (tokens.count >= 2) {
+            NSString *last = tokens.lastObject;
+            float parsed = [last floatValue];
+            if (parsed > 1.0f) size = parsed;
+            [tokens removeLastObject];
+            NSString *joined = [tokens componentsJoinedByString:@" "];
+            if (joined.length) family = joined;
+        }
+    }
+
+    if (familyOut) *familyOut = family;
+    if (sizeOut) *sizeOut = size;
+}
+
 /* --------------------------------------------------------------------------
  * AmbrosiaDecoration
  *
@@ -404,9 +431,10 @@ static BOOL parseHexColor(NSString *hex, float out[4])
     struct ambrosia_shm_buf *buf = ambrosia_shm_buf_create(w, h);
     if (!buf) return;
 
-    NSFont *themeFont = [NSFont titleBarFontOfSize:0];
-    if (!themeFont) themeFont = [NSFont boldSystemFontOfSize:12.0];
-    render_titlebar(buf, gradTop, gradBot, btn, _title.UTF8String, themeFont.fontName.UTF8String, themeFont.pointSize);
+    NSString *fontFamily = nil;
+    float fontSize = 12.0f;
+    ambrosia_theme_title_font(&fontFamily, &fontSize);
+    render_titlebar(buf, gradTop, gradBot, btn, _title.UTF8String, fontFamily.UTF8String, fontSize);
     wlr_scene_buffer_set_buffer(_titleSceneBuf, &buf->base);
     /* Drop the producer reference — the scene now holds the only lock. */
     wlr_buffer_drop(&buf->base);
