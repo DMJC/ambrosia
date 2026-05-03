@@ -4,6 +4,7 @@
 #import "AmbrosiaXWaylandView.h"
 #import "AmbrosiaDecoration.h"
 #import "AmbrosiaInput.h"
+#import <AppKit/AppKit.h>
 
 #include <wayland-server-core.h>
 #include <wlr/util/log.h>
@@ -16,6 +17,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <math.h>
 
 /* Forward-declare private methods called from static C callbacks before the
  * @implementation block is visible to the compiler.                       */
@@ -49,6 +51,44 @@
  * Only one compositor instance exists per process.
  * -------------------------------------------------------------------------- */
 static AmbrosiaCompositor *gCompositor = nil;
+
+
+static NSString *ambrosia_hex_from_color(NSColor *c)
+{
+    NSColor *rgb = [c colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
+    if (!rgb) rgb = c;
+    CGFloat r=0,g=0,b=0,a=1;
+    [rgb getRed:&r green:&g blue:&b alpha:&a];
+    return [NSString stringWithFormat:@"#%02X%02X%02X%02X",
+            (int)lrint(r*255.0), (int)lrint(g*255.0), (int)lrint(b*255.0), (int)lrint(a*255.0)];
+}
+
+static NSDictionary *ambrosia_gnustep_decoration_palette(void)
+{
+    NSColor *wf = [NSColor windowFrameColor] ?: [NSColor colorWithCalibratedWhite:0.22 alpha:0.96];
+    NSColor *bg = [NSColor windowBackgroundColor] ?: [NSColor colorWithCalibratedWhite:0.86 alpha:1.0];
+    NSColor *sh = [NSColor controlShadowColor] ?: [NSColor colorWithCalibratedWhite:0.40 alpha:1.0];
+
+    NSColor *gradTop  = [wf highlightWithLevel:0.60] ?: wf;
+    NSColor *gradBot  = wf;
+    NSColor *gradTopI = [wf highlightWithLevel:0.80] ?: gradTop;
+    NSColor *gradBotI = [wf highlightWithLevel:0.40] ?: gradBot;
+    NSColor *btnA = [bg shadowWithLevel:0.10] ?: bg;
+    NSColor *btnI = [bg shadowWithLevel:0.25] ?: bg;
+
+    return @{
+        @"titlebarGradientTopColor":    ambrosia_hex_from_color(gradTop),
+        @"titlebarGradientBottomColor": ambrosia_hex_from_color(gradBot),
+        @"titlebarInactiveTopColor":    ambrosia_hex_from_color(gradTopI),
+        @"titlebarInactiveBottomColor": ambrosia_hex_from_color(gradBotI),
+        @"titlebarSeparatorColor":      ambrosia_hex_from_color(sh),
+        @"windowBorderColor":           ambrosia_hex_from_color(sh),
+        @"windowBodyColor":             ambrosia_hex_from_color(bg),
+        @"buttonActiveColor":           ambrosia_hex_from_color(btnA),
+        @"buttonInactiveColor":         ambrosia_hex_from_color(btnI),
+    };
+}
+
 
 /* --------------------------------------------------------------------------
  * C-level listener callbacks
@@ -1743,7 +1783,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     if (mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE) {
         if (!view.decoration)
             [view attachDecorationWithRenderer:_state->renderer
-                                        colors:_x11DecorationColors];
+                                        colors:(_x11DecorationColors ?: ambrosia_gnustep_decoration_palette())];
     } else {
         if (view.decoration)
             [view removeDecoration];
@@ -2316,8 +2356,8 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
         } else if ([view isKindOfClass:[AmbrosiaView class]]) {
             /* Propagate colour updates to any already-attached SSD decorations */
             AmbrosiaView *av = (AmbrosiaView *)view;
-            if (av.decoration && colors)
-                [av.decoration updateColorsFromDictionary:colors];
+            if (av.decoration)
+                [av.decoration updateColorsFromDictionary:(colors ?: ambrosia_gnustep_decoration_palette())];
         }
     }
 }
