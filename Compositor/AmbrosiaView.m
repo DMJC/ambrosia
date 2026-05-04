@@ -144,6 +144,16 @@ check_title:
     return NO;
 }
 
+
+static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
+{
+    const char *app_id = toplevel->app_id;
+    if (!app_id) return NO;
+    if (strstr(app_id, "org.gnustep.") != NULL) return YES;
+    if (strstr(app_id, "GNUstep") != NULL) return YES;
+    return NO;
+}
+
 /* --------------------------------------------------------------------------
  * AmbrosiaView
  * -------------------------------------------------------------------------- */
@@ -156,6 +166,7 @@ check_title:
     BOOL _isMenu;
     BOOL _isDockWindow;
     BOOL _isDesktopBackground;
+    BOOL _isGNUstepWindow;
 
     /* Pre-maximize restore position (surface origin, compositor space) */
     int  _restoreX;
@@ -177,6 +188,7 @@ check_title:
 @synthesize isMenu              = _isMenu;
 @synthesize isDockWindow        = _isDockWindow;
 @synthesize isDesktopBackground = _isDesktopBackground;
+@synthesize isGNUstepWindow     = _isGNUstepWindow;
 
 - (instancetype)initWithToplevel:(struct wlr_xdg_toplevel *)toplevel
                       compositor:(AmbrosiaCompositor *)compositor
@@ -204,6 +216,7 @@ check_title:
     _isDockWindow        = isDock(toplevel);
     _isDesktopBackground = isDesktopToplevel(toplevel);
     _isMenu              = isMenuToplevel(toplevel) || _isDockWindow || _isDesktopBackground;
+    _isGNUstepWindow     = isGNUstepWindow(toplevel);
 
     /* Register listeners */
     _state->surface_commit.notify = handle_surface_commit;
@@ -385,6 +398,7 @@ check_title:
     _isDockWindow        = isDock(_state->xdg_toplevel);
     _isDesktopBackground = isDesktopToplevel(_state->xdg_toplevel);
     _isMenu              = isMenuToplevel(_state->xdg_toplevel) || _isDockWindow || _isDesktopBackground;
+    _isGNUstepWindow     = isGNUstepWindow(_state->xdg_toplevel);
 
     wlr_log(WLR_INFO, "map: title='%s' app_id='%s' role=%s",
             _state->xdg_toplevel->title  ?: "(nil)",
@@ -427,14 +441,26 @@ check_title:
 
     /* ---- Normal windows: cascade below the menu bar ---- */
 
-    /* Attach server-side decoration if SSD mode was already agreed before map.
-     * The decoration must be attached before moveTo: so that the scene tree is
-     * offset correctly by (B, T) when decoration is present.                  */
-    if (_state->xdg_decoration &&
-        _state->xdg_decoration->current.mode ==
-            WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE &&
-        !_decoration) {
-        [self attachDecorationWithRenderer:_compositor.state->renderer colors:nil];
+    /* Attach server-side decoration before initial placement so moveTo:
+     * applies the (B, T) inset correctly.
+     *
+     * We decorate when either:
+     *   - xdg-decoration negotiated SERVER_SIDE, or
+     *   - no xdg-decoration object exists (e.g. client uses only
+     *     org_kde_kwin_server_decoration), where the compositor default is SSD.
+     */
+    BOOL shouldAttachSSD = NO;
+    if (_state->xdg_decoration) {
+        shouldAttachSSD =
+            (_state->xdg_decoration->current.mode ==
+             WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    } else {
+        shouldAttachSSD = (!_isDockWindow && !_isGNUstepWindow);
+    }
+
+    if (shouldAttachSSD && !_isDockWindow && !_isGNUstepWindow && !_decoration) {
+        [self attachDecorationWithRenderer:_compositor.state->renderer
+                                    colors:_compositor.x11DecorationColors];
     }
 
     static int cascade = 0;
@@ -673,6 +699,7 @@ check_title:
     _isDockWindow        = isDock(_state->xdg_toplevel);
     _isDesktopBackground = isDesktopToplevel(_state->xdg_toplevel);
     _isMenu = isMenuToplevel(_state->xdg_toplevel) || _isDockWindow || _isDesktopBackground;
+    _isGNUstepWindow     = isGNUstepWindow(_state->xdg_toplevel);
 
     if (!wasDock && _isDockWindow && _isMapped) {
         [self _positionDock];
@@ -685,6 +712,7 @@ check_title:
     _isDockWindow        = isDock(_state->xdg_toplevel);
     _isDesktopBackground = isDesktopToplevel(_state->xdg_toplevel);
     _isMenu              = isMenuToplevel(_state->xdg_toplevel) || _isDockWindow || _isDesktopBackground;
+    _isGNUstepWindow     = isGNUstepWindow(_state->xdg_toplevel);
 
     if (!wasDock && _isDockWindow && _isMapped) {
         [self _positionDock];
