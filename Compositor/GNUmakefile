@@ -20,6 +20,7 @@ ambrosia-compositor_OBJCFLAGS = \
 
 ambrosia-compositor_LDFLAGS = \
 	$(shell pkg-config --libs wlroots-0.20 wayland-server xkbcommon cairo xcb xcb-icccm xcb-ewmh) \
+	$(shell gnustep-config --gui-libs) \
 	-ldrm -ljpeg
 
 ambrosia-compositor_INCLUDE_DIRS = .

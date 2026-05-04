@@ -121,6 +121,7 @@ static NSRect MenuBarRectForStartupScreen(void)
  * when a non-GNUstep (X11 / foreign Wayland) application is in focus.
  * MenuBarController intercepts this in -performMenuItemWithIdentifier:.    */
 static NSString * const kForeignQuitIdentifier = @"__ambrosia_quit_foreign__";
+static NSString * const kForeignWindowIdentifierPrefix = @"__ambrosia_foreign_window__:";
 
 @implementation MenuBarController {
     NSPanel              *_menuPanel;
@@ -356,13 +357,20 @@ static NSString * const kForeignQuitIdentifier = @"__ambrosia_quit_foreign__";
             /* A GNUstep app registered in the meantime — leave it alone. */
             if (self->_activeClientPID == pid) return;
 
-            [self _activateForeignAppWithPID:pid name:name];
+            [self _activateForeignAppWithPID:pid name:name windows:info[@"windows"]];
         });
     });
 }
 
 /** Resolve and display a synthetic menu for a non-GNUstep focused window. */
 - (void)_activateForeignAppWithPID:(int32_t)pid name:(NSString *)name
+{
+    [self _activateForeignAppWithPID:pid name:name windows:nil];
+}
+
+- (void)_activateForeignAppWithPID:(int32_t)pid
+                              name:(NSString *)name
+                           windows:(NSArray<NSDictionary *> *)windows
 {
     /* If no name arrived from the compositor, fall back to /proc/pid/comm */
     if (!name.length) {
@@ -381,16 +389,34 @@ static NSString * const kForeignQuitIdentifier = @"__ambrosia_quit_foreign__";
     _activeForeignPID  = pid;
     _activeForeignName = [name copy];
 
-    /* Synthetic menu: bold app-name button → "Quit <Name>" dropdown */
+    /* Synthetic menu: app menu plus a separate top-level Windows menu. */
     NSString *quitTitle = [NSString stringWithFormat:@"Quit %@", name];
-    NSArray *syntheticItems = @[@{
-        kMenuItemTitle:    name,
-        kMenuItemChildren: @[@{
-            kMenuItemTitle:      quitTitle,
-            kMenuItemIdentifier: kForeignQuitIdentifier,
-            kMenuItemKeyEquiv:   @"q",
-        }],
+    NSMutableArray *appChildren = [NSMutableArray arrayWithObject:@{
+        kMenuItemTitle:      quitTitle,
+        kMenuItemIdentifier: kForeignQuitIdentifier,
+        kMenuItemKeyEquiv:   @"q",
     }];
+    NSMutableArray *syntheticItems = [NSMutableArray arrayWithObject:@{
+        kMenuItemTitle:    name,
+        kMenuItemChildren: appChildren,
+    }];
+
+    if (windows.count > 0) {
+        NSMutableArray *windowItems = [NSMutableArray array];
+        for (NSDictionary *w in windows) {
+            NSString *title = [w[@"title"] isKindOfClass:[NSString class]] ? w[@"title"] : @"Window";
+            NSInteger idx = [w[@"index"] integerValue];
+            [windowItems addObject:@{
+                kMenuItemTitle: title,
+                kMenuItemIdentifier: [NSString stringWithFormat:@"%@%d:%ld",
+                                      kForeignWindowIdentifierPrefix, pid, (long)idx],
+            }];
+        }
+        [syntheticItems addObject:@{
+            kMenuItemTitle: @"Windows",
+            kMenuItemChildren: windowItems,
+        }];
+    }
 
     [self _updateActiveApp:name menuItems:syntheticItems pid:0];
 }
@@ -526,6 +552,20 @@ static NSString * const kForeignQuitIdentifier = @"__ambrosia_quit_foreign__";
     /* Synthetic quit for a non-GNUstep (foreign) focused window. */
     if ([identifier isEqualToString:kForeignQuitIdentifier]) {
         [self _quitForeignApp];
+        return;
+    }
+    if ([identifier hasPrefix:kForeignWindowIdentifierPrefix]) {
+        NSString *rest = [identifier substringFromIndex:kForeignWindowIdentifierPrefix.length];
+        NSArray<NSString *> *parts = [rest componentsSeparatedByString:@":"];
+        if (parts.count == 2) {
+            int32_t pid = (int32_t)[parts[0] intValue];
+            NSInteger idx = [parts[1] integerValue];
+            [[NSDistributedNotificationCenter defaultCenter]
+                postNotificationName:@"AmbrosiaActivateWindow"
+                              object:nil
+                            userInfo:@{ @"pid": @(pid), @"index": @(idx) }
+                  deliverImmediately:YES];
+        }
         return;
     }
 
