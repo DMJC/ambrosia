@@ -50,6 +50,7 @@ struct ambrosia_view_state {
 @property (nonatomic, readonly) BOOL isMenu;              /**< YES → skip decorations (menu/dock/desktop) */
 @property (nonatomic, readonly) BOOL isDockWindow;        /**< YES → position at bottom-centre of output */
 @property (nonatomic, readonly) BOOL isDesktopBackground; /**< YES → pin to output origin, behind all windows */
+@property (nonatomic, readonly) BOOL isGNUstepWindow;     /**< YES → GNUstep app; use client/self decorations */
 
 - (instancetype)initWithToplevel:(struct wlr_xdg_toplevel *)toplevel
                       compositor:(AmbrosiaCompositor *)compositor;
