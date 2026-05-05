@@ -469,7 +469,8 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
         shouldAttachSSD = (!_isDockWindow && !_isGNUstepWindow);
     }
 
-    if (shouldAttachSSD && !_isDockWindow && !_isGNUstepWindow && !_decoration) {
+    if (shouldAttachSSD && _compositor.serverSideDecorations
+            && !_isDockWindow && !_isGNUstepWindow && !_decoration) {
         [self attachDecorationWithRenderer:_compositor.state->renderer
                                     colors:_compositor.x11DecorationColors];
     } else if (!shouldAttachSSD && _decoration) {

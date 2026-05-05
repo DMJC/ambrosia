@@ -47,6 +47,7 @@
 - (void)_handleCompPrefsNotification:(NSNotification *)note;
 - (void)_applyCompPrefsUpdate;
 - (void)_applyX11DecorationsEnabled:(BOOL)enabled colors:(NSDictionary *)colors;
+- (void)_applyServerSideDecorationsEnabled:(BOOL)enabled;
 @end
 
 /* --------------------------------------------------------------------------
@@ -518,8 +519,9 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     NSDictionary *_pendingCompPrefs;
     NSLock       *_compLock;
 
-    /* Current X11 decoration state (applied on compositor thread) */
+    /* Current decoration state (applied on compositor thread) */
     BOOL          _x11Decorations;
+    BOOL          _serverSideDecorations;
     NSDictionary *_x11DecorationColors;
 
     /* Dock position preference, cached at launch so AmbrosiaView can
@@ -534,6 +536,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 @synthesize outputs             = _outputs;
 @synthesize layerSurfaces       = _layerSurfaces;
 @synthesize x11Decorations      = _x11Decorations;
+@synthesize serverSideDecorations = _serverSideDecorations;
 @synthesize x11DecorationColors = _x11DecorationColors;
 @synthesize dockPosition        = _dockPosition;
 
@@ -934,12 +937,17 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
         }
         NSString *plistPath = [prefsDir
             stringByAppendingPathComponent:@"org.gnustep.AmbrosiaCompositor.plist"];
+        _serverSideDecorations = YES; /* default: SSD enabled for Wayland windows */
         NSDictionary *p = [NSDictionary dictionaryWithContentsOfFile:plistPath];
         if (p) {
-            _x11Decorations     = [p[@"x11Decorations"] boolValue];
+            _x11Decorations    = [p[@"x11Decorations"] boolValue];
             _x11DecorationColors = p;
-            wlr_log(WLR_INFO, "Compositor prefs loaded: x11Decorations=%s",
-                    _x11Decorations ? "YES" : "NO");
+            if (p[@"serverSideDecorations"] != nil)
+                _serverSideDecorations = [p[@"serverSideDecorations"] boolValue];
+            wlr_log(WLR_INFO,
+                    "Compositor prefs loaded: x11Decorations=%s serverSideDecorations=%s",
+                    _x11Decorations ? "YES" : "NO",
+                    _serverSideDecorations ? "YES" : "NO");
         }
     }
 
@@ -1852,7 +1860,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     if (!view || !view.isMapped) return;
 
     if (mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE) {
-        if (!view.isDockWindow && !view.decoration)
+        if (_serverSideDecorations && !view.isDockWindow && !view.decoration)
             [view attachDecorationWithRenderer:_state->renderer
                                         colors:(_x11DecorationColors ?: ambrosia_gnustep_decoration_palette())];
     } else {
@@ -1906,7 +1914,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     if (view.state->xdg_decoration) return;
 
     if (mode == WLR_SERVER_DECORATION_MANAGER_MODE_SERVER) {
-        if (!view.isDockWindow && !view.isGNUstepWindow && !view.decoration)
+        if (_serverSideDecorations && !view.isDockWindow && !view.isGNUstepWindow && !view.decoration)
             [view attachDecorationWithRenderer:_state->renderer
                                         colors:(_x11DecorationColors ?: ambrosia_gnustep_decoration_palette())];
     } else {
@@ -2495,9 +2503,14 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     _pendingCompPrefs = nil;
     [_compLock unlock];
 
-    BOOL enabled = [prefs[@"x11Decorations"] boolValue];
-    wlr_log(WLR_INFO, "compositor prefs: x11Decorations=%s", enabled ? "YES" : "NO");
-    [self _applyX11DecorationsEnabled:enabled colors:prefs];
+    BOOL x11Enabled = [prefs[@"x11Decorations"] boolValue];
+    BOOL ssdEnabled = (prefs[@"serverSideDecorations"] != nil)
+                      ? [prefs[@"serverSideDecorations"] boolValue]
+                      : YES;
+    wlr_log(WLR_INFO, "compositor prefs: x11Decorations=%s serverSideDecorations=%s",
+            x11Enabled ? "YES" : "NO", ssdEnabled ? "YES" : "NO");
+    [self _applyX11DecorationsEnabled:x11Enabled colors:prefs];
+    [self _applyServerSideDecorationsEnabled:ssdEnabled];
 }
 
 - (void)_applyX11DecorationsEnabled:(BOOL)enabled colors:(NSDictionary *)colors
@@ -2521,6 +2534,46 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
             AmbrosiaView *av = (AmbrosiaView *)view;
             if (av.decoration)
                 [av.decoration updateColorsFromDictionary:(colors ?: ambrosia_gnustep_decoration_palette())];
+        }
+    }
+}
+
+/**
+ * Apply a change to the serverSideDecorations preference for all currently
+ * mapped Wayland (xdg-shell) windows.
+ *
+ * When disabled: remove SSD frames from every AmbrosiaView that has one.
+ * When enabled:  re-attach SSD frames to views whose negotiated decoration
+ *                mode is SERVER (xdg-decoration or org_kde_kwin), unless
+ *                they are a dock, GNUstep, or already-decorated window.
+ */
+- (void)_applyServerSideDecorationsEnabled:(BOOL)enabled
+{
+    _serverSideDecorations = enabled;
+    for (id<AmbrosiaWindowView> view in _views) {
+        if (![view isKindOfClass:[AmbrosiaView class]]) continue;
+        AmbrosiaView *av = (AmbrosiaView *)view;
+        if (!av.isMapped) continue;
+
+        if (!enabled) {
+            if (av.decoration) [av removeDecoration];
+        } else {
+            if (av.decoration || av.isDockWindow || av.isGNUstepWindow) continue;
+            /* Re-attach only if the negotiated mode calls for SSD */
+            BOOL wantsSSD = NO;
+            if (av.state->xdg_decoration) {
+                wantsSSD = (av.state->xdg_decoration->current.mode ==
+                            WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+            } else if (av.state->server_decoration) {
+                wantsSSD = (av.state->server_decoration->mode ==
+                            WLR_SERVER_DECORATION_MANAGER_MODE_SERVER);
+            } else {
+                wantsSSD = YES; /* no protocol → SSD default */
+            }
+            if (wantsSSD)
+                [av attachDecorationWithRenderer:_state->renderer
+                                          colors:(_x11DecorationColors
+                                                  ?: ambrosia_gnustep_decoration_palette())];
         }
     }
 }

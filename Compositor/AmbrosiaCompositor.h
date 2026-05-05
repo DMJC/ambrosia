@@ -170,6 +170,8 @@ struct ambrosia_compositor_state {
 
 /** Whether server-side decorations should be drawn on XWayland managed windows. */
 @property (readonly) BOOL           x11Decorations;
+/** Whether server-side decorations should be drawn on Wayland (xdg-shell) windows. */
+@property (readonly) BOOL           serverSideDecorations;
 /** Colour prefs for X11 decorations (hex strings keyed to titlebarActiveColor etc.) */
 @property (readonly, nullable) NSDictionary *x11DecorationColors;
 /** Configured dock position ("bottom", "left", or "right"). Read at launch time. */
