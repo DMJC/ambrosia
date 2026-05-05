@@ -95,6 +95,7 @@ struct ambrosia_compositor_state {
     struct wl_listener new_xdg_toplevel;
     struct wl_listener new_xdg_popup;
     struct wl_listener new_toplevel_decoration;
+    struct wl_listener new_server_decoration;
     struct wl_listener new_layer_surface;
     struct wl_listener cursor_motion;
     struct wl_listener cursor_motion_absolute;

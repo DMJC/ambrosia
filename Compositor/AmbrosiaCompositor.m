@@ -35,6 +35,9 @@
 /** xdg-decoration negotiation */
 - (void)_applyDecorationMode:(struct wlr_xdg_toplevel_decoration_v1 *)deco
                      forView:(AmbrosiaView *)view;
+/** org_kde_kwin_server_decoration per-surface mode change */
+- (void)handleNewServerDecoration:(struct wlr_server_decoration *)decoration;
+- (void)_applyServerDecorationMode:(uint32_t)mode forView:(AmbrosiaView *)view;
 /** Pointer constraint management */
 - (void)handleNewConstraint:(struct wlr_pointer_constraint_v1 *)constraint;
 - (void)activateConstraintForSurface:(struct wlr_surface *)surface;
@@ -399,6 +402,47 @@ static void handle_deco_destroy(struct wl_listener *listener, void *data)
 }
 
 /* --------------------------------------------------------------------------
+ * org_kde_kwin_server_decoration per-surface state and C callbacks
+ *
+ * One ambrosia_server_decoration is allocated per wlr_server_decoration object.
+ * It tracks the mode (CLIENT / SERVER / NONE) the client requested, so that
+ * handleMap can decide whether to attach SSD without relying on app_id patterns.
+ * -------------------------------------------------------------------------- */
+
+struct ambrosia_server_decoration {
+    struct wlr_server_decoration *wlr_deco;
+    struct wl_listener            mode;
+    struct wl_listener            destroy;
+    void                         *objc_view; /* __bridge AmbrosiaView * */
+};
+
+static void handle_server_deco_mode(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_server_decoration *d = wl_container_of(listener, d, mode);
+    AmbrosiaView *view = (__bridge AmbrosiaView *)d->objc_view;
+    [gCompositor _applyServerDecorationMode:d->wlr_deco->mode forView:view];
+}
+
+static void handle_server_deco_destroy(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_server_decoration *d = wl_container_of(listener, d, destroy);
+    AmbrosiaView *view = (__bridge AmbrosiaView *)d->objc_view;
+    if (view && view.state)
+        view.state->server_decoration = NULL;
+    wl_list_remove(&d->mode.link);
+    wl_list_remove(&d->destroy.link);
+    free(d);
+}
+
+static void handle_new_server_decoration(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_compositor_state *s =
+        wl_container_of(listener, s, new_server_decoration);
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)s->objc_compositor;
+    [c handleNewServerDecoration:(struct wlr_server_decoration *)data];
+}
+
+/* --------------------------------------------------------------------------
  * Pointer constraint C-level callbacks
  * -------------------------------------------------------------------------- */
 
@@ -716,6 +760,12 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     _state->new_toplevel_decoration.notify = handle_new_toplevel_decoration;
     wl_signal_add(&_state->decoration_manager->events.new_toplevel_decoration,
                   &_state->new_toplevel_decoration);
+
+    if (_state->server_decoration_manager) {
+        _state->new_server_decoration.notify = handle_new_server_decoration;
+        wl_signal_add(&_state->server_decoration_manager->events.new_decoration,
+                      &_state->new_server_decoration);
+    }
 
     _state->new_layer_surface.notify = handle_new_layer_surface;
     wl_signal_add(&_state->layer_shell->events.new_surface, &_state->new_layer_surface);
@@ -1776,11 +1826,10 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     enum wlr_xdg_toplevel_decoration_v1_mode mode;
 
     /* Decoration policy by window role */
-    if (view && view.isDockWindow) {
-        /* Dock must be borderless: ask client to suppress its own CSD by
-         * selecting SERVER mode, but skip compositor frame attachment below. */
-        mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
-    } else if (view && (view.isMenu || view.isDesktopBackground || view.isGNUstepWindow)) {
+    if (view && (view.isDockWindow || view.isMenu || view.isDesktopBackground || view.isGNUstepWindow)) {
+        /* Dock, menus, desktop background, and GNUstep windows all manage their
+         * own appearance (borderless panels or app-drawn chrome).  Tell the client
+         * CLIENT_SIDE so it knows the compositor will not draw a frame.          */
         mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
     } else if (deco->requested_mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE) {
         mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
@@ -1804,6 +1853,60 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
     if (mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE) {
         if (!view.isDockWindow && !view.decoration)
+            [view attachDecorationWithRenderer:_state->renderer
+                                        colors:(_x11DecorationColors ?: ambrosia_gnustep_decoration_palette())];
+    } else {
+        if (view.decoration)
+            [view removeDecoration];
+    }
+}
+
+/**
+ * A client has bound org_kde_kwin_server_decoration for one of its surfaces.
+ * Store the reference on the matching view and wire up listeners for mode
+ * changes and destruction.  The initial decoration->mode is the manager's
+ * default (SERVER) and does not yet reflect the client's intent, so we do
+ * NOT apply it here; handleMap uses the mode that is current at map time,
+ * and the mode signal handles any changes that arrive post-map.
+ */
+- (void)handleNewServerDecoration:(struct wlr_server_decoration *)decoration
+{
+    AmbrosiaView *view = nil;
+    for (id<AmbrosiaWindowView> v in _views) {
+        if (![v isKindOfClass:[AmbrosiaView class]]) continue;
+        AmbrosiaView *av = (AmbrosiaView *)v;
+        if (av.state->xdg_toplevel->base->surface == decoration->surface) {
+            view = av;
+            break;
+        }
+    }
+    if (view) view.state->server_decoration = decoration;
+
+    struct ambrosia_server_decoration *d = calloc(1, sizeof(*d));
+    d->wlr_deco  = decoration;
+    d->objc_view = (__bridge void *)view;
+
+    d->mode.notify = handle_server_deco_mode;
+    wl_signal_add(&decoration->events.mode, &d->mode);
+
+    d->destroy.notify = handle_server_deco_destroy;
+    wl_signal_add(&decoration->events.destroy, &d->destroy);
+}
+
+/**
+ * Apply the org_kde_kwin_server_decoration mode for a view that is already
+ * mapped.  This is called when the client calls set_mode() post-map.
+ *
+ * xdg-decoration takes precedence: if the toplevel already has an
+ * xdg_decoration object we ignore the KDE protocol mode change entirely.
+ */
+- (void)_applyServerDecorationMode:(uint32_t)mode forView:(AmbrosiaView *)view
+{
+    if (!view || !view.isMapped) return;
+    if (view.state->xdg_decoration) return;
+
+    if (mode == WLR_SERVER_DECORATION_MANAGER_MODE_SERVER) {
+        if (!view.isDockWindow && !view.isGNUstepWindow && !view.decoration)
             [view attachDecorationWithRenderer:_state->renderer
                                         colors:(_x11DecorationColors ?: ambrosia_gnustep_decoration_palette())];
     } else {

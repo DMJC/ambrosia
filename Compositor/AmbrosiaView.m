@@ -5,6 +5,7 @@
 #include <wlr/util/log.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_server_decoration.h>
 #include <string.h>
 
 /* --------------------------------------------------------------------------
@@ -451,16 +452,32 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
      */
     BOOL shouldAttachSSD = NO;
     if (_state->xdg_decoration) {
+        /* xdg-decoration-unstable-v1: use the mode that was actually negotiated */
         shouldAttachSSD =
             (_state->xdg_decoration->current.mode ==
              WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    } else if (_state->server_decoration) {
+        /* org_kde_kwin_server_decoration: respect the mode the client set.
+         * CLIENT or NONE means the client handles its own appearance;
+         * SERVER (or the default if the client never called set_mode) → SSD. */
+        shouldAttachSSD =
+            (_state->server_decoration->mode ==
+             WLR_SERVER_DECORATION_MANAGER_MODE_SERVER);
     } else {
+        /* No decoration protocol at all — fall back to app_id-based detection
+         * for the rare case where neither protocol is used.                   */
         shouldAttachSSD = (!_isDockWindow && !_isGNUstepWindow);
     }
 
     if (shouldAttachSSD && !_isDockWindow && !_isGNUstepWindow && !_decoration) {
         [self attachDecorationWithRenderer:_compositor.state->renderer
                                     colors:_compositor.x11DecorationColors];
+    } else if (!shouldAttachSSD && _decoration) {
+        /* CSD was negotiated (or window role forbids SSD): remove any decoration
+         * left over from a previous map/SSD cycle.  _applyDecorationMode: only
+         * removes the decoration for mapped views; this handles the case where
+         * the mode changed while the view was unmapped.                          */
+        [self removeDecoration];
     }
 
     static int cascade = 0;
