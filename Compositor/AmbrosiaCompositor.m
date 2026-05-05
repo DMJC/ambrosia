@@ -631,7 +631,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     /* Wayland globals */
     _state->compositor = wlr_compositor_create(_state->display, 5, _state->renderer);
     wlr_subcompositor_create(_state->display);
-    wlr_data_device_manager_create(_state->display);
+    _state->data_device_manager = wlr_data_device_manager_create(_state->display);
     wlr_log(WLR_DEBUG, "Wayland globals registered");
 
     /* Output layout + scene */
