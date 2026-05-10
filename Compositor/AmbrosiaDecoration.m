@@ -186,7 +186,7 @@ static void render_titlebar(struct ambrosia_shm_buf *sb,
     if (title && title[0] != '\0') {
         cairo_text_extents_t ext;
         cairo_select_font_face(cr, (fontName && fontName[0]) ? fontName : "Sans",
-            CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+            CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
         cairo_set_font_size(cr, fontSize > 1.0f ? fontSize : 12.0f);
         cairo_text_extents(cr, title, &ext);
         double tx = ((double)W - ext.width) * 0.5 - ext.x_bearing;

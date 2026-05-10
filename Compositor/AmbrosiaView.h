@@ -5,6 +5,7 @@
 #import "AmbrosiaWindowView.h"
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_server_decoration.h>
 
 @class AmbrosiaCompositor;
 @class AmbrosiaDecoration;
@@ -19,6 +20,13 @@ struct ambrosia_view_state {
      * Used by handleMap to know whether SSD mode was already agreed.
      */
     struct wlr_xdg_toplevel_decoration_v1 *xdg_decoration;
+
+    /**
+     * Back-reference to the org_kde_kwin_server_decoration object, set when
+     * the client binds that protocol for this surface.  NULL when absent.
+     * Consulted by handleMap when xdg_decoration is not present.
+     */
+    struct wlr_server_decoration *server_decoration;
 
     struct wl_listener surface_commit; /* fires initial configure (wlroots 0.18+) */
     struct wl_listener map;
