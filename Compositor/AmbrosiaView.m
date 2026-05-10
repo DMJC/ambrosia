@@ -7,6 +7,7 @@
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_server_decoration.h>
 #include <string.h>
+#include <stdlib.h>
 
 /* --------------------------------------------------------------------------
  * C callbacks
@@ -416,7 +417,33 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
 
     /* ---- Dock ---- */
     if (_isDockWindow) {
-        [self _positionDock];
+        struct wlr_output *output =
+            wlr_output_layout_get_center_output(_compositor.state->output_layout);
+        struct wlr_box ob = {0};
+        if (output) wlr_output_layout_get_box(_compositor.state->output_layout, output, &ob);
+        struct wlr_box geo = [self geometry];
+        int dockW = geo.width  > 0 ? geo.width  : ob.width;
+        int dockH = geo.height > 0 ? geo.height : 64;
+        const char *dockPosEnv = getenv("AMBROSIA_DOCK_POSITION");
+        const char *dockXEnv   = getenv("AMBROSIA_DOCK_X");
+        const char *dockYEnv   = getenv("AMBROSIA_DOCK_Y");
+
+        int anchorX = dockXEnv ? (int)strtol(dockXEnv, NULL, 10) : (ob.width / 2);
+        int anchorY = dockYEnv ? (int)strtol(dockYEnv, NULL, 10) : 0;
+        NSString *dockPos = dockPosEnv
+            ? [NSString stringWithUTF8String:dockPosEnv]
+            : @"bottom";
+
+        int dockX = ob.x + anchorX - dockW / 2;
+        int dockY = ob.y + anchorY;
+        if ([dockPos isEqualToString:@"left"]) {
+            dockX = ob.x + anchorX;
+            dockY = ob.y + anchorY - dockH / 2;
+        } else if ([dockPos isEqualToString:@"right"]) {
+            dockX = ob.x + anchorX - dockW;
+            dockY = ob.y + anchorY - dockH / 2;
+        }
+        [self moveTo:dockX y:dockY];
         /* Dock does not steal keyboard focus on map */
         return;
     }

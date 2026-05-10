@@ -522,6 +522,13 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
             @"-AmbrosiaDockY", [NSString stringWithFormat:@"%.0f", dockY],
         ]];
 
+    /* Expose authoritative dock placement to the compositor process itself.
+     * AmbrosiaView uses these values when mapping the dock to avoid forcing
+     * a hard-coded bottom-center placement that ignores configured X/Y. */
+    setenv("AMBROSIA_DOCK_POSITION", [dockPosition UTF8String], 1);
+    setenv("AMBROSIA_DOCK_X", [[NSString stringWithFormat:@"%.0f", dockX] UTF8String], 1);
+    setenv("AMBROSIA_DOCK_Y", [[NSString stringWithFormat:@"%.0f", dockY] UTF8String], 1);
+
     NSString *dockExec = findExecutable(candidatePaths(@"AmbrosiaDock.app",
                                                        @"AmbrosiaDock"));
     if (!dockExec) dockExec = @"AmbrosiaDock"; /* fallback: hope it is in PATH */
