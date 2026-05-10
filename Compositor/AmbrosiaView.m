@@ -272,13 +272,8 @@ check_title:
 {
     _x = x;
     _y = y;
-    /* When a server-side decoration is active, _x/_y represent the FRAME
-     * top-left.  The scene tree (= surface) must sit inset by (B, T) so that
-     * the decoration sub-tree, which is positioned at (-B, -T) relative to the
-     * scene tree, lines up with the frame origin.                             */
-    int sx = x + (_decoration ? AMBROSIA_BORDER_WIDTH   : 0);
-    int sy = y + (_decoration ? AMBROSIA_TITLEBAR_HEIGHT : 0);
-    wlr_scene_node_set_position(&_state->scene_tree->node, sx, sy);
+    wlr_scene_node_set_position(&_state->scene_tree->node, x, y);
+    [_compositor updateFractionalScaleForSurface:[self surface] x:x y:y];
 }
 
 - (void)updateTitle
