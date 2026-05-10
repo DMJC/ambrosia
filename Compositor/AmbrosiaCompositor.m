@@ -4,6 +4,7 @@
 #import "AmbrosiaXWaylandView.h"
 #import "AmbrosiaDecoration.h"
 #import "AmbrosiaInput.h"
+#import <AppKit/AppKit.h>
 
 #include <wayland-server-core.h>
 #include <wlr/util/log.h>
@@ -16,6 +17,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <math.h>
 
 /* Forward-declare private methods called from static C callbacks before the
  * @implementation block is visible to the compiler.                       */
@@ -30,6 +32,12 @@
 - (void)_applySessionPrefsUpdate;
 /** Called from handle_desktop_pipe on the wl_event_loop thread. */
 - (void)_applyDesktopPrefsUpdate;
+/** xdg-decoration negotiation */
+- (void)_applyDecorationMode:(struct wlr_xdg_toplevel_decoration_v1 *)deco
+                     forView:(AmbrosiaView *)view;
+/** org_kde_kwin_server_decoration per-surface mode change */
+- (void)handleNewServerDecoration:(struct wlr_server_decoration *)decoration;
+- (void)_applyServerDecorationMode:(uint32_t)mode forView:(AmbrosiaView *)view;
 /** Pointer constraint management */
 - (void)handleNewConstraint:(struct wlr_pointer_constraint_v1 *)constraint;
 - (void)activateConstraintForSurface:(struct wlr_surface *)surface;
@@ -39,6 +47,7 @@
 - (void)_handleCompPrefsNotification:(NSNotification *)note;
 - (void)_applyCompPrefsUpdate;
 - (void)_applyX11DecorationsEnabled:(BOOL)enabled colors:(NSDictionary *)colors;
+- (void)_applyServerSideDecorationsEnabled:(BOOL)enabled;
 @end
 
 /* --------------------------------------------------------------------------
@@ -46,6 +55,44 @@
  * Only one compositor instance exists per process.
  * -------------------------------------------------------------------------- */
 static AmbrosiaCompositor *gCompositor = nil;
+
+
+static NSString *ambrosia_hex_from_color(NSColor *c)
+{
+    NSColor *rgb = [c colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
+    if (!rgb) rgb = c;
+    CGFloat r=0,g=0,b=0,a=1;
+    [rgb getRed:&r green:&g blue:&b alpha:&a];
+    return [NSString stringWithFormat:@"#%02X%02X%02X%02X",
+            (int)lrint(r*255.0), (int)lrint(g*255.0), (int)lrint(b*255.0), (int)lrint(a*255.0)];
+}
+
+static NSDictionary *ambrosia_gnustep_decoration_palette(void)
+{
+    NSColor *wf = [NSColor windowFrameColor] ?: [NSColor colorWithCalibratedWhite:0.22 alpha:0.96];
+    NSColor *bg = [NSColor windowBackgroundColor] ?: [NSColor colorWithCalibratedWhite:0.86 alpha:1.0];
+    NSColor *sh = [NSColor controlShadowColor] ?: [NSColor colorWithCalibratedWhite:0.40 alpha:1.0];
+
+    NSColor *gradTop  = [wf highlightWithLevel:0.60] ?: wf;
+    NSColor *gradBot  = wf;
+    NSColor *gradTopI = [wf highlightWithLevel:0.80] ?: gradTop;
+    NSColor *gradBotI = [wf highlightWithLevel:0.40] ?: gradBot;
+    NSColor *btnA = [bg shadowWithLevel:0.10] ?: bg;
+    NSColor *btnI = [bg shadowWithLevel:0.25] ?: bg;
+
+    return @{
+        @"titlebarGradientTopColor":    ambrosia_hex_from_color(gradTop),
+        @"titlebarGradientBottomColor": ambrosia_hex_from_color(gradBot),
+        @"titlebarInactiveTopColor":    ambrosia_hex_from_color(gradTopI),
+        @"titlebarInactiveBottomColor": ambrosia_hex_from_color(gradBotI),
+        @"titlebarSeparatorColor":      ambrosia_hex_from_color(sh),
+        @"windowBorderColor":           ambrosia_hex_from_color(sh),
+        @"windowBodyColor":             ambrosia_hex_from_color(bg),
+        @"buttonActiveColor":           ambrosia_hex_from_color(btnA),
+        @"buttonInactiveColor":         ambrosia_hex_from_color(btnI),
+    };
+}
+
 
 /* --------------------------------------------------------------------------
  * C-level listener callbacks
@@ -322,6 +369,81 @@ static void handle_layer_surface_destroy(struct wl_listener *listener, void *dat
 }
 
 /* --------------------------------------------------------------------------
+ * xdg-decoration per-toplevel state and C callbacks
+ *
+ * One ambrosia_xdg_decoration is allocated per xdg_toplevel_decoration_v1
+ * object.  It holds the request_mode and destroy listeners so the compositor
+ * can re-negotiate the decoration mode when the client changes its preference.
+ * -------------------------------------------------------------------------- */
+
+struct ambrosia_xdg_decoration {
+    struct wlr_xdg_toplevel_decoration_v1 *wlr_deco;
+    struct wl_listener                     request_mode;
+    struct wl_listener                     destroy;
+    void                                  *objc_view; /* __bridge AmbrosiaView * */
+};
+
+static void handle_deco_request_mode(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_xdg_decoration *d = wl_container_of(listener, d, request_mode);
+    AmbrosiaView *view = (__bridge AmbrosiaView *)d->objc_view;
+    [gCompositor _applyDecorationMode:d->wlr_deco forView:view];
+}
+
+static void handle_deco_destroy(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_xdg_decoration *d = wl_container_of(listener, d, destroy);
+    /* Clear the back-reference on the view state so handleMap can't use it */
+    AmbrosiaView *view = (__bridge AmbrosiaView *)d->objc_view;
+    if (view && view.state)
+        view.state->xdg_decoration = NULL;
+    wl_list_remove(&d->request_mode.link);
+    wl_list_remove(&d->destroy.link);
+    free(d);
+}
+
+/* --------------------------------------------------------------------------
+ * org_kde_kwin_server_decoration per-surface state and C callbacks
+ *
+ * One ambrosia_server_decoration is allocated per wlr_server_decoration object.
+ * It tracks the mode (CLIENT / SERVER / NONE) the client requested, so that
+ * handleMap can decide whether to attach SSD without relying on app_id patterns.
+ * -------------------------------------------------------------------------- */
+
+struct ambrosia_server_decoration {
+    struct wlr_server_decoration *wlr_deco;
+    struct wl_listener            mode;
+    struct wl_listener            destroy;
+    void                         *objc_view; /* __bridge AmbrosiaView * */
+};
+
+static void handle_server_deco_mode(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_server_decoration *d = wl_container_of(listener, d, mode);
+    AmbrosiaView *view = (__bridge AmbrosiaView *)d->objc_view;
+    [gCompositor _applyServerDecorationMode:d->wlr_deco->mode forView:view];
+}
+
+static void handle_server_deco_destroy(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_server_decoration *d = wl_container_of(listener, d, destroy);
+    AmbrosiaView *view = (__bridge AmbrosiaView *)d->objc_view;
+    if (view && view.state)
+        view.state->server_decoration = NULL;
+    wl_list_remove(&d->mode.link);
+    wl_list_remove(&d->destroy.link);
+    free(d);
+}
+
+static void handle_new_server_decoration(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_compositor_state *s =
+        wl_container_of(listener, s, new_server_decoration);
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)s->objc_compositor;
+    [c handleNewServerDecoration:(struct wlr_server_decoration *)data];
+}
+
+/* --------------------------------------------------------------------------
  * Pointer constraint C-level callbacks
  * -------------------------------------------------------------------------- */
 
@@ -397,9 +519,14 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     NSDictionary *_pendingCompPrefs;
     NSLock       *_compLock;
 
-    /* Current X11 decoration state (applied on compositor thread) */
+    /* Current decoration state (applied on compositor thread) */
     BOOL          _x11Decorations;
+    BOOL          _serverSideDecorations;
     NSDictionary *_x11DecorationColors;
+
+    /* Dock position preference, cached at launch so AmbrosiaView can
+     * position the dock correctly when it maps ("bottom", "left", "right"). */
+    NSString     *_dockPosition;
 }
 
 @synthesize state               = _state;
@@ -409,7 +536,9 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 @synthesize outputs             = _outputs;
 @synthesize layerSurfaces       = _layerSurfaces;
 @synthesize x11Decorations      = _x11Decorations;
+@synthesize serverSideDecorations = _serverSideDecorations;
 @synthesize x11DecorationColors = _x11DecorationColors;
+@synthesize dockPosition        = _dockPosition;
 
 - (instancetype)init
 {
@@ -502,7 +631,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     /* Wayland globals */
     _state->compositor = wlr_compositor_create(_state->display, 5, _state->renderer);
     wlr_subcompositor_create(_state->display);
-    wlr_data_device_manager_create(_state->display);
+    _state->data_device_manager = wlr_data_device_manager_create(_state->display);
     wlr_log(WLR_DEBUG, "Wayland globals registered");
 
     /* Output layout + scene */
@@ -539,9 +668,19 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     _state->xdg_shell = wlr_xdg_shell_create(_state->display, 3);
     wlr_log(WLR_DEBUG, "XDG shell created");
 
-    /* Server-side decoration manager */
+    /* Server-side decoration managers:
+     * - zxdg_decoration_manager_v1 (xdg-decoration-unstable-v1)
+     * - org_kde_kwin_server_decoration_manager
+     *
+     * Some GTK3 clients only bind the KDE protocol, so we advertise both. */
     _state->decoration_manager = wlr_xdg_decoration_manager_v1_create(_state->display);
-    wlr_log(WLR_DEBUG, "Decoration manager created");
+    _state->server_decoration_manager = wlr_server_decoration_manager_create(_state->display);
+    if (_state->server_decoration_manager) {
+        wlr_server_decoration_manager_set_default_mode(
+            _state->server_decoration_manager,
+            WLR_SERVER_DECORATION_MANAGER_MODE_SERVER);
+    }
+    wlr_log(WLR_DEBUG, "Decoration managers created (xdg + kde)");
 
     /* Layer shell (wlr-layer-shell-v1) — used by GNUstep for the menu bar,
      * desktop background, and screen saver windows.                        */
@@ -558,6 +697,12 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
      * (e.g. video players, game engines) for efficient scaling.           */
     _state->viewporter = wlr_viewporter_create(_state->display);
     wlr_log(WLR_DEBUG, "Viewporter created");
+
+    /* wp-fractional-scale-v1 — advertise preferred per-output fractional
+     * scales so clients can render crisp buffers on mixed-DPI setups. */
+    _state->fractional_scale_manager =
+        wlr_fractional_scale_manager_v1_create(_state->display, 1);
+    wlr_log(WLR_DEBUG, "Fractional scale manager created");
 
     /* xdg-output-manager (zxdg_output_manager_v1) — lets clients query logical
      * output geometry (position, size, name) from the compositor's output layout. */
@@ -624,6 +769,12 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     _state->new_toplevel_decoration.notify = handle_new_toplevel_decoration;
     wl_signal_add(&_state->decoration_manager->events.new_toplevel_decoration,
                   &_state->new_toplevel_decoration);
+
+    if (_state->server_decoration_manager) {
+        _state->new_server_decoration.notify = handle_new_server_decoration;
+        wl_signal_add(&_state->server_decoration_manager->events.new_decoration,
+                      &_state->new_server_decoration);
+    }
 
     _state->new_layer_surface.notify = handle_new_layer_surface;
     wl_signal_add(&_state->layer_shell->events.new_surface, &_state->new_layer_surface);
@@ -792,12 +943,17 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
         }
         NSString *plistPath = [prefsDir
             stringByAppendingPathComponent:@"org.gnustep.AmbrosiaCompositor.plist"];
+        _serverSideDecorations = YES; /* default: SSD enabled for Wayland windows */
         NSDictionary *p = [NSDictionary dictionaryWithContentsOfFile:plistPath];
         if (p) {
-            _x11Decorations     = [p[@"x11Decorations"] boolValue];
+            _x11Decorations    = [p[@"x11Decorations"] boolValue];
             _x11DecorationColors = p;
-            wlr_log(WLR_INFO, "Compositor prefs loaded: x11Decorations=%s",
-                    _x11Decorations ? "YES" : "NO");
+            if (p[@"serverSideDecorations"] != nil)
+                _serverSideDecorations = [p[@"serverSideDecorations"] boolValue];
+            wlr_log(WLR_INFO,
+                    "Compositor prefs loaded: x11Decorations=%s serverSideDecorations=%s",
+                    _x11Decorations ? "YES" : "NO",
+                    _serverSideDecorations ? "YES" : "NO");
         }
     }
 
@@ -828,6 +984,21 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     if (_state->xwayland && _state->xwayland->display_name) {
         setenv("DISPLAY", _state->xwayland->display_name, 1);
         wlr_log(WLR_INFO, "XWayland socket ready: DISPLAY=%s", _state->xwayland->display_name);
+    }
+
+    /* Cache dock position so AmbrosiaView can position the Dock on map. */
+    {
+        const char *userLib = getenv("GNUSTEP_USER_LIBRARY");
+        NSString *prefsDir = (userLib && userLib[0])
+            ? [[NSString stringWithUTF8String:userLib]
+               stringByAppendingPathComponent:@"Preferences"]
+            : [NSHomeDirectory()
+               stringByAppendingPathComponent:@"GNUstep/Library/Preferences"];
+        NSString *plistPath =
+            [prefsDir stringByAppendingPathComponent:@"org.gnustep.AmbrosiaDock.plist"];
+        NSDictionary *prefs =
+            [NSDictionary dictionaryWithContentsOfFile:plistPath] ?: @{};
+        _dockPosition = prefs[@"dockPosition"] ?: @"bottom";
     }
 
     /* Start the session manager — launches AmbrosiaDock and GFinder,
@@ -1072,13 +1243,50 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     /* Broadcast AmbrosiaApplicationActivated when the active app changes.
      *
      * Keyed on client PID — this works for both Wayland (one pid per process)
-     * and XWayland (each X11 app has a distinct pid via xsurface->pid).      */
+     * and XWayland (each X11 app has a distinct pid via xsurface->pid).
+     * Also include a best-effort app name so the menu bar can label non-GNUstep
+     * windows without needing a /proc lookup: XDG uses app_id, XWayland uses
+     * WM_CLASS (the class field), with title as fallback for both.            */
     pid_t newPid = [view clientPid];
     if (newPid > 0 && newPid != prevPid) {
+        NSMutableDictionary *activateInfo =
+            [@{ @"pid": @((int32_t)newPid) } mutableCopy];
+
+        const char *rawName = NULL;
+        if ([view isKindOfClass:[AmbrosiaView class]]) {
+            AmbrosiaView *xdg = (AmbrosiaView *)view;
+            rawName = xdg.state->xdg_toplevel->app_id
+                   ?: xdg.state->xdg_toplevel->title;
+        } else if ([view isKindOfClass:[AmbrosiaXWaylandView class]]) {
+            AmbrosiaXWaylandView *xw = (AmbrosiaXWaylandView *)view;
+            rawName = xw.state->xwayland_surface->class
+                   ?: xw.state->xwayland_surface->title;
+        }
+        if (rawName && rawName[0])
+            activateInfo[@"appName"] = @(rawName);
+
+        /* Include a per-app window list for MenuServer "Windows" menu. */
+        NSMutableArray *windowList = [NSMutableArray array];
+        int idx = 0;
+        for (id<AmbrosiaWindowView> wv in _views) {
+            if (!wv.isMapped || wv.isMenu || wv.isDockWindow || wv.isDesktopBackground) continue;
+            if ([wv clientPid] != newPid) continue;
+            NSString *title = @"Window";
+            if ([wv isKindOfClass:[AmbrosiaView class]]) {
+                const char *t = ((AmbrosiaView *)wv).state->xdg_toplevel->title;
+                if (t && t[0]) title = @(t);
+            } else if ([wv isKindOfClass:[AmbrosiaXWaylandView class]]) {
+                const char *t = ((AmbrosiaXWaylandView *)wv).state->xwayland_surface->title;
+                if (t && t[0]) title = @(t);
+            }
+            [windowList addObject:@{@"index": @(idx++), @"title": title}];
+        }
+        activateInfo[@"windows"] = windowList;
+
         [[NSDistributedNotificationCenter defaultCenter]
             postNotificationName:@"AmbrosiaApplicationActivated"
                           object:nil
-                        userInfo:@{ @"pid": @((int32_t)newPid) }
+                        userInfo:activateInfo
               deliverImmediately:YES];
     }
 }
@@ -1407,6 +1615,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     /* Render the desktop background on this output. */
     [_background handleOutputAdded:output];
 
+    [self refreshFractionalScaleForAllViews];
     [self notifyOutputManager];
 }
 
@@ -1434,6 +1643,32 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
     /* Transfers ownership of config to the manager. */
     wlr_output_manager_v1_set_configuration(_state->output_manager, config);
+}
+
+- (void)updateFractionalScaleForSurface:(struct wlr_surface *)surface
+                                      x:(int)x
+                                      y:(int)y
+{
+    if (!surface) return;
+
+    struct wlr_output *output =
+        wlr_output_layout_output_at(_state->output_layout, (double)x, (double)y);
+    if (!output) {
+        output = wlr_output_layout_get_center_output(_state->output_layout);
+    }
+    if (!output) return;
+
+    wlr_fractional_scale_v1_notify_scale(surface, output->scale);
+}
+
+- (void)refreshFractionalScaleForAllViews
+{
+    for (id<AmbrosiaWindowView> view in _views) {
+        struct wlr_box geo = [view geometry];
+        int centerX = view.x + geo.width / 2;
+        int centerY = view.y + geo.height / 2;
+        [self updateFractionalScaleForSurface:[view surface] x:centerX y:centerY];
+    }
 }
 
 /**
@@ -1480,6 +1715,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     wlr_output_configuration_v1_destroy(config);
 
     /* Broadcast updated state regardless of success so clients stay in sync. */
+    [self refreshFractionalScaleForAllViews];
     [self notifyOutputManager];
 }
 
@@ -1578,24 +1814,146 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
 - (void)handleNewToplevelDecoration:(struct wlr_xdg_toplevel_decoration_v1 *)decoration
 {
-    /* Always use client-side decorations: GNUstep windows draw their own
-     * chrome and borderless panels must not receive an unwanted server frame.
-     *
-     * wlr_xdg_toplevel_decoration_v1_set_mode() calls
-     * wlr_xdg_surface_schedule_configure(), which asserts surface->initialized.
-     * That flag is set only after the client's first wl_surface.commit, but
-     * new_toplevel_decoration fires before that commit.  When the surface is
-     * not yet initialized, prime scheduled_mode directly; the decoration
-     * module's internal surface_configure listener (WLR_PRIVATE) will include
-     * it in the initial configure that handle_surface_commit schedules on
-     * initial_commit.  If the decoration is bound late (surface already
-     * initialized) the normal path is safe to use immediately. */
-    if (decoration->toplevel->base->initialized) {
-        wlr_xdg_toplevel_decoration_v1_set_mode(decoration,
-            WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+    /* Find the AmbrosiaView that owns this toplevel */
+    AmbrosiaView *view = nil;
+    for (id<AmbrosiaWindowView> v in _views) {
+        if (![v isKindOfClass:[AmbrosiaView class]]) continue;
+        AmbrosiaView *av = (AmbrosiaView *)v;
+        if (av.state->xdg_toplevel == decoration->toplevel) {
+            view = av;
+            break;
+        }
+    }
+
+    /* Store back-reference so handleMap can check the negotiated mode */
+    if (view) view.state->xdg_decoration = decoration;
+
+    /* Allocate per-decoration state for request_mode / destroy listeners */
+    struct ambrosia_xdg_decoration *d = calloc(1, sizeof(*d));
+    d->wlr_deco   = decoration;
+    d->objc_view  = (__bridge void *)view;
+
+    d->request_mode.notify = handle_deco_request_mode;
+    wl_signal_add(&decoration->events.request_mode, &d->request_mode);
+
+    d->destroy.notify = handle_deco_destroy;
+    wl_signal_add(&decoration->events.destroy, &d->destroy);
+
+    /* Negotiate the initial decoration mode */
+    [self _applyDecorationMode:decoration forView:view];
+}
+
+/**
+ * Decide and apply the decoration mode for a given xdg-decoration object.
+ *
+ * Rules:
+ *   • Special windows (menus, dock, desktop background) always use CSD —
+ *     they draw their own chrome or must remain borderless.
+ *   • All other windows honour the client's requested_mode when set.
+ *   • When the client has no preference (NONE), the compositor selects SSD
+ *     so that non-GNUstep apps get server-drawn decorations by default.
+ *
+ * Called at decoration creation and whenever the client changes its preference
+ * via xdg_toplevel_decoration_v1.set_mode / unset_mode.
+ *
+ * Note on initialisation ordering: new_toplevel_decoration fires before the
+ * surface's first commit (surface->initialized is still false).  In that case
+ * we prime scheduled_mode instead of calling set_mode directly; wlroots will
+ * include it in the initial configure.  If the surface is already initialized
+ * (decoration bound late) the direct set_mode path is used.
+ */
+- (void)_applyDecorationMode:(struct wlr_xdg_toplevel_decoration_v1 *)deco
+                     forView:(AmbrosiaView *)view
+{
+    enum wlr_xdg_toplevel_decoration_v1_mode mode;
+
+    /* Decoration policy by window role */
+    if (view && (view.isDockWindow || view.isMenu || view.isDesktopBackground || view.isGNUstepWindow)) {
+        /* Dock, menus, desktop background, and GNUstep windows all manage their
+         * own appearance (borderless panels or app-drawn chrome).  Tell the client
+         * CLIENT_SIDE so it knows the compositor will not draw a frame.          */
+        mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+    } else if (deco->requested_mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE) {
+        mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
     } else {
-        decoration->scheduled_mode =
-            WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+        /* Client requested SSD or expressed no preference → use SSD */
+        mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
+    }
+
+    wlr_log(WLR_DEBUG, "xdg-decoration: %s → %s",
+            deco->toplevel->app_id ?: deco->toplevel->title ?: "(unknown)",
+            mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE ? "SSD" : "CSD");
+
+    if (deco->toplevel->base->initialized) {
+        wlr_xdg_toplevel_decoration_v1_set_mode(deco, mode);
+    } else {
+        deco->scheduled_mode = mode;
+    }
+
+    /* If the view is already mapped, add/remove the compositor-drawn frame */
+    if (!view || !view.isMapped) return;
+
+    if (mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE) {
+        if (_serverSideDecorations && !view.isDockWindow && !view.decoration)
+            [view attachDecorationWithRenderer:_state->renderer
+                                        colors:(_x11DecorationColors ?: ambrosia_gnustep_decoration_palette())];
+    } else {
+        if (view.decoration)
+            [view removeDecoration];
+    }
+}
+
+/**
+ * A client has bound org_kde_kwin_server_decoration for one of its surfaces.
+ * Store the reference on the matching view and wire up listeners for mode
+ * changes and destruction.  The initial decoration->mode is the manager's
+ * default (SERVER) and does not yet reflect the client's intent, so we do
+ * NOT apply it here; handleMap uses the mode that is current at map time,
+ * and the mode signal handles any changes that arrive post-map.
+ */
+- (void)handleNewServerDecoration:(struct wlr_server_decoration *)decoration
+{
+    AmbrosiaView *view = nil;
+    for (id<AmbrosiaWindowView> v in _views) {
+        if (![v isKindOfClass:[AmbrosiaView class]]) continue;
+        AmbrosiaView *av = (AmbrosiaView *)v;
+        if (av.state->xdg_toplevel->base->surface == decoration->surface) {
+            view = av;
+            break;
+        }
+    }
+    if (view) view.state->server_decoration = decoration;
+
+    struct ambrosia_server_decoration *d = calloc(1, sizeof(*d));
+    d->wlr_deco  = decoration;
+    d->objc_view = (__bridge void *)view;
+
+    d->mode.notify = handle_server_deco_mode;
+    wl_signal_add(&decoration->events.mode, &d->mode);
+
+    d->destroy.notify = handle_server_deco_destroy;
+    wl_signal_add(&decoration->events.destroy, &d->destroy);
+}
+
+/**
+ * Apply the org_kde_kwin_server_decoration mode for a view that is already
+ * mapped.  This is called when the client calls set_mode() post-map.
+ *
+ * xdg-decoration takes precedence: if the toplevel already has an
+ * xdg_decoration object we ignore the KDE protocol mode change entirely.
+ */
+- (void)_applyServerDecorationMode:(uint32_t)mode forView:(AmbrosiaView *)view
+{
+    if (!view || !view.isMapped) return;
+    if (view.state->xdg_decoration) return;
+
+    if (mode == WLR_SERVER_DECORATION_MANAGER_MODE_SERVER) {
+        if (_serverSideDecorations && !view.isDockWindow && !view.isGNUstepWindow && !view.decoration)
+            [view attachDecorationWithRenderer:_state->renderer
+                                        colors:(_x11DecorationColors ?: ambrosia_gnustep_decoration_palette())];
+    } else {
+        if (view.decoration)
+            [view removeDecoration];
     }
 }
 
@@ -1838,8 +2196,20 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
 - (void)handleCursorButtonTime:(uint32_t)time button:(uint32_t)button state:(uint32_t)state
 {
+    /* Sticky titlebar move mode:
+     *  - first titlebar click enters move mode
+     *  - pointer releases are ignored while moving
+     *  - second left-click exits move mode */
+    if (_state->cursor_mode == AmbrosiaCursorModeMove) {
+        if (button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED) {
+            _state->cursor_mode = AmbrosiaCursorModePassthrough;
+        }
+        return; /* consume events while compositor-grabbing */
+    }
+
     if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
-        _state->cursor_mode = AmbrosiaCursorModePassthrough;
+        if (_state->cursor_mode == AmbrosiaCursorModeResize)
+            _state->cursor_mode = AmbrosiaCursorModePassthrough;
         wlr_seat_pointer_notify_button(_state->seat, time, button,
                                        (enum wl_pointer_button_state)state);
         return;
@@ -2030,6 +2400,11 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
              object:nil];
     [[NSDistributedNotificationCenter defaultCenter]
         addObserver:self
+           selector:@selector(_handleActivateWindowNotification:)
+               name:@"AmbrosiaActivateWindow"
+             object:nil];
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
            selector:@selector(_handleSessionPrefsNotification:)
                name:@"AmbrosiaSessionPrefsChanged"
              object:nil];
@@ -2081,6 +2456,27 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     [_sessionLock unlock];
     char byte = 1;
     (void)write(_state->session_pipe[1], &byte, 1);
+}
+
+- (void)_handleActivateWindowNotification:(NSNotification *)note
+{
+    NSDictionary *info = note.userInfo ?: @{};
+    int32_t pid = (int32_t)[info[@"pid"] intValue];
+    NSInteger index = [info[@"index"] integerValue];
+    if (pid <= 0 || index < 0) return;
+
+    NSInteger seen = 0;
+    for (NSInteger i = (NSInteger)_views.count - 1; i >= 0; i--) {
+        id<AmbrosiaWindowView> v = _views[(NSUInteger)i];
+        if (!v.isMapped || v.isMenu || v.isDockWindow || v.isDesktopBackground) continue;
+        if ([v clientPid] != pid) continue;
+        if (seen == index) {
+            if (v.isMiniaturized) [v deminiaturize];
+            [self focusView:v surface:[v surface]];
+            return;
+        }
+        seen++;
+    }
 }
 
 /**
@@ -2141,9 +2537,14 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     _pendingCompPrefs = nil;
     [_compLock unlock];
 
-    BOOL enabled = [prefs[@"x11Decorations"] boolValue];
-    wlr_log(WLR_INFO, "compositor prefs: x11Decorations=%s", enabled ? "YES" : "NO");
-    [self _applyX11DecorationsEnabled:enabled colors:prefs];
+    BOOL x11Enabled = [prefs[@"x11Decorations"] boolValue];
+    BOOL ssdEnabled = (prefs[@"serverSideDecorations"] != nil)
+                      ? [prefs[@"serverSideDecorations"] boolValue]
+                      : YES;
+    wlr_log(WLR_INFO, "compositor prefs: x11Decorations=%s serverSideDecorations=%s",
+            x11Enabled ? "YES" : "NO", ssdEnabled ? "YES" : "NO");
+    [self _applyX11DecorationsEnabled:x11Enabled colors:prefs];
+    [self _applyServerSideDecorationsEnabled:ssdEnabled];
 }
 
 - (void)_applyX11DecorationsEnabled:(BOOL)enabled colors:(NSDictionary *)colors
@@ -2152,16 +2553,61 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     _x11DecorationColors = colors;
 
     for (id<AmbrosiaWindowView> view in _views) {
-        if (![view isKindOfClass:[AmbrosiaXWaylandView class]]) continue;
-        AmbrosiaXWaylandView *xw = (AmbrosiaXWaylandView *)view;
-        if (!xw.isMapped || xw.isMenu || xw.isFullscreen) continue;
+        if ([view isKindOfClass:[AmbrosiaXWaylandView class]]) {
+            AmbrosiaXWaylandView *xw = (AmbrosiaXWaylandView *)view;
+            if (!xw.isMapped || xw.isMenu || xw.isFullscreen) continue;
+            if (enabled && !xw.decoration) {
+                [xw attachDecorationWithRenderer:_state->renderer colors:colors];
+            } else if (!enabled && xw.decoration) {
+                [xw removeDecoration];
+            } else if (enabled && xw.decoration) {
+                [xw.decoration updateColorsFromDictionary:colors];
+            }
+        } else if ([view isKindOfClass:[AmbrosiaView class]]) {
+            /* Propagate colour updates to any already-attached SSD decorations */
+            AmbrosiaView *av = (AmbrosiaView *)view;
+            if (av.decoration)
+                [av.decoration updateColorsFromDictionary:(colors ?: ambrosia_gnustep_decoration_palette())];
+        }
+    }
+}
 
-        if (enabled && !xw.decoration) {
-            [xw attachDecorationWithRenderer:_state->renderer colors:colors];
-        } else if (!enabled && xw.decoration) {
-            [xw removeDecoration];
-        } else if (enabled && xw.decoration) {
-            [xw.decoration updateColorsFromDictionary:colors];
+/**
+ * Apply a change to the serverSideDecorations preference for all currently
+ * mapped Wayland (xdg-shell) windows.
+ *
+ * When disabled: remove SSD frames from every AmbrosiaView that has one.
+ * When enabled:  re-attach SSD frames to views whose negotiated decoration
+ *                mode is SERVER (xdg-decoration or org_kde_kwin), unless
+ *                they are a dock, GNUstep, or already-decorated window.
+ */
+- (void)_applyServerSideDecorationsEnabled:(BOOL)enabled
+{
+    _serverSideDecorations = enabled;
+    for (id<AmbrosiaWindowView> view in _views) {
+        if (![view isKindOfClass:[AmbrosiaView class]]) continue;
+        AmbrosiaView *av = (AmbrosiaView *)view;
+        if (!av.isMapped) continue;
+
+        if (!enabled) {
+            if (av.decoration) [av removeDecoration];
+        } else {
+            if (av.decoration || av.isDockWindow || av.isGNUstepWindow) continue;
+            /* Re-attach only if the negotiated mode calls for SSD */
+            BOOL wantsSSD = NO;
+            if (av.state->xdg_decoration) {
+                wantsSSD = (av.state->xdg_decoration->current.mode ==
+                            WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+            } else if (av.state->server_decoration) {
+                wantsSSD = (av.state->server_decoration->mode ==
+                            WLR_SERVER_DECORATION_MANAGER_MODE_SERVER);
+            } else {
+                wantsSSD = YES; /* no protocol → SSD default */
+            }
+            if (wantsSSD)
+                [av attachDecorationWithRenderer:_state->renderer
+                                          colors:(_x11DecorationColors
+                                                  ?: ambrosia_gnustep_decoration_palette())];
         }
     }
 }

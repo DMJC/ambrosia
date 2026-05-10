@@ -5,6 +5,7 @@
 #import "AmbrosiaWindowView.h"
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_server_decoration.h>
 
 @class AmbrosiaCompositor;
 @class AmbrosiaDecoration;
@@ -12,6 +13,20 @@
 struct ambrosia_view_state {
     struct wlr_xdg_toplevel *xdg_toplevel;
     struct wlr_scene_tree   *scene_tree;
+
+    /**
+     * Back-reference to the xdg-decoration object, set by the compositor when
+     * a decoration is negotiated.  NULL when no decoration object exists.
+     * Used by handleMap to know whether SSD mode was already agreed.
+     */
+    struct wlr_xdg_toplevel_decoration_v1 *xdg_decoration;
+
+    /**
+     * Back-reference to the org_kde_kwin_server_decoration object, set when
+     * the client binds that protocol for this surface.  NULL when absent.
+     * Consulted by handleMap when xdg_decoration is not present.
+     */
+    struct wlr_server_decoration *server_decoration;
 
     struct wl_listener surface_commit; /* fires initial configure (wlroots 0.18+) */
     struct wl_listener map;
@@ -43,6 +58,7 @@ struct ambrosia_view_state {
 @property (nonatomic, readonly) BOOL isMenu;              /**< YES → skip decorations (menu/dock/desktop) */
 @property (nonatomic, readonly) BOOL isDockWindow;        /**< YES → position at bottom-centre of output */
 @property (nonatomic, readonly) BOOL isDesktopBackground; /**< YES → pin to output origin, behind all windows */
+@property (nonatomic, readonly) BOOL isGNUstepWindow;     /**< YES → GNUstep app; use client/self decorations */
 
 - (instancetype)initWithToplevel:(struct wlr_xdg_toplevel *)toplevel
                       compositor:(AmbrosiaCompositor *)compositor;
@@ -87,7 +103,18 @@ struct ambrosia_view_state {
 /** Update title in the decoration (if any) */
 - (void)updateTitle;
 
+/**
+ * Attach server-side decoration using the given renderer and optional theme
+ * colour dictionary.  Called by the compositor when SSD mode is negotiated.
+ */
+- (void)attachDecorationWithRenderer:(struct wlr_renderer *)renderer
+                              colors:(nullable NSDictionary *)colors;
+
+/** Remove server-side decoration (switch back to CSD). */
+- (void)removeDecoration;
+
 /** Called by C callbacks */
+- (void)handleSurfaceCommit;
 - (void)handleMap;
 - (void)handleUnmap;
 - (void)handleDestroy;

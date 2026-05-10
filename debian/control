@@ -1,0 +1,33 @@
+Source: ambrosia
+Section: x11
+Priority: optional
+Maintainer: Ambrosia Maintainers <ambrosia@example.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ gnustep-make,
+ libgnustep-base-dev,
+ libgnustep-gui-dev,
+ pkg-config,
+ libwlroots-0.20-dev,
+ libwayland-dev,
+ libxkbcommon-dev,
+ libcairo2-dev,
+ libxcb1-dev,
+ libxcb-icccm4-dev,
+ libxcb-ewmh-dev,
+ libdrm-dev,
+ libdbus-1-dev,
+ libjpeg-dev
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+
+Package: ambrosia
+Architecture: any
+Depends:
+ ${misc:Depends},
+ ${shlibs:Depends},
+ bash
+Description: Modern GNUstep desktop environment for Wayland
+ Ambrosia is a desktop environment written in Objective-C that combines
+ a GNUstep-based shell with a Wayland compositor, dock, menu server,
+ and system preferences modules.

@@ -4,6 +4,8 @@
 
 #include <wlr/util/log.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_server_decoration.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -20,7 +22,9 @@ static void handle_surface_commit(struct wl_listener *listener, void *data)
     struct wlr_xdg_surface *xdg = s->xdg_toplevel->base;
     if (xdg->initial_commit) {
         wlr_xdg_surface_schedule_configure(xdg);
+        return;
     }
+    [(__bridge AmbrosiaView *)s->objc_view handleSurfaceCommit];
 }
 
 static void handle_view_map(struct wl_listener *listener, void *data)
@@ -142,6 +146,16 @@ check_title:
     return NO;
 }
 
+
+static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
+{
+    const char *app_id = toplevel->app_id;
+    if (!app_id) return NO;
+    if (strstr(app_id, "org.gnustep.") != NULL) return YES;
+    if (strstr(app_id, "GNUstep") != NULL) return YES;
+    return NO;
+}
+
 /* --------------------------------------------------------------------------
  * AmbrosiaView
  * -------------------------------------------------------------------------- */
@@ -154,6 +168,7 @@ check_title:
     BOOL _isMenu;
     BOOL _isDockWindow;
     BOOL _isDesktopBackground;
+    BOOL _isGNUstepWindow;
 
     /* Pre-maximize restore position (surface origin, compositor space) */
     int  _restoreX;
@@ -175,6 +190,7 @@ check_title:
 @synthesize isMenu              = _isMenu;
 @synthesize isDockWindow        = _isDockWindow;
 @synthesize isDesktopBackground = _isDesktopBackground;
+@synthesize isGNUstepWindow     = _isGNUstepWindow;
 
 - (instancetype)initWithToplevel:(struct wlr_xdg_toplevel *)toplevel
                       compositor:(AmbrosiaCompositor *)compositor
@@ -202,6 +218,7 @@ check_title:
     _isDockWindow        = isDock(toplevel);
     _isDesktopBackground = isDesktopToplevel(toplevel);
     _isMenu              = isMenuToplevel(toplevel) || _isDockWindow || _isDesktopBackground;
+    _isGNUstepWindow     = isGNUstepWindow(toplevel);
 
     /* Register listeners */
     _state->surface_commit.notify = handle_surface_commit;
@@ -271,6 +288,7 @@ check_title:
     _x = x;
     _y = y;
     wlr_scene_node_set_position(&_state->scene_tree->node, x, y);
+    [_compositor updateFractionalScaleForSurface:[self surface] x:x y:y];
 }
 
 - (void)updateTitle
@@ -281,6 +299,89 @@ check_title:
         ? [NSString stringWithUTF8String:_state->xdg_toplevel->title]
         : @"";
     [_decoration updateWithWidth:geo.width height:geo.height title:title];
+}
+
+- (void)handleSurfaceCommit
+{
+    if (!_decoration || !_isMapped || _isFullscreen) return;
+    [self updateTitle];
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Decoration management
+
+- (void)attachDecorationWithRenderer:(struct wlr_renderer *)renderer
+                              colors:(nullable NSDictionary *)colors
+{
+    if (_decoration) return;
+    _decoration = [[AmbrosiaDecoration alloc]
+                   initWithRenderer:renderer
+                          sceneTree:_state->scene_tree];
+    if (colors)
+        [_decoration updateColorsFromDictionary:colors];
+
+    struct wlr_box geo = [self geometry];
+    NSString *title = _state->xdg_toplevel->title
+        ? [NSString stringWithUTF8String:_state->xdg_toplevel->title] : @"";
+    [_decoration updateWithWidth:geo.width height:geo.height title:title];
+    _decoration.focused = (_compositor.focusedView == self);
+
+    /* Re-position the scene tree to account for the new (B, T) inset */
+    wlr_scene_node_set_position(&_state->scene_tree->node,
+                                _x + AMBROSIA_BORDER_WIDTH,
+                                _y + AMBROSIA_TITLEBAR_HEIGHT);
+}
+
+- (void)removeDecoration
+{
+    if (!_decoration) return;
+    wlr_scene_node_destroy(&_decoration.scene_tree->node);
+    _decoration = nil;
+    /* Move the scene tree back to the frame-origin position */
+    wlr_scene_node_set_position(&_state->scene_tree->node, _x, _y);
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Dock positioning
+
+/**
+ * Position the Dock on the correct edge of the primary output, respecting
+ * the configured dock position ("bottom", "left", "right").
+ *
+ * Uses the xdg surface geometry when available, falling back to the committed
+ * surface buffer dimensions.  Both can be zero on the first map frame if the
+ * client hasn't committed real content yet; in that case the dock lands at a
+ * reasonable fallback and the compositor relies on subsequent commits to correct
+ * it via handleSetTitle / handleSetAppId re-classification if needed.
+ */
+- (void)_positionDock
+{
+    struct wlr_output *output =
+        wlr_output_layout_get_center_output(_compositor.state->output_layout);
+    struct wlr_box ob = {0};
+    if (output) wlr_output_layout_get_box(_compositor.state->output_layout, output, &ob);
+
+    struct wlr_box geo = [self geometry];
+    struct wlr_surface *surf = _state->xdg_toplevel->base->surface;
+    int dockW = geo.width  > 0 ? geo.width
+              : (surf ? (int)surf->current.width  : 0);
+    int dockH = geo.height > 0 ? geo.height
+              : (surf ? (int)surf->current.height : 0);
+
+    NSString *dockPos = _compositor.dockPosition ?: @"bottom";
+    int dockX, dockY;
+    if ([dockPos isEqualToString:@"left"]) {
+        dockX = ob.x;
+        dockY = ob.y;
+    } else if ([dockPos isEqualToString:@"right"]) {
+        dockX = ob.x + ob.width - (dockW > 0 ? dockW : 0);
+        dockY = ob.y;
+    } else {
+        /* bottom (default) */
+        dockX = ob.x + (dockW > 0 ? (ob.width - dockW) / 2 : 0);
+        dockY = ob.y + ob.height - (dockH > 0 ? dockH : 64);
+    }
+    [self moveTo:dockX y:dockY];
 }
 
 /* ---------------------------------------------------------------------- */
@@ -294,6 +395,7 @@ check_title:
     _isDockWindow        = isDock(_state->xdg_toplevel);
     _isDesktopBackground = isDesktopToplevel(_state->xdg_toplevel);
     _isMenu              = isMenuToplevel(_state->xdg_toplevel) || _isDockWindow || _isDesktopBackground;
+    _isGNUstepWindow     = isGNUstepWindow(_state->xdg_toplevel);
 
     wlr_log(WLR_INFO, "map: title='%s' app_id='%s' role=%s",
             _state->xdg_toplevel->title  ?: "(nil)",
@@ -361,9 +463,49 @@ check_title:
     }
 
     /* ---- Normal windows: cascade below the menu bar ---- */
+
+    /* Attach server-side decoration before initial placement so moveTo:
+     * applies the (B, T) inset correctly.
+     *
+     * We decorate when either:
+     *   - xdg-decoration negotiated SERVER_SIDE, or
+     *   - no xdg-decoration object exists (e.g. client uses only
+     *     org_kde_kwin_server_decoration), where the compositor default is SSD.
+     */
+    BOOL shouldAttachSSD = NO;
+    if (_state->xdg_decoration) {
+        /* xdg-decoration-unstable-v1: use the mode that was actually negotiated */
+        shouldAttachSSD =
+            (_state->xdg_decoration->current.mode ==
+             WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    } else if (_state->server_decoration) {
+        /* org_kde_kwin_server_decoration: respect the mode the client set.
+         * CLIENT or NONE means the client handles its own appearance;
+         * SERVER (or the default if the client never called set_mode) → SSD. */
+        shouldAttachSSD =
+            (_state->server_decoration->mode ==
+             WLR_SERVER_DECORATION_MANAGER_MODE_SERVER);
+    } else {
+        /* No decoration protocol at all — fall back to app_id-based detection
+         * for the rare case where neither protocol is used.                   */
+        shouldAttachSSD = (!_isDockWindow && !_isGNUstepWindow);
+    }
+
+    if (shouldAttachSSD && _compositor.serverSideDecorations
+            && !_isDockWindow && !_isGNUstepWindow && !_decoration) {
+        [self attachDecorationWithRenderer:_compositor.state->renderer
+                                    colors:_compositor.x11DecorationColors];
+    } else if (!shouldAttachSSD && _decoration) {
+        /* CSD was negotiated (or window role forbids SSD): remove any decoration
+         * left over from a previous map/SSD cycle.  _applyDecorationMode: only
+         * removes the decoration for mapped views; this handles the case where
+         * the mode changed while the view was unmapped.                          */
+        [self removeDecoration];
+    }
+
     static int cascade = 0;
     int usableTop = _compositor.state->usable_top;
-    /* Start windows below the menu bar (at least usableTop + 8 px margin) */
+    /* _x,_y = frame top-left when decorated; start frame just below the bar */
     int startX = 60  + cascade * 30;
     int startY = MAX(usableTop + 8, 50) + cascade * 30;
     cascade = (cascade + 1) % 8;
@@ -469,32 +611,40 @@ check_title:
         struct wlr_box ob = {0};
         wlr_output_layout_get_box(cs->output_layout, output, &ob);
 
-        /* Raise window above the menu bar */
-        wlr_scene_node_reparent(&_state->scene_tree->node, cs->scene_layer_fullscreen);
-
-        /* Hide server-side decoration */
+        /* Hide server-side decoration before repositioning */
         if (_decoration)
             wlr_scene_node_set_enabled(&_decoration.scene_tree->node, false);
+
+        /* Raise window above the menu bar */
+        wlr_scene_node_reparent(&_state->scene_tree->node, cs->scene_layer_fullscreen);
 
         /* Tell the client to fill the output */
         wlr_xdg_toplevel_set_fullscreen(_state->xdg_toplevel, true);
         wlr_xdg_toplevel_set_size(_state->xdg_toplevel,
                                   (uint32_t)ob.width, (uint32_t)ob.height);
-        [self moveTo:ob.x y:ob.y];
+
+        /* Position scene tree at output origin directly — do NOT use moveTo:
+         * here because the decoration is hidden but _decoration != nil, so
+         * moveTo: would add the (B, T) surface offset even though no frame
+         * is visible.  During fullscreen _x/_y equal the surface origin.     */
+        _x = ob.x;
+        _y = ob.y;
+        wlr_scene_node_set_position(&_state->scene_tree->node, ob.x, ob.y);
         _isFullscreen = YES;
     } else {
         /* Return to the normal windows layer */
         wlr_scene_node_reparent(&_state->scene_tree->node, cs->scene_layer_windows);
 
-        /* Restore decoration */
+        /* Restore decoration before calling moveTo: so moveTo: applies the
+         * (B, T) surface offset correctly for the restored frame position.    */
         if (_decoration)
             wlr_scene_node_set_enabled(&_decoration.scene_tree->node, true);
 
         wlr_xdg_toplevel_set_fullscreen(_state->xdg_toplevel, false);
-        /* size 0,0 lets the client choose its preferred size */
         wlr_xdg_toplevel_set_size(_state->xdg_toplevel, 0, 0);
-        [self moveTo:_restoreFSX y:_restoreFSY];
         _isFullscreen = NO;
+        /* moveTo: applies (B, T) offset since decoration is active again */
+        [self moveTo:_restoreFSX y:_restoreFSY];
     }
 
     wlr_xdg_surface_schedule_configure(_state->xdg_toplevel->base);
@@ -509,19 +659,18 @@ check_title:
 #pragma mark - Maximize helpers
 
 /**
- * Shared maximize/unmaximize implementation used by both handleRequestMaximize
- * (client-initiated) and toggleMaximize (decoration button).
+ * Shared maximize/unmaximize implementation.
  *
- * Coordinate math:
- *   The decoration sub-tree sits at (-B, -T) relative to the surface scene
- *   node.  For the titlebar to appear flush at the top of the usable area
- *   the surface origin must therefore be at (output_x + B, usableTop + T).
- *   Surface size = (output_width − 2B) × (output_height − usableTop − T − B).
+ * Coordinate convention: _x/_y = frame top-left when decorated, surface
+ * top-left when undecorated.  moveTo: handles the (B, T) scene offset.
+ *
+ * Decorated:   frame at (output_x, usableTop) → moveTo:output_x y:usableTop
+ *              surface at (output_x+B, usableTop+T) via moveTo:
+ * Undecorated: surface at (output_x+B, usableTop+T) → moveTo:output_x+B y:usableTop+T
  */
 - (void)_setMaximized:(BOOL)maximize
 {
     if (maximize) {
-        /* Save current surface position for later restore */
         _restoreX = _x;
         _restoreY = _y;
 
@@ -535,21 +684,26 @@ check_title:
             struct wlr_box ob;
             wlr_output_layout_get_box(_compositor.state->output_layout,
                                       output, &ob);
-            int B          = AMBROSIA_BORDER_WIDTH;
-            int T          = AMBROSIA_TITLEBAR_HEIGHT;
-            int usableTop  = _compositor.state->usable_top;
-            int sw = ob.width - B * 2;
+            int B         = AMBROSIA_BORDER_WIDTH;
+            int T         = AMBROSIA_TITLEBAR_HEIGHT;
+            int usableTop = _compositor.state->usable_top;
+            int sw = ob.width  - B * 2;
             int sh = ob.height - usableTop - T - B;
             if (sw < 1) sw = 1;
             if (sh < 1) sh = 1;
             wlr_xdg_toplevel_set_size(_state->xdg_toplevel,
                                       (uint32_t)sw, (uint32_t)sh);
-            [self moveTo:ob.x + B y:ob.y + usableTop + T];
+            if (_decoration) {
+                /* Frame at output origin + usable top — moveTo: adds (B,T) */
+                [self moveTo:ob.x y:ob.y + usableTop];
+            } else {
+                /* No frame — surface goes where the frame would have been */
+                [self moveTo:ob.x + B y:ob.y + usableTop + T];
+            }
         }
         wlr_xdg_toplevel_set_maximized(_state->xdg_toplevel, true);
     } else {
         wlr_xdg_toplevel_set_maximized(_state->xdg_toplevel, false);
-        /* size 0,0 lets the client choose its preferred unmaximized size */
         wlr_xdg_toplevel_set_size(_state->xdg_toplevel, 0, 0);
         [self moveTo:_restoreX y:_restoreY];
     }
@@ -578,14 +732,31 @@ check_title:
 - (void)handleSetTitle
 {
     [self updateTitle];
+
+    /* Re-classify: the title may have arrived after the map event (race).
+     * If we just identified this as the dock, position it now. */
+    BOOL wasDock = _isDockWindow;
+    _isDockWindow        = isDock(_state->xdg_toplevel);
+    _isDesktopBackground = isDesktopToplevel(_state->xdg_toplevel);
+    _isMenu = isMenuToplevel(_state->xdg_toplevel) || _isDockWindow || _isDesktopBackground;
+    _isGNUstepWindow     = isGNUstepWindow(_state->xdg_toplevel);
+
+    if (!wasDock && _isDockWindow && _isMapped) {
+        [self _positionDock];
+    }
 }
 
 - (void)handleSetAppId
 {
-    /* Re-classify all roles */
+    BOOL wasDock = _isDockWindow;
     _isDockWindow        = isDock(_state->xdg_toplevel);
     _isDesktopBackground = isDesktopToplevel(_state->xdg_toplevel);
     _isMenu              = isMenuToplevel(_state->xdg_toplevel) || _isDockWindow || _isDesktopBackground;
+    _isGNUstepWindow     = isGNUstepWindow(_state->xdg_toplevel);
+
+    if (!wasDock && _isDockWindow && _isMapped) {
+        [self _positionDock];
+    }
 }
 
 /* ---------------------------------------------------------------------- */

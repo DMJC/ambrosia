@@ -41,6 +41,13 @@ static void handle_xw_surface_unmap(struct wl_listener *listener, void *data)
     [(__bridge AmbrosiaXWaylandView *)s->objc_view handleUnmap];
 }
 
+static void handle_xw_surface_commit(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_xwayland_view_state *s =
+        wl_container_of(listener, s, surface_commit);
+    [(__bridge AmbrosiaXWaylandView *)s->objc_view handleSurfaceCommit];
+}
+
 static void handle_xw_destroy(struct wl_listener *listener, void *data)
 {
     struct ambrosia_xwayland_view_state *s =
@@ -109,8 +116,9 @@ static void handle_xw_set_title(struct wl_listener *listener, void *data)
 
 static void handle_xw_set_class(struct wl_listener *listener, void *data)
 {
-    /* class change treated same as title for logging */
-    (void)listener; (void)data;
+    struct ambrosia_xwayland_view_state *s =
+        wl_container_of(listener, s, set_class);
+    [(__bridge AmbrosiaXWaylandView *)s->objc_view handleSetTitle];
 }
 
 static void handle_xw_set_override_redirect(struct wl_listener *listener, void *data)
@@ -127,6 +135,15 @@ static void handle_xw_set_override_redirect(struct wl_listener *listener, void *
 static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
 {
     return xs->override_redirect ? YES : NO;
+}
+
+static BOOL isDockXWayland(struct wlr_xwayland_surface *xs)
+{
+    const char *klass = xs->class;
+    const char *title = xs->title;
+    if (klass && strstr(klass, "AmbrosiaDock") != NULL) return YES;
+    if (title && strstr(title, "AmbrosiaDock") != NULL) return YES;
+    return NO;
 }
 
 /* --------------------------------------------------------------------------
@@ -174,6 +191,7 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
     _state->objc_view        = (__bridge void *)self;
 
     _isMenu = isOverrideRedirect(xsurface);
+    _isDockWindow = isDockXWayland(xsurface);
 
     /* xwayland_surface-level listeners */
     _state->associate.notify = handle_xw_associate;
@@ -272,6 +290,10 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
 {
     _x = x;
     _y = y;
+    if (_state->scene_tree) {
+        wlr_scene_node_set_position(&_state->scene_tree->node, x, y);
+    }
+    [_compositor updateFractionalScaleForSurface:[self surface] x:x y:y];
 
     /* When a decoration is active x,y is the FRAME top-left.
      * The scene tree (containing the XWayland surface) must sit at the
@@ -435,12 +457,15 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
     _state->scene_tree->node.data = (__bridge void *)self;
     wlr_scene_surface_create(_state->scene_tree, xs->surface);
 
-    /* Register surface-level map/unmap listeners. */
+    /* Register surface-level listeners. */
     _state->surface_map.notify = handle_xw_surface_map;
     wl_signal_add(&xs->surface->events.map, &_state->surface_map);
 
     _state->surface_unmap.notify = handle_xw_surface_unmap;
     wl_signal_add(&xs->surface->events.unmap, &_state->surface_unmap);
+
+    _state->surface_commit.notify = handle_xw_surface_commit;
+    wl_signal_add(&xs->surface->events.commit, &_state->surface_commit);
 
     _state->surface_listeners_active = YES;
 }
@@ -453,6 +478,7 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
     if (_state->surface_listeners_active) {
         wl_list_remove(&_state->surface_map.link);
         wl_list_remove(&_state->surface_unmap.link);
+        wl_list_remove(&_state->surface_commit.link);
         _state->surface_listeners_active = NO;
     }
     if (_state->scene_tree) {
@@ -484,12 +510,13 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
 
     struct wlr_xwayland_surface *xs = _state->xwayland_surface;
     _isMenu = isOverrideRedirect(xs);
+    _isDockWindow = isDockXWayland(xs);
 
     wlr_log(WLR_INFO, "XWayland map: title='%s' class='%s' OR=%d fullscreen=%d",
             xs->title ?: "(nil)", xs->class ?: "(nil)",
             xs->override_redirect, xs->fullscreen);
 
-    if (_isMenu) {
+    if (_isMenu || _isDockWindow) {
         /* Override-redirect: honour the X11-requested position. */
         [self moveTo:xs->x y:xs->y];
 
@@ -533,7 +560,7 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
     [self moveTo:startX y:startY];
 
     /* Attach server-side decoration if the compositor pref is active. */
-    if (_compositor.x11Decorations) {
+    if (_compositor.x11Decorations && !_isDockWindow) {
         [self attachDecorationWithRenderer:_compositor.state->renderer
                                     colors:_compositor.x11DecorationColors];
     }
@@ -722,8 +749,24 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
     [self close];
 }
 
+- (void)handleSurfaceCommit
+{
+    /* Called on every surface commit.  After the client commits a new buffer
+     * at a different size, xs->width / xs->height are updated by wlroots.
+     * If the geometry changed, redraw the decoration frame to match.         */
+    if (!_decoration || !_isMapped) return;
+    struct wlr_box geo = [self geometry];
+    if (geo.width > 0 && geo.height > 0) {
+        const char *raw = _state->xwayland_surface->title;
+        NSString *title = raw ? [NSString stringWithUTF8String:raw] : @"";
+        [_decoration updateWithWidth:geo.width height:geo.height title:title];
+    }
+}
+
 - (void)handleSetTitle
 {
+    _isDockWindow = isDockXWayland(_state->xwayland_surface);
+    if (_isDockWindow && _decoration) [self removeDecoration];
     [self updateTitle];
 }
 

@@ -15,6 +15,7 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_server_decoration.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_xcursor_manager.h>
@@ -23,6 +24,7 @@
 #include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_viewporter.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_output_management_v1.h>
 #include <wlr/types/wlr_drm_lease_v1.h>
@@ -75,9 +77,11 @@ struct ambrosia_compositor_state {
     struct wlr_data_device_manager *data_device_manager;
     struct wlr_xdg_shell        *xdg_shell;
     struct wlr_xdg_decoration_manager_v1 *decoration_manager;
+    struct wlr_server_decoration_manager  *server_decoration_manager;
     struct wlr_layer_shell_v1        *layer_shell;
     struct wlr_screencopy_manager_v1 *screencopy_manager;
     struct wlr_viewporter            *viewporter;
+    struct wlr_fractional_scale_manager_v1 *fractional_scale_manager;
     struct wlr_xdg_output_manager_v1 *xdg_output_manager;
     struct wlr_output_manager_v1     *output_manager;
     struct wlr_drm_lease_v1_manager  *drm_lease_manager;
@@ -93,6 +97,7 @@ struct ambrosia_compositor_state {
     struct wl_listener new_xdg_toplevel;
     struct wl_listener new_xdg_popup;
     struct wl_listener new_toplevel_decoration;
+    struct wl_listener new_server_decoration;
     struct wl_listener new_layer_surface;
     struct wl_listener cursor_motion;
     struct wl_listener cursor_motion_absolute;
@@ -167,8 +172,12 @@ struct ambrosia_compositor_state {
 
 /** Whether server-side decorations should be drawn on XWayland managed windows. */
 @property (readonly) BOOL           x11Decorations;
+/** Whether server-side decorations should be drawn on Wayland (xdg-shell) windows. */
+@property (readonly) BOOL           serverSideDecorations;
 /** Colour prefs for X11 decorations (hex strings keyed to titlebarActiveColor etc.) */
 @property (readonly, nullable) NSDictionary *x11DecorationColors;
+/** Configured dock position ("bottom", "left", or "right"). Read at launch time. */
+@property (readonly, nullable) NSString *dockPosition;
 
 - (instancetype)init;
 - (BOOL)setup:(NSError **)error;
@@ -219,6 +228,12 @@ struct ambrosia_compositor_state {
 
 /** Broadcast the current output configuration to all wlr-output-management clients. */
 - (void)notifyOutputManager;
+/** Update preferred wp-fractional-scale-v1 for a surface based on its monitor. */
+- (void)updateFractionalScaleForSurface:(nullable struct wlr_surface *)surface
+                                      x:(int)x
+                                      y:(int)y;
+/** Recompute preferred wp-fractional-scale-v1 for all known views. */
+- (void)refreshFractionalScaleForAllViews;
 
 /* XWayland callbacks */
 - (void)handleXWaylandReady;
