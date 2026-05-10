@@ -393,8 +393,9 @@ static void handle_deco_request_mode(struct wl_listener *listener, void *data)
 static void handle_deco_destroy(struct wl_listener *listener, void *data)
 {
     struct ambrosia_xdg_decoration *d = wl_container_of(listener, d, destroy);
-    /* Clear the back-reference on the view state so handleMap can't use it */
-    AmbrosiaView *view = (__bridge AmbrosiaView *)d->objc_view;
+    /* Transfer ownership back to ARC; view stays valid for this scope even if
+     * the compositor already released it from _views. */
+    AmbrosiaView *view = (__bridge_transfer AmbrosiaView *)d->objc_view;
     if (view && view.state)
         view.state->xdg_decoration = NULL;
     wl_list_remove(&d->request_mode.link);
@@ -427,7 +428,7 @@ static void handle_server_deco_mode(struct wl_listener *listener, void *data)
 static void handle_server_deco_destroy(struct wl_listener *listener, void *data)
 {
     struct ambrosia_server_decoration *d = wl_container_of(listener, d, destroy);
-    AmbrosiaView *view = (__bridge AmbrosiaView *)d->objc_view;
+    AmbrosiaView *view = (__bridge_transfer AmbrosiaView *)d->objc_view;
     if (view && view.state)
         view.state->server_decoration = NULL;
     wl_list_remove(&d->mode.link);
@@ -1831,7 +1832,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     /* Allocate per-decoration state for request_mode / destroy listeners */
     struct ambrosia_xdg_decoration *d = calloc(1, sizeof(*d));
     d->wlr_deco   = decoration;
-    d->objc_view  = (__bridge void *)view;
+    d->objc_view  = (__bridge_retained void *)view;
 
     d->request_mode.notify = handle_deco_request_mode;
     wl_signal_add(&decoration->events.request_mode, &d->request_mode);
@@ -1926,7 +1927,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
     struct ambrosia_server_decoration *d = calloc(1, sizeof(*d));
     d->wlr_deco  = decoration;
-    d->objc_view = (__bridge void *)view;
+    d->objc_view = (__bridge_retained void *)view;
 
     d->mode.notify = handle_server_deco_mode;
     wl_signal_add(&decoration->events.mode, &d->mode);
