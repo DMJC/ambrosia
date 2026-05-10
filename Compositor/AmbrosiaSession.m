@@ -30,6 +30,58 @@ static NSString *gnustepPrefsDirectory(void)
 }
 
 /**
+ * Return the SystemPreferences plist path used by the Video module.
+ */
+static NSString *systemPreferencesPath(void)
+{
+    NSString *defaultsDir = [NSHomeDirectory()
+                             stringByAppendingPathComponent:@"GNUstep/Defaults"];
+    return [defaultsDir stringByAppendingPathComponent:@"SystemPreferences.plist"];
+}
+
+/**
+ * Read primary output resolution from SystemPreferences.plist.
+ * Falls back to 1920x1080 if not present.
+ */
+static NSSize primaryMonitorSizeFromPreferences(void)
+{
+    CGFloat width = 1920.0;
+    CGFloat height = 1080.0;
+
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:systemPreferencesPath()];
+    NSArray *screens = [prefs[@"Screens"] isKindOfClass:[NSArray class]]
+        ? prefs[@"Screens"] : nil;
+
+    if (screens.count > 0) {
+        NSDictionary *primary = nil;
+        for (NSDictionary *screen in screens) {
+            if (![screen isKindOfClass:[NSDictionary class]]) continue;
+            NSNumber *isPrimary = [screen[@"primary"] isKindOfClass:[NSNumber class]]
+                ? screen[@"primary"] : screen[@"Primary"];
+            if ([isPrimary boolValue]) {
+                primary = screen;
+                break;
+            }
+        }
+        if (!primary) {
+            NSDictionary *first = screens.firstObject;
+            if ([first isKindOfClass:[NSDictionary class]]) primary = first;
+        }
+
+        NSDictionary *resolution = [primary[@"resolution"] isKindOfClass:[NSDictionary class]]
+            ? primary[@"resolution"] : primary[@"Resolution"];
+        NSNumber *rw = resolution[@"width"] ?: resolution[@"Width"];
+        NSNumber *rh = resolution[@"height"] ?: resolution[@"Height"];
+        if ([rw respondsToSelector:@selector(doubleValue)] && [rw doubleValue] > 32)
+            width = [rw doubleValue];
+        if ([rh respondsToSelector:@selector(doubleValue)] && [rh doubleValue] > 32)
+            height = [rh doubleValue];
+    }
+
+    return NSMakeSize(width, height);
+}
+
+/**
  * Search a set of candidate paths and return the first that exists.
  * Returns nil if none found.
  */
@@ -445,14 +497,29 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
     NSString *dockPosition = dockPrefs[@"dockPosition"] ?: @"bottom";
     double    iconSize     = [dockPrefs[@"iconSize"]    doubleValue];
     double    zoomFactor   = [dockPrefs[@"zoomFactor"]  doubleValue];
+    NSSize    primarySize  = primaryMonitorSizeFromPreferences();
     if (iconSize   <= 0) iconSize   = 48.0;
     if (zoomFactor <= 0) zoomFactor = 1.7;
+
+    CGFloat dockX = floor(primarySize.width * 0.5);
+    CGFloat dockY = 0.0;
+    if ([dockPosition isEqualToString:@"left"]) {
+        dockX = 0.0;
+        dockY = floor(primarySize.height * 0.5);
+    } else if ([dockPosition isEqualToString:@"right"]) {
+        dockX = primarySize.width;
+        dockY = floor(primarySize.height * 0.5);
+    }
 
     NSArray<NSString *> *dockArgs =
         [gnustepWaylandArgs arrayByAddingObjectsFromArray:@[
             @"-AmbrosiaPosition",   dockPosition,
             @"-AmbrosiaIconSize",   [NSString stringWithFormat:@"%.1f", iconSize],
             @"-AmbrosiaZoomFactor", [NSString stringWithFormat:@"%.2f", zoomFactor],
+            @"-AmbrosiaPrimaryWidth",  [NSString stringWithFormat:@"%.0f", primarySize.width],
+            @"-AmbrosiaPrimaryHeight", [NSString stringWithFormat:@"%.0f", primarySize.height],
+            @"-AmbrosiaDockX", [NSString stringWithFormat:@"%.0f", dockX],
+            @"-AmbrosiaDockY", [NSString stringWithFormat:@"%.0f", dockY],
         ]];
 
     NSString *dockExec = findExecutable(candidatePaths(@"AmbrosiaDock.app",

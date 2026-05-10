@@ -41,6 +41,13 @@ static void handle_xw_surface_unmap(struct wl_listener *listener, void *data)
     [(__bridge AmbrosiaXWaylandView *)s->objc_view handleUnmap];
 }
 
+static void handle_xw_surface_commit(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_xwayland_view_state *s =
+        wl_container_of(listener, s, surface_commit);
+    [(__bridge AmbrosiaXWaylandView *)s->objc_view handleSurfaceCommit];
+}
+
 static void handle_xw_destroy(struct wl_listener *listener, void *data)
 {
     struct ambrosia_xwayland_view_state *s =
@@ -323,6 +330,15 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
     [_decoration updateWithWidth:geo.width height:geo.height title:title];
 }
 
+- (void)_updateDecorationForSurfaceWidth:(uint16_t)width
+                                  height:(uint16_t)height
+{
+    if (!_decoration) return;
+    const char *raw = _state->xwayland_surface->title;
+    NSString *title = raw ? [NSString stringWithUTF8String:raw] : @"";
+    [_decoration updateWithWidth:(int)width height:(int)height title:title];
+}
+
 - (void)activateFocus:(BOOL)focused
 {
     if (focused) {
@@ -430,12 +446,15 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
     _state->scene_tree->node.data = (__bridge void *)self;
     wlr_scene_surface_create(_state->scene_tree, xs->surface);
 
-    /* Register surface-level map/unmap listeners. */
+    /* Register surface-level listeners. */
     _state->surface_map.notify = handle_xw_surface_map;
     wl_signal_add(&xs->surface->events.map, &_state->surface_map);
 
     _state->surface_unmap.notify = handle_xw_surface_unmap;
     wl_signal_add(&xs->surface->events.unmap, &_state->surface_unmap);
+
+    _state->surface_commit.notify = handle_xw_surface_commit;
+    wl_signal_add(&xs->surface->events.commit, &_state->surface_commit);
 
     _state->surface_listeners_active = YES;
 }
@@ -448,6 +467,7 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
     if (_state->surface_listeners_active) {
         wl_list_remove(&_state->surface_map.link);
         wl_list_remove(&_state->surface_unmap.link);
+        wl_list_remove(&_state->surface_commit.link);
         _state->surface_listeners_active = NO;
     }
     if (_state->scene_tree) {
@@ -594,13 +614,17 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
             wlr_scene_node_set_position(&_state->scene_tree->node, event->x, event->y);
         _x = event->x;
         _y = event->y;
+        [self _updateDecorationForSurfaceWidth:event->width height:event->height];
         return;
     }
     /* Managed window (mapped or fullscreen): honour the requested size but
      * keep our compositor-assigned position.                                 */
+    int surfX = _x + (_decoration ? AMBROSIA_BORDER_WIDTH : 0);
+    int surfY = _y + (_decoration ? AMBROSIA_TITLEBAR_HEIGHT : 0);
     wlr_xwayland_surface_configure(event->surface,
-                                   (int16_t)_x, (int16_t)_y,
+                                   (int16_t)surfX, (int16_t)surfY,
                                    event->width, event->height);
+    [self _updateDecorationForSurfaceWidth:event->width height:event->height];
 }
 
 - (void)handleRequestMove
@@ -711,6 +735,20 @@ static BOOL isOverrideRedirect(struct wlr_xwayland_surface *xs)
 - (void)handleRequestClose
 {
     [self close];
+}
+
+- (void)handleSurfaceCommit
+{
+    /* Called on every surface commit.  After the client commits a new buffer
+     * at a different size, xs->width / xs->height are updated by wlroots.
+     * If the geometry changed, redraw the decoration frame to match.         */
+    if (!_decoration || !_isMapped) return;
+    struct wlr_box geo = [self geometry];
+    if (geo.width > 0 && geo.height > 0) {
+        const char *raw = _state->xwayland_surface->title;
+        NSString *title = raw ? [NSString stringWithUTF8String:raw] : @"";
+        [_decoration updateWithWidth:geo.width height:geo.height title:title];
+    }
 }
 
 - (void)handleSetTitle

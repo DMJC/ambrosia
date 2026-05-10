@@ -33,6 +33,13 @@
 /** The raw DBusConnection pointer (void * to avoid importing dbus.h in headers). */
 @property (nonatomic, readonly) void *dbusConnection;
 
+/**
+ * The serial GCD queue that owns the D-Bus connection.
+ * All blocking D-Bus calls (send_with_reply_and_block) must be dispatched
+ * to this queue so they do not race with the periodic dispatch handler.
+ */
+@property (nonatomic, readonly) dispatch_queue_t dbusQueue;
+
 @end
 
 

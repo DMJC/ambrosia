@@ -1,0 +1,25 @@
+{
+    "## Comment" = "Do NOT change this file, Gorm maintains it";
+    FirstResponder = {
+	Actions = (
+	    "closeMainWindow:",
+	    "nextButtAction:",
+	    "prevButtAction:",
+	    "runInfoPanel:",
+	    "showAllButtAction:"
+	);
+	Super = NSObject;
+    };
+    BluetoothModule = {
+	Actions = (
+	    "scanForDevices:",
+	    "trustDevice:",
+	    "untrustDevice:",
+	    "connectDevice:",
+	    "disconnectDevice:"
+	);
+	Outlets = (
+	);
+	Super = NSPreferencePane;
+    };
+}

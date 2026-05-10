@@ -1,0 +1,9 @@
+
+{
+  CFBundleIdentifier = org.gnustep.useraudioprefs;
+  NSExecutable = AudioModule;
+  NSMainNibFile = "AudioModule.gorm";
+  NSPrefPaneIconFile = "Audio.tiff";
+  NSPrefPaneIconLabel = Audio;
+  NSPrincipalClass = AudioModule;
+}

@@ -1,0 +1,9 @@
+
+{
+  CFBundleIdentifier = org.gnustep.uservideoprefs;
+  NSExecutable = VideoModule;
+  NSMainNibFile = "VideoModule.gorm";
+  NSPrefPaneIconFile = "Video.tiff";
+  NSPrefPaneIconLabel = Video;
+  NSPrincipalClass = VideoModule;
+}

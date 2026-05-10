@@ -1,0 +1,9 @@
+
+{
+  CFBundleIdentifier = org.gnustep.bluetoothprefs;
+  NSExecutable = BluetoothModule;
+  NSMainNibFile = "BluetoothModule.gorm";
+  NSPrefPaneIconFile = "Bluetooth.tiff";
+  NSPrefPaneIconLabel = Bluetooth;
+  NSPrincipalClass = BluetoothModule;
+}

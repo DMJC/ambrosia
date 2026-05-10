@@ -3,6 +3,37 @@
 
 #include <signal.h>
 #include <errno.h>
+#include <ctype.h>
+
+/**
+ * Capitalise the first letter of every word in an app name, where words are
+ * delimited by hyphens, underscores, or spaces.
+ *
+ * Examples:
+ *   "mate-terminal"  →  "Mate-Terminal"
+ *   "google_chrome"  →  "Google_Chrome"
+ *   "quake3"         →  "Quake3"
+ *   "firefox"        →  "Firefox"
+ */
+static NSString *CapitaliseAppName(NSString *name)
+{
+    if (!name.length) return name;
+    NSMutableString *out = [NSMutableString stringWithCapacity:name.length];
+    BOOL nextUp = YES;
+    for (NSUInteger i = 0; i < name.length; i++) {
+        unichar c = [name characterAtIndex:i];
+        if (c == '-' || c == '_' || c == ' ') {
+            [out appendFormat:@"%C", c];
+            nextUp = YES;
+        } else if (nextUp) {
+            [out appendFormat:@"%C", (unichar)toupper((int)c)];
+            nextUp = NO;
+        } else {
+            [out appendFormat:@"%C", c];
+        }
+    }
+    return [out copy];
+}
 
 static const CGFloat kBarHeight          = 24.0;
 static const CGFloat kFallbackWidth      = 1920.0;
@@ -21,7 +52,75 @@ static BOOL ReadMenuBarPref(NSString *key)
     return [prefs[key] boolValue];
 }
 
+/* Shared plist path for monitor configuration written by SystemPreferences. */
+static NSString *SystemPreferencesPath(void)
+{
+    return [NSHomeDirectory() stringByAppendingPathComponent:
+            @"GNUstep/Defaults/SystemPreferences.plist"];
+}
+
+static NSDictionary *PrimaryMonitorFromSystemPreferences(void)
+{
+    NSDictionary *prefs =
+        [NSDictionary dictionaryWithContentsOfFile:SystemPreferencesPath()];
+    if (![prefs isKindOfClass:[NSDictionary class]]) return nil;
+
+    NSArray *keyCandidates = @[@"Monitors", @"monitors", @"Monitor", @"monitor"];
+    NSArray *monitors = nil;
+    for (NSString *key in keyCandidates) {
+        id value = prefs[key];
+        if ([value isKindOfClass:[NSArray class]]) {
+            monitors = (NSArray *)value;
+            break;
+        }
+    }
+    if (!monitors.count) return nil;
+
+    for (id entry in monitors) {
+        if (![entry isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *monitor = (NSDictionary *)entry;
+        BOOL isPrimary =
+            [monitor[@"primary"] boolValue]  ||
+            [monitor[@"Primary"] boolValue]  ||
+            [monitor[@"isPrimary"] boolValue]||
+            [monitor[@"IsPrimary"] boolValue];
+        if (isPrimary) return monitor;
+    }
+    return nil;
+}
+
+static NSRect MenuBarRectForStartupScreen(void)
+{
+    NSScreen *screen = [NSScreen mainScreen];
+    NSRect sf = screen ? screen.frame : NSZeroRect;
+
+    NSDictionary *primaryMonitor = PrimaryMonitorFromSystemPreferences();
+    if (primaryMonitor) {
+        double width =
+            [primaryMonitor[@"width"] doubleValue] ?: [primaryMonitor[@"Width"] doubleValue];
+        double scale =
+            [primaryMonitor[@"scale"] doubleValue] ?: [primaryMonitor[@"Scale"] doubleValue];
+
+        if (width > 0.0) {
+            sf.size.width = (scale > 0.0) ? (CGFloat)(width / scale) : (CGFloat)width;
+        }
+    }
+
+    if (sf.size.width  < 32) sf.size.width  = kFallbackWidth;
+    if (sf.size.height < 32) sf.size.height = kFallbackScreenH;
+
+    return NSMakeRect(sf.origin.x,
+                      sf.origin.y + sf.size.height - kBarHeight,
+                      sf.size.width,
+                      kBarHeight);
+}
+
 /* ---------------------------------------------------------------------- */
+
+/* Identifier used as kMenuItemIdentifier for the synthetic Quit item shown
+ * when a non-GNUstep (X11 / foreign Wayland) application is in focus.
+ * MenuBarController intercepts this in -performMenuItemWithIdentifier:.    */
+static NSString * const kForeignQuitIdentifier = @"__ambrosia_quit_foreign__";
 
 @implementation MenuBarController {
     NSPanel              *_menuPanel;
@@ -44,6 +143,15 @@ static BOOL ReadMenuBarPref(NSString *key)
     VolumeStatusItem     *_volumeItem;
     /* Tray icon manager (SNI / StatusNotifierItem) */
     TrayManager          *_trayManager;
+
+    /* Non-GNUstep (foreign) application focus tracking.
+     * Set when the compositor reports focus on a PID that has no DO
+     * registration; cleared as soon as a GNUstep app registers.           */
+    int32_t               _activeForeignPID;
+    NSString             *_activeForeignName;
+    /* Monotonically-increasing token used to cancel pending delayed
+     * foreign-app activations if a GNUstep app registers first.           */
+    NSInteger             _foreignToken;
 }
 
 @synthesize menuPanel    = _menuPanel;
@@ -58,6 +166,7 @@ static BOOL ReadMenuBarPref(NSString *key)
     [self _createPanel];
     [self _startDOServer];
     [self _observeWorkspace];
+    [self _observeCompositorFocus];
     [self _startTrackingGFinder];
     [self _setupStatusPlugins];
     [self _observeMenuBarPrefs];
@@ -140,11 +249,6 @@ static BOOL ReadMenuBarPref(NSString *key)
 
 - (void)_createPanel
 {
-    NSScreen *screen = [NSScreen mainScreen];
-    NSRect sf = screen ? screen.frame : NSZeroRect;
-    if (sf.size.width  < 32) sf.size.width  = kFallbackWidth;
-    if (sf.size.height < 32) sf.size.height = kFallbackScreenH;
-
     /*
      * GNUstep uses a bottom-left coordinate origin; y increases upward.
      *
@@ -158,10 +262,7 @@ static BOOL ReadMenuBarPref(NSString *key)
      * surface (namespace "gnustep-mainmenu", layer LAYER_TOP) with a 0 px
      * margin from the top edge of the output.
      */
-    NSRect barRect = NSMakeRect(sf.origin.x,
-                                sf.origin.y + sf.size.height - kBarHeight,
-                                sf.size.width,
-                                kBarHeight);
+    NSRect barRect = MenuBarRectForStartupScreen();
 
     _menuPanel = [[NSPanel alloc]
                   initWithContentRect:barRect
@@ -206,6 +307,101 @@ static BOOL ReadMenuBarPref(NSString *key)
         NSLog(@"MenuServer: Distributed Objects service \"%@\" registered.",
               kMenuServerConnectionName);
     }
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Compositor focus observation (non-GNUstep apps)
+
+- (void)_observeCompositorFocus
+{
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_compositorFocusChanged:)
+               name:kAmbrosiaApplicationActivatedNotification
+             object:nil
+  suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
+}
+
+/**
+ * Fired by the compositor whenever keyboard focus moves to a different process.
+ *
+ * If the newly focused PID belongs to a GNUstep app that is already DO-
+ * registered we do nothing — the app will update the bar itself.  Otherwise
+ * we schedule a short delay (100 ms) to let a GNUstep app potentially
+ * register via DO.  If no registration arrives in that window, we show a
+ * minimal menu with just the app name and a Quit item.
+ */
+- (void)_compositorFocusChanged:(NSNotification *)note
+{
+    NSDictionary *info   = note.userInfo;
+    int32_t       pid    = (int32_t)[info[@"pid"] intValue];
+    NSString     *name   = info[@"appName"];
+
+    if (pid <= 0) return;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        /* Already the registered GNUstep app — it handles its own bar. */
+        if (pid == self->_activeClientPID) return;
+
+        /* Bump the token so any previous pending activation is cancelled. */
+        NSInteger myToken = ++self->_foreignToken;
+
+        /* Allow GNUstep apps time to call -applicationDidActivate:menuItems:pid:
+         * via Distributed Objects before we commit to a foreign-app menu.     */
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(100 * NSEC_PER_MSEC)),
+                       dispatch_get_main_queue(), ^{
+            /* Cancelled: a newer focus event has arrived. */
+            if (self->_foreignToken != myToken) return;
+            /* A GNUstep app registered in the meantime — leave it alone. */
+            if (self->_activeClientPID == pid) return;
+
+            [self _activateForeignAppWithPID:pid name:name];
+        });
+    });
+}
+
+/** Resolve and display a synthetic menu for a non-GNUstep focused window. */
+- (void)_activateForeignAppWithPID:(int32_t)pid name:(NSString *)name
+{
+    /* If no name arrived from the compositor, fall back to /proc/pid/comm */
+    if (!name.length) {
+        NSString *commPath =
+            [NSString stringWithFormat:@"/proc/%d/comm", pid];
+        NSString *comm = [NSString stringWithContentsOfFile:commPath
+                                                   encoding:NSUTF8StringEncoding
+                                                      error:nil];
+        name = [comm stringByTrimmingCharactersInSet:
+                [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    }
+    if (!name.length) name = @"Application";
+
+    name = CapitaliseAppName(name);
+
+    _activeForeignPID  = pid;
+    _activeForeignName = [name copy];
+
+    /* Synthetic menu: bold app-name button → "Quit <Name>" dropdown */
+    NSString *quitTitle = [NSString stringWithFormat:@"Quit %@", name];
+    NSArray *syntheticItems = @[@{
+        kMenuItemTitle:    name,
+        kMenuItemChildren: @[@{
+            kMenuItemTitle:      quitTitle,
+            kMenuItemIdentifier: kForeignQuitIdentifier,
+            kMenuItemKeyEquiv:   @"q",
+        }],
+    }];
+
+    [self _updateActiveApp:name menuItems:syntheticItems pid:0];
+}
+
+/** Send SIGTERM to the currently focused non-GNUstep application. */
+- (void)_quitForeignApp
+{
+    if (_activeForeignPID <= 0) return;
+    NSLog(@"MenuServer: sending SIGTERM to foreign app \"%@\" (pid %d)",
+          _activeForeignName, _activeForeignPID);
+    kill((pid_t)_activeForeignPID, SIGTERM);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -289,6 +485,10 @@ static BOOL ReadMenuBarPref(NSString *key)
                   self->_activeAppName, self->_activeClientPID);
             self->_activeClientPID = 0;
         }
+        /* A GNUstep app is now the owner — clear any pending foreign state. */
+        self->_activeForeignPID  = 0;
+        self->_activeForeignName = nil;
+        ++self->_foreignToken;   /* cancel any queued foreign activation */
         [self _updateActiveApp:nameCopy menuItems:itemsCopy pid:pidValue];
     });
 }
@@ -321,7 +521,15 @@ static BOOL ReadMenuBarPref(NSString *key)
  */
 - (void)performMenuItemWithIdentifier:(NSString *)identifier
 {
-    if (!identifier.length || _activeClientPID == 0) return;
+    if (!identifier.length) return;
+
+    /* Synthetic quit for a non-GNUstep (foreign) focused window. */
+    if ([identifier isEqualToString:kForeignQuitIdentifier]) {
+        [self _quitForeignApp];
+        return;
+    }
+
+    if (_activeClientPID == 0) return;
 
     [[NSDistributedNotificationCenter defaultCenter]
         postNotificationName:kMenuItemSelectedNotification
@@ -463,15 +671,7 @@ static BOOL ReadMenuBarPref(NSString *key)
 - (void)contractPanelDropdown
 {
     /* Restore to the standard kBarHeight-pixel bar. */
-    NSScreen *screen = [NSScreen mainScreen];
-    NSRect sf = screen ? screen.frame : NSZeroRect;
-    if (sf.size.width  < 32) sf.size.width  = kFallbackWidth;
-    if (sf.size.height < 32) sf.size.height = kFallbackScreenH;
-
-    NSRect barRect = NSMakeRect(sf.origin.x,
-                                sf.origin.y + sf.size.height - kBarHeight,
-                                sf.size.width,
-                                kBarHeight);
+    NSRect barRect = MenuBarRectForStartupScreen();
     [_menuPanel setFrame:barRect display:YES animate:NO];
 }
 

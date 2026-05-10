@@ -1,5 +1,8 @@
 #import "AmbrosiaMenusBundle.h"
 #import <AppKit/AppKit.h>
+#import <objc/runtime.h>
+
+static const void *kAmbrosiaItemIDKey = &kAmbrosiaItemIDKey;
 
 /* ---------------------------------------------------------------------- */
 #pragma mark - AmbrosiaMenusBundle
@@ -209,8 +212,24 @@
 #pragma mark - Descriptor building
 
 /**
+ * Returns a stable UUID for a menu item, creating and caching one the first
+ * time it is seen.  Re-registrations reuse the same UUID so that a
+ * kMenuItemSelectedNotification that arrives after registerMenuWithServer
+ * clears _itemTable can still be dispatched correctly.
+ */
+- (NSString *)_identifierForItem:(NSMenuItem *)item
+{
+    NSString *existing = objc_getAssociatedObject(item, kAmbrosiaItemIDKey);
+    if (existing) return existing;
+    NSString *newID = [[NSUUID UUID] UUIDString];
+    objc_setAssociatedObject(item, kAmbrosiaItemIDKey, newID,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return newID;
+}
+
+/**
  * Recursively converts an NSMenu into the NSDictionary descriptor array
- * expected by MenuServerProtocol.  Assigns a UUID identifier to each
+ * expected by MenuServerProtocol.  Assigns a stable UUID identifier to each
  * non-separator item and records the NSMenuItem in _itemTable so that
  * the kMenuItemSelectedNotification handler can dispatch actions.
  */
@@ -227,7 +246,7 @@
             continue;
         }
 
-        NSString *identifier = [[NSUUID UUID] UUIDString];
+        NSString *identifier = [self _identifierForItem:item];
         desc[kMenuItemTitle]      = item.title ?: @"";
         desc[kMenuItemIdentifier] = identifier;
         desc[kMenuItemEnabled]    = @(item.isEnabled);
