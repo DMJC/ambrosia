@@ -1459,8 +1459,8 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     if (view) {
         /* Check if pointer is over a decoration */
         if (view.decoration) {
-            AmbrosiaDecorationHit hit = [view.decoration hitTestX:(cx - view.x + insets.left)
-                                                                  y:(cy - view.y + insets.top)];
+            AmbrosiaDecorationHit hit = [view.decoration hitTestX:(cx - view.x)
+                                                                  y:(cy - view.y)];
             if (hit != AmbrosiaDecorationHitNone) {
                 wlr_seat_pointer_notify_clear_focus(_state->seat);
                 const char *cursor_name = "default";
@@ -2271,8 +2271,8 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     /* Check decoration hit */
     if (view.decoration) {
         NSEdgeInsets insets = [AmbrosiaDecoration frameInsets];
-        AmbrosiaDecorationHit hit = [view.decoration hitTestX:(cx - view.x + insets.left)
-                                                            y:(cy - view.y + insets.top)];
+        AmbrosiaDecorationHit hit = [view.decoration hitTestX:(cx - view.x)
+                                                            y:(cy - view.y)];
         switch (hit) {
             case AmbrosiaDecorationHitTitlebar:
                 [self focusView:view surface:surface];
@@ -2546,6 +2546,13 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
             x11Enabled ? "YES" : "NO", ssdEnabled ? "YES" : "NO");
     [self _applyX11DecorationsEnabled:x11Enabled colors:prefs];
     [self _applyServerSideDecorationsEnabled:ssdEnabled];
+
+    /* Background mode change */
+    NSString *bgMode = prefs[@"backgroundMode"];
+    if (bgMode.length) {
+        NSString *scenePath = prefs[@"sceneFilePath"];
+        [_background applyBackgroundMode:bgMode sceneFilePath:scenePath];
+    }
 }
 
 - (void)_applyX11DecorationsEnabled:(BOOL)enabled colors:(NSDictionary *)colors

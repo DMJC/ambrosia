@@ -50,11 +50,18 @@
 /* Desktop settings outlets */
 @property (nonatomic, strong) IBOutlet NSTextField    *bgImagePathField;
 @property (nonatomic, strong) IBOutlet NSButton       *bgImageChooseButton;
-@property (nonatomic, strong) IBOutlet NSButton       *rotatingCheck;
+/* Background mode radio buttons (replaces the old rotatingCheck checkbox) */
+@property (nonatomic, strong) IBOutlet NSButton       *bgImageRadio;
+@property (nonatomic, strong) IBOutlet NSButton       *rotatingRadio;
+@property (nonatomic, strong) IBOutlet NSButton       *bg3DRadio;
+/* Rotating-mode controls */
 @property (nonatomic, strong) IBOutlet NSTextField    *bgFolderPathField;
 @property (nonatomic, strong) IBOutlet NSButton       *bgFolderChooseButton;
 @property (nonatomic, strong) IBOutlet NSSlider       *intervalSlider;
 @property (nonatomic, strong) IBOutlet NSTextField    *intervalLabel;
+/* 3D-mode controls */
+@property (nonatomic, strong) IBOutlet NSTextField    *sceneFilePathField;
+@property (nonatomic, strong) IBOutlet NSButton       *sceneFileChooseButton;
 
 /* Tab view for switching sections */
 @property (nonatomic, strong) IBOutlet NSTabView      *tabView;
@@ -81,9 +88,10 @@
 - (IBAction)removeSessionItem:(id)sender;
 
 - (IBAction)chooseBgImage:(id)sender;
-- (IBAction)toggleRotating:(id)sender;
+- (IBAction)backgroundModeChanged:(id)sender;
 - (IBAction)chooseBgFolder:(id)sender;
 - (IBAction)intervalChanged:(id)sender;
+- (IBAction)chooseSceneFile:(id)sender;
 
 - (IBAction)applyChanges:(id)sender;
 - (IBAction)revertChanges:(id)sender;

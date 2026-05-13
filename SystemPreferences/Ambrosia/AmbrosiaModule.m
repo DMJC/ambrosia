@@ -452,16 +452,25 @@ static NSString *intervalLabel(NSInteger secs)
     return tab;
 }
 
+static NSButton *MakeRadioButton(NSString *title)
+{
+    NSButton *b = [[NSButton alloc] initWithFrame:NSZeroRect];
+    [b setButtonType:NSRadioButton];
+    b.title = title;
+    b.state = NSControlStateValueOff;
+    return b;
+}
+
 - (NSView *)buildDesktopTab
 {
-    NSView *tab = [[GNFlippedView alloc] initWithFrame:NSMakeRect(0, 0, MV_TAB_W, 400)];
+    NSView *tab = [[GNFlippedView alloc] initWithFrame:NSMakeRect(0, 0, MV_TAB_W, 480)];
     tab.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 
-    CGFloat y   = MV_MARGIN;
-    CGFloat fW  = MV_TAB_W - MV_CTRL_X - 80 - MV_MARGIN; /* path-field width */
+    CGFloat y    = MV_MARGIN;
+    CGFloat fW   = MV_TAB_W - MV_CTRL_X - 80 - MV_MARGIN;
     CGFloat btnW = 72;
 
-    /* ---- Background Image ---- */
+    /* ---- Background Image path (used in "Background Image" mode) ---- */
     NSTextField *imgLbl = MakeLabel(@"Background Image:");
     imgLbl.frame = NSMakeRect(MV_MARGIN, y, MV_LBL_W, MV_ROW_H);
     [tab addSubview:imgLbl];
@@ -479,18 +488,38 @@ static NSString *intervalLabel(NSInteger secs)
     [_bgImageChooseButton setTarget:self];
     [_bgImageChooseButton setAction:@selector(chooseBgImage:)];
     [tab addSubview:_bgImageChooseButton];
+    y += MV_ROW_H + MV_ROW_GAP * 2;
+
+    /* ---- Background Mode radio buttons ---- */
+    NSTextField *modeLbl = MakeLabel(@"Background Mode:");
+    modeLbl.frame = NSMakeRect(MV_MARGIN, y, MV_LBL_W, MV_ROW_H);
+    [tab addSubview:modeLbl];
+
+    _bgImageRadio = MakeRadioButton(@"Background Image");
+    _bgImageRadio.frame = NSMakeRect(MV_CTRL_X, y, MV_TAB_W - MV_CTRL_X - MV_MARGIN, MV_ROW_H);
+    _bgImageRadio.autoresizingMask = NSViewWidthSizable;
+    [_bgImageRadio setTarget:self];
+    [_bgImageRadio setAction:@selector(backgroundModeChanged:)];
+    [tab addSubview:_bgImageRadio];
     y += MV_ROW_H + MV_ROW_GAP;
 
-    /* ---- Rotating Background Images ---- */
-    _rotatingCheck = MakeCheckbox(@"Rotating Background Images");
-    _rotatingCheck.frame = NSMakeRect(MV_MARGIN, y, MV_TAB_W - MV_MARGIN * 2, MV_ROW_H);
-    _rotatingCheck.autoresizingMask = NSViewWidthSizable;
-    [_rotatingCheck setTarget:self];
-    [_rotatingCheck setAction:@selector(toggleRotating:)];
-    [tab addSubview:_rotatingCheck];
+    _rotatingRadio = MakeRadioButton(@"Rotating Background Images");
+    _rotatingRadio.frame = NSMakeRect(MV_CTRL_X, y, MV_TAB_W - MV_CTRL_X - MV_MARGIN, MV_ROW_H);
+    _rotatingRadio.autoresizingMask = NSViewWidthSizable;
+    [_rotatingRadio setTarget:self];
+    [_rotatingRadio setAction:@selector(backgroundModeChanged:)];
+    [tab addSubview:_rotatingRadio];
     y += MV_ROW_H + MV_ROW_GAP;
 
-    /* ---- Images Folder ---- */
+    _bg3DRadio = MakeRadioButton(@"3D Desktop Background");
+    _bg3DRadio.frame = NSMakeRect(MV_CTRL_X, y, MV_TAB_W - MV_CTRL_X - MV_MARGIN, MV_ROW_H);
+    _bg3DRadio.autoresizingMask = NSViewWidthSizable;
+    [_bg3DRadio setTarget:self];
+    [_bg3DRadio setAction:@selector(backgroundModeChanged:)];
+    [tab addSubview:_bg3DRadio];
+    y += MV_ROW_H + MV_ROW_GAP * 2;
+
+    /* ---- Images Folder (rotating mode) ---- */
     NSTextField *folderLbl = MakeLabel(@"Images Folder:");
     folderLbl.frame = NSMakeRect(MV_MARGIN, y, MV_LBL_W, MV_ROW_H);
     [tab addSubview:folderLbl];
@@ -510,7 +539,7 @@ static NSString *intervalLabel(NSInteger secs)
     [tab addSubview:_bgFolderChooseButton];
     y += MV_ROW_H + MV_ROW_GAP;
 
-    /* ---- Rotation Interval (discrete slider) ---- */
+    /* ---- Rotation Interval ---- */
     _intervalSlider = [[NSSlider alloc] initWithFrame:NSZeroRect];
     _intervalSlider.minValue                 = 0;
     _intervalSlider.maxValue                 = (double)(kIntervalCount - 1);
@@ -524,9 +553,30 @@ static NSString *intervalLabel(NSInteger secs)
                     slider:_intervalSlider
                 valueLabel:_intervalLabel
                        atY:y];
+    y += MV_ROW_GAP;
 
-    /* Update enabled state of folder controls based on checkbox default (off). */
-    [self _updateRotatingControlsEnabled:NO];
+    /* ---- Scene File (3D mode) ---- */
+    NSTextField *sceneLbl = MakeLabel(@"Scene File:");
+    sceneLbl.frame = NSMakeRect(MV_MARGIN, y, MV_LBL_W, MV_ROW_H);
+    [tab addSubview:sceneLbl];
+
+    _sceneFilePathField = [[NSTextField alloc] initWithFrame:
+                            NSMakeRect(MV_CTRL_X, y, fW, MV_ROW_H)];
+    _sceneFilePathField.placeholderString = @"(path to scene.txt)";
+    _sceneFilePathField.editable = YES;
+    _sceneFilePathField.autoresizingMask = NSViewWidthSizable;
+    [tab addSubview:_sceneFilePathField];
+
+    _sceneFileChooseButton = MakePushButton(@"Choose…");
+    _sceneFileChooseButton.frame = NSMakeRect(MV_CTRL_X + fW + 8, y, btnW, MV_ROW_H);
+    _sceneFileChooseButton.autoresizingMask = NSViewMinXMargin;
+    [_sceneFileChooseButton setTarget:self];
+    [_sceneFileChooseButton setAction:@selector(chooseSceneFile:)];
+    [tab addSubview:_sceneFileChooseButton];
+
+    /* Default state: Background Image mode selected */
+    _bgImageRadio.state = NSControlStateValueOn;
+    [self _updateDesktopControlsForMode:@"image"];
 
     return tab;
 }
@@ -724,14 +774,19 @@ static NSString *intervalLabel(NSInteger secs)
 
     /* ---- Desktop ---- */
     _bgImagePathField.stringValue  = _desktopPrefs[@"backgroundImagePath"] ?: @"";
-    BOOL rotating = [_desktopPrefs[@"rotatingImages"] boolValue];
-    _rotatingCheck.state = rotating ? NSControlStateValueOn : NSControlStateValueOff;
     _bgFolderPathField.stringValue = _desktopPrefs[@"rotatingImagesFolder"] ?: @"";
+    _sceneFilePathField.stringValue = _desktopPrefs[@"sceneFilePath"] ?: @"";
     NSInteger secs = [_desktopPrefs[@"rotationInterval"] integerValue];
     if (secs <= 0) secs = 30;
     _intervalSlider.integerValue = sliderPosForInterval(secs);
     _intervalLabel.stringValue   = intervalLabel(intervalForSliderPos(_intervalSlider.integerValue));
-    [self _updateRotatingControlsEnabled:rotating];
+
+    /* backgroundMode is stored in the Compositor plist */
+    NSString *mode = _compPrefs[@"backgroundMode"] ?: @"image";
+    _bgImageRadio.state  = [mode isEqualToString:@"image"]    ? NSControlStateValueOn : NSControlStateValueOff;
+    _rotatingRadio.state = [mode isEqualToString:@"rotating"] ? NSControlStateValueOn : NSControlStateValueOff;
+    _bg3DRadio.state     = [mode isEqualToString:@"3d"]       ? NSControlStateValueOn : NSControlStateValueOff;
+    [self _updateDesktopControlsForMode:mode];
 }
 
 - (void)updateLabels
@@ -846,13 +901,36 @@ static NSString *intervalLabel(NSInteger secs)
 /* ---------------------------------------------------------------------- */
 #pragma mark - IBActions – Desktop
 
+- (void)_updateDesktopControlsForMode:(NSString *)mode
+{
+    BOOL isImage    = [mode isEqualToString:@"image"];
+    BOOL isRotating = [mode isEqualToString:@"rotating"];
+    BOOL is3D       = [mode isEqualToString:@"3d"];
+
+    _bgImagePathField.enabled      = isImage;
+    _bgImageChooseButton.enabled   = isImage;
+
+    _bgFolderPathField.enabled     = isRotating;
+    _bgFolderChooseButton.enabled  = isRotating;
+    _intervalSlider.enabled        = isRotating;
+    _intervalLabel.textColor       = isRotating
+        ? [NSColor controlTextColor] : [NSColor disabledControlTextColor];
+
+    _sceneFilePathField.enabled    = is3D;
+    _sceneFileChooseButton.enabled = is3D;
+}
+
+/* Legacy helper kept for compatibility */
 - (void)_updateRotatingControlsEnabled:(BOOL)enabled
 {
-    _bgFolderPathField.enabled    = enabled;
-    _bgFolderChooseButton.enabled = enabled;
-    _intervalSlider.enabled       = enabled;
-    _intervalLabel.textColor      = enabled
-        ? [NSColor controlTextColor] : [NSColor disabledControlTextColor];
+    [self _updateDesktopControlsForMode:enabled ? @"rotating" : @"image"];
+}
+
+- (NSString *)_selectedBackgroundMode
+{
+    if (_rotatingRadio.state == NSControlStateValueOn) return @"rotating";
+    if (_bg3DRadio.state     == NSControlStateValueOn) return @"3d";
+    return @"image";
 }
 
 - (IBAction)chooseBgImage:(id)sender
@@ -868,10 +946,27 @@ static NSString *intervalLabel(NSInteger secs)
     }];
 }
 
-- (IBAction)toggleRotating:(id)sender
+- (IBAction)backgroundModeChanged:(id)sender
 {
-    BOOL on = (_rotatingCheck.state == NSControlStateValueOn);
-    [self _updateRotatingControlsEnabled:on];
+    /* Enforce radio-button mutual exclusion and update dependent controls */
+    _bgImageRadio.state  = (sender == _bgImageRadio)  ? NSControlStateValueOn : NSControlStateValueOff;
+    _rotatingRadio.state = (sender == _rotatingRadio) ? NSControlStateValueOn : NSControlStateValueOff;
+    _bg3DRadio.state     = (sender == _bg3DRadio)     ? NSControlStateValueOn : NSControlStateValueOff;
+    [self _updateDesktopControlsForMode:[self _selectedBackgroundMode]];
+}
+
+- (IBAction)chooseSceneFile:(id)sender
+{
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.allowedFileTypes   = @[@"txt"];
+    panel.canChooseFiles     = YES;
+    panel.canChooseDirectories = NO;
+    panel.message            = @"Select a scene.txt file for the 3D Desktop Background";
+    [panel beginSheetModalForWindow:self.mainView.window ?: [NSApp mainWindow]
+                  completionHandler:^(NSModalResponse r) {
+        if (r != NSModalResponseOK) return;
+        self->_sceneFilePathField.stringValue = panel.URL.path ?: @"";
+    }];
 }
 
 - (IBAction)chooseBgFolder:(id)sender
@@ -980,6 +1075,9 @@ static NSString *intervalLabel(NSInteger secs)
 
 - (IBAction)applyChanges:(id)sender
 {
+    /* Resolve background mode up front — needed by both Compositor and Desktop sections */
+    NSString *bgMode = [self _selectedBackgroundMode];
+
     /* ---- Compositor ---- */
     BOOL x11Dec = (_x11DecorationsCheck.state == NSControlStateValueOn);
     _compPrefs[@"windowTransparency"]    = @(_transparencySlider.doubleValue);
@@ -1038,6 +1136,8 @@ static NSString *intervalLabel(NSInteger secs)
         @"enableBlur":            _compPrefs[@"enableBlur"],
         @"decorationTheme":       _compPrefs[@"decorationTheme"],
         @"x11Decorations":        _compPrefs[@"x11Decorations"] ?: @NO,
+        @"backgroundMode":        bgMode,
+        @"sceneFilePath":         _desktopPrefs[@"sceneFilePath"] ?: @"",
     } mutableCopy];
     /* Propagate all theme colour keys recognised by AmbrosiaDecoration */
     NSSet *colorKeys = [NSSet setWithObjects:
@@ -1067,13 +1167,16 @@ static NSString *intervalLabel(NSInteger secs)
     /* ---- Desktop ---- */
     NSInteger sliderPos   = _intervalSlider.integerValue;
     NSInteger intervalSec = intervalForSliderPos(sliderPos);
-    BOOL      rotating    = (_rotatingCheck.state == NSControlStateValueOn);
 
     _desktopPrefs[@"backgroundImagePath"]   = [_bgImagePathField.stringValue copy] ?: @"";
-    _desktopPrefs[@"rotatingImages"]        = @(rotating);
     _desktopPrefs[@"rotatingImagesFolder"]  = [_bgFolderPathField.stringValue copy] ?: @"";
     _desktopPrefs[@"rotationInterval"]      = @(intervalSec);
+    _desktopPrefs[@"sceneFilePath"]         = [_sceneFilePathField.stringValue copy] ?: @"";
     SavePlist(_desktopPrefs, _desktopPrefsPath);
+
+    /* backgroundMode is written to the Compositor plist */
+    _compPrefs[@"backgroundMode"] = bgMode;
+    SavePlist(_compPrefs, _compPrefsPath);
 
     [[NSDistributedNotificationCenter defaultCenter]
      postNotificationName:kDesktopPrefsChanged

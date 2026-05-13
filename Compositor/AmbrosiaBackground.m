@@ -1,4 +1,5 @@
 #import "AmbrosiaBackground.h"
+#import "Ambrosia3DBackground.h"
 
 #include <wlr/util/log.h>
 #include <wlr/interfaces/wlr_buffer.h>  /* wlr_buffer_impl, wlr_buffer_init — unstable interface */
@@ -244,6 +245,7 @@ static int bg_timer_cb(void *data);   /* forward */
  * ---------------------------------------------------------------------- */
 
 static NSString *const kDesktopPlistName = @"org.gnustep.AmbrosiaDesktop.plist";
+static NSString *const kCompPlistName    = @"org.gnustep.AmbrosiaCompositor.plist";
 
 @implementation AmbrosiaBackground {
     struct wl_event_loop      *_loop;
@@ -252,7 +254,14 @@ static NSString *const kDesktopPlistName = @"org.gnustep.AmbrosiaDesktop.plist";
 
     NSMutableArray<_ABGOutput *> *_outputs;
 
-    /* Current preferences */
+    /* Background mode: "image", "rotating", or "3d" */
+    NSString  *_mode;
+    NSString  *_sceneFilePath;   /* path to scene.txt for 3D mode */
+
+    /* 3D background (non-nil only when mode == "3d") */
+    Ambrosia3DBackground *_3dBg;
+
+    /* Current image preferences */
     NSString  *_imagePath;       /* single wallpaper path */
     BOOL       _rotating;
     NSString  *_folderPath;
@@ -277,6 +286,7 @@ static NSString *const kDesktopPlistName = @"org.gnustep.AmbrosiaDesktop.plist";
     _layout  = layout;
     _outputs = [NSMutableArray array];
     _intervalSecs = 30;
+    _mode = @"image";
     return self;
 }
 
@@ -296,30 +306,87 @@ static NSString *const kDesktopPlistName = @"org.gnustep.AmbrosiaDesktop.plist";
         prefsDir = [NSHomeDirectory()
                     stringByAppendingPathComponent:@"GNUstep/Library/Preferences"];
     }
-    NSString *path = [prefsDir stringByAppendingPathComponent:kDesktopPlistName];
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:path] ?: @{};
+    /* Desktop plist: image paths, rotation settings, sceneFilePath */
+    NSString *desktopPath = [prefsDir stringByAppendingPathComponent:kDesktopPlistName];
+    NSMutableDictionary *prefs = [([NSDictionary dictionaryWithContentsOfFile:desktopPath] ?: @{}) mutableCopy];
+
+    /* Compositor plist: backgroundMode */
+    NSString *compPath = [prefsDir stringByAppendingPathComponent:kCompPlistName];
+    NSDictionary *compPrefs = [NSDictionary dictionaryWithContentsOfFile:compPath] ?: @{};
+    NSString *mode = compPrefs[@"backgroundMode"];
+    if (mode.length) prefs[@"backgroundMode"] = mode;
+
     [self applyPreferences:prefs];
 }
 
 - (void)applyPreferences:(NSDictionary *)prefs
 {
-    _imagePath    = [prefs[@"backgroundImagePath"] copy];
-    _rotating     = [prefs[@"rotatingImages"] boolValue];
-    _folderPath   = [prefs[@"rotatingImagesFolder"] copy];
-    _intervalSecs = [prefs[@"rotationInterval"] integerValue];
-    if (_intervalSecs <= 0) _intervalSecs = 30;
-
-    [self _stopTimer];
-
-    if (_rotating && _folderPath.length) {
-        [self _scanFolder];
-        _fileIndex = 0;
+    /* Update stored image/rotation/scene settings */
+    if (prefs[@"backgroundImagePath"])  _imagePath    = [prefs[@"backgroundImagePath"] copy];
+    if (prefs[@"rotatingImagesFolder"]) _folderPath   = [prefs[@"rotatingImagesFolder"] copy];
+    if (prefs[@"rotationInterval"]) {
+        _intervalSecs = [prefs[@"rotationInterval"] integerValue];
+        if (_intervalSecs <= 0) _intervalSecs = 30;
     }
+    if (prefs[@"sceneFilePath"]) _sceneFilePath = [prefs[@"sceneFilePath"] copy];
 
-    [self _refreshAllOutputs];
+    /* Switch mode if the key is present; otherwise re-apply current mode settings */
+    NSString *newMode = prefs[@"backgroundMode"];
+    if (newMode.length) {
+        [self applyBackgroundMode:newMode sceneFilePath:_sceneFilePath];
+    } else {
+        /* Re-apply image/rotation settings in current mode */
+        [self applyBackgroundMode:_mode sceneFilePath:_sceneFilePath];
+    }
+}
 
-    if (_rotating && _imageFiles.count > 1) {
-        [self _startTimer];
+- (void)applyBackgroundMode:(NSString *)mode sceneFilePath:(NSString *)scenePath
+{
+    if (scenePath.length) _sceneFilePath = [scenePath copy];
+    if (!mode.length) mode = @"image";
+
+    BOOL modeChanged = ![mode isEqualToString:_mode];
+    _mode = mode;
+
+    if ([mode isEqualToString:@"3d"]) {
+        /* Stop image rotation */
+        [self _stopTimer];
+        /* Hide existing image nodes */
+        for (_ABGOutput *rec in _outputs)
+            if (rec.node) wlr_scene_node_set_enabled(&rec.node->node, false);
+        /* (Re)create 3D background when mode changes or scene path changed */
+        if (modeChanged || !_3dBg) {
+            [_3dBg stop];
+            _3dBg = nil;
+            if (_sceneFilePath.length) {
+                _3dBg = [[Ambrosia3DBackground alloc]
+                          initWithEventLoop:_loop
+                                  sceneTree:_bgTree
+                               outputLayout:_layout
+                              sceneFilePath:_sceneFilePath];
+                for (_ABGOutput *rec in _outputs)
+                    [_3dBg handleOutputAdded:rec.output];
+            } else {
+                wlr_log(WLR_ERROR, "background: 3D mode selected but no sceneFilePath set");
+            }
+        }
+    } else {
+        /* Leaving 3D mode — tear down 3D renderer */
+        if (_3dBg) {
+            [_3dBg stop];
+            _3dBg = nil;
+        }
+
+        [self _stopTimer];
+        _rotating = [mode isEqualToString:@"rotating"];
+
+        if (_rotating && _folderPath.length) {
+            [self _scanFolder];
+            _fileIndex = 0;
+        }
+        [self _refreshAllOutputs];
+        if (_rotating && _imageFiles.count > 1)
+            [self _startTimer];
     }
 }
 
@@ -329,11 +396,17 @@ static NSString *const kDesktopPlistName = @"org.gnustep.AmbrosiaDesktop.plist";
     rec.output = output;
     rec.node   = NULL;
     [_outputs addObject:rec];
-    [self _applyCurrentImageToOutput:rec];
+    if ([_mode isEqualToString:@"3d"]) {
+        [_3dBg handleOutputAdded:output];
+    } else {
+        [self _applyCurrentImageToOutput:rec];
+    }
 }
 
 - (void)handleOutputRemoved:(struct wlr_output *)output
 {
+    if ([_mode isEqualToString:@"3d"])
+        [_3dBg handleOutputRemoved:output];
     for (NSUInteger i = 0; i < _outputs.count; i++) {
         _ABGOutput *rec = _outputs[i];
         if (rec.output != output) continue;
@@ -346,7 +419,12 @@ static NSString *const kDesktopPlistName = @"org.gnustep.AmbrosiaDesktop.plist";
     }
 }
 
-- (void)stop { [self _stopTimer]; }
+- (void)stop
+{
+    [self _stopTimer];
+    [_3dBg stop];
+    _3dBg = nil;
+}
 
 /* ---------------------------------------------------------------------- */
 #pragma mark - Private — folder scanning

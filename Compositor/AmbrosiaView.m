@@ -287,8 +287,15 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
 {
     _x = x;
     _y = y;
-    wlr_scene_node_set_position(&_state->scene_tree->node, x, y);
-    [_compositor updateFractionalScaleForSurface:[self surface] x:x y:y];
+
+    /* When a decoration is active, x/y is the FRAME top-left.
+     * The scene tree must sit at the surface origin, which is inset
+     * (B, T) from the frame — matching AmbrosiaXWaylandView.moveTo:y: */
+    int scene_x = x + (_decoration ? AMBROSIA_BORDER_WIDTH  : 0);
+    int scene_y = y + (_decoration ? AMBROSIA_TITLEBAR_HEIGHT : 0);
+
+    wlr_scene_node_set_position(&_state->scene_tree->node, scene_x, scene_y);
+    [_compositor updateFractionalScaleForSurface:[self surface] x:scene_x y:scene_y];
 }
 
 - (void)updateTitle

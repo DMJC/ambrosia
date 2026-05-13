@@ -11,15 +11,16 @@ ambrosia-compositor_OBJC_FILES = \
 	AmbrosiaDecoration.m \
 	AmbrosiaInput.m \
 	AmbrosiaSession.m \
-	AmbrosiaBackground.m
+	AmbrosiaBackground.m \
+	Ambrosia3DBackground.m
 
 ambrosia-compositor_OBJCFLAGS = \
-	$(shell pkg-config --cflags wlroots-0.20 wayland-server xkbcommon cairo xcb xcb-icccm xcb-ewmh) \
+	$(shell pkg-config --cflags wlroots-0.20 wayland-server xkbcommon cairo xcb xcb-icccm xcb-ewmh egl glesv2) \
 	-DWLR_USE_UNSTABLE \
 	-I$(CURDIR)
 
 ambrosia-compositor_LDFLAGS = \
-	$(shell pkg-config --libs wlroots-0.20 wayland-server xkbcommon cairo xcb xcb-icccm xcb-ewmh) \
+	$(shell pkg-config --libs wlroots-0.20 wayland-server xkbcommon cairo xcb xcb-icccm xcb-ewmh egl glesv2) \
 	$(shell gnustep-config --gui-libs) \
 	-ldrm -ljpeg
 

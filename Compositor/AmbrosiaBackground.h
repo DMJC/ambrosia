@@ -53,6 +53,17 @@
 /** Cancel all timers; call before the event loop exits. */
 - (void)stop;
 
+/**
+ * Switch background mode without reloading image preferences.
+ * Called by the compositor when AmbrosiaCompositorPrefsChanged carries
+ * a new backgroundMode ("image", "rotating", or "3d").
+ *
+ * @param mode       One of @"image", @"rotating", @"3d".
+ * @param scenePath  Path to the scene.txt file (used only when mode is @"3d").
+ *                   Pass nil to reuse the last configured path.
+ */
+- (void)applyBackgroundMode:(NSString *)mode sceneFilePath:(NSString *)scenePath;
+
 @end
 
 #endif /* AMBROSIA_BACKGROUND_H */
