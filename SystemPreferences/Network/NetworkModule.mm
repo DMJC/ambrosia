@@ -107,7 +107,7 @@ static const CGFloat kConnectionRowHeight = 40.0;
     CGFloat tableHeight = kConnectionRowHeight * rowCount;
     if (tableHeight < 300)
         tableHeight = 300;
-    [self.connectionListView setFrame:NSMakeRect(0, 0, 160, tableHeight)];
+    [self.connectionListView setFrame:NSMakeRect(0, 0, 240, tableHeight)];
     [self.connectionListView reloadData];
 }
 
@@ -129,26 +129,6 @@ static const CGFloat kConnectionRowHeight = 40.0;
     return [[[NSImage alloc] initWithContentsOfFile:path] autorelease];
 }
 
-- (NSImage *)dotImageForState:(BOOL)connected {
-    static NSImage *greenDot = nil;
-    static NSImage *redDot = nil;
-    if (!greenDot) {
-        NSImage *g = [[[NSImage alloc] initWithSize:NSMakeSize(8, 8)] autorelease];
-        [g lockFocus];
-        [[NSColor greenColor] set];
-        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(0, 0, 8, 8)] fill];
-        [g unlockFocus];
-        greenDot = [g retain];
-
-        NSImage *r = [[[NSImage alloc] initWithSize:NSMakeSize(8, 8)] autorelease];
-        [r lockFocus];
-        [[NSColor redColor] set];
-        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(0, 0, 8, 8)] fill];
-        [r unlockFocus];
-        redDot = [r retain];
-    }
-    return connected ? greenDot : redDot;
-}
 
 - (NSString *)maskFromPrefix:(NSInteger)prefix {
     uint32_t mask = prefix == 0 ? 0 : 0xffffffff << (32 - prefix);
@@ -263,14 +243,31 @@ static const CGFloat kConnectionRowHeight = 40.0;
 
 - (void)setupUI {
     NSView *contentView = [self mainView];
-    self.mainView.frame = NSMakeRect(0, 0, 400, 360);
+    self.mainView.frame = NSMakeRect(0, 0, 540, 360);
 
-    NSScrollView *scrollView = [[[NSScrollView alloc] initWithFrame:NSMakeRect(20, 40, 160, 300)] autorelease];
-    NSTableView *tableView = [[[NSTableView alloc] initWithFrame:NSMakeRect(0, 0, 160, 300)] autorelease];
+    NSScrollView *scrollView = [[[NSScrollView alloc] initWithFrame:NSMakeRect(20, 40, 240, 300)] autorelease];
+    NSTableView *tableView = [[[NSTableView alloc] initWithFrame:NSMakeRect(0, 0, 240, 300)] autorelease];
     [tableView setRowHeight:kConnectionRowHeight];
-    NSTableColumn *column = [[[NSTableColumn alloc] initWithIdentifier:@"TypeColumn"] autorelease];
-    [column setWidth:160];
-    [tableView addTableColumn:column];
+    [tableView setGridStyleMask:NSTableViewGridNone];
+    [tableView setDrawsGrid:NO];
+    [tableView setIntercellSpacing:NSMakeSize(0, 0)];
+
+    NSTableColumn *statusCol = [[[NSTableColumn alloc] initWithIdentifier:@"status"] autorelease];
+    [statusCol setWidth:20];
+    [tableView addTableColumn:statusCol];
+
+    NSTableColumn *nameCol = [[[NSTableColumn alloc] initWithIdentifier:@"name"] autorelease];
+    [nameCol setWidth:140];
+    [[nameCol dataCell] setWraps:YES];
+    [tableView addTableColumn:nameCol];
+
+    NSTableColumn *iconCol = [[[NSTableColumn alloc] initWithIdentifier:@"icon"] autorelease];
+    [iconCol setWidth:30];
+    NSImageCell *imageCell = [[[NSImageCell alloc] init] autorelease];
+    [imageCell setImageScaling:NSImageScaleProportionallyDown];
+    [iconCol setDataCell:imageCell];
+    [tableView addTableColumn:iconCol];
+
     [tableView setHeaderView:nil];
     tableView.delegate = self;
     tableView.dataSource = self;
@@ -312,8 +309,8 @@ static const CGFloat kConnectionRowHeight = 40.0;
             setState:(show ? NSControlStateValueOn : NSControlStateValueOff)];
     }
 
-    CGFloat labelX = 200.0;
-    CGFloat valueX = 300.0;
+    CGFloat labelX = 280.0;
+    CGFloat valueX = 390.0;
     CGFloat startY = 350.0;
 
     NSTextField *(^makeLabel)(NSString *, CGFloat) = ^NSTextField *(NSString *text, CGFloat y) {
@@ -427,57 +424,31 @@ static const CGFloat kConnectionRowHeight = 40.0;
     return [self.connectionTypes count];
 }
 
-- (CGFloat)tableView:(NSTableView *)tableView heightOfRow:(NSInteger)row {
-    return kConnectionRowHeight;
-}
-
-- (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
+- (id)tableView:(NSTableView *)tableView objectValueForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
     NSDictionary *info = [self.connectionTypes objectAtIndex:row];
-    CGFloat width = [tableColumn width];
-    NSTableCellView *cell = [tableView makeViewWithIdentifier:@"TypeCell" owner:self];
-    if (!cell) {
-        cell = [[[NSTableCellView alloc] initWithFrame:NSMakeRect(0, 0, width, kConnectionRowHeight)] autorelease];
-        cell.identifier = @"TypeCell";
-
-	NSImageView *imageView = [[[NSImageView alloc] initWithFrame:NSMakeRect(2, 8, 24, 24)] autorelease];
-        [imageView setImageScaling:NSImageScaleProportionallyDown];
-        [imageView setTag:1];
-        cell.imageView = imageView;
-        [cell addSubview:imageView];
-
-        NSTextField *nameField = [[[NSTextField alloc] initWithFrame:NSMakeRect(32, 22, width - 34, 16)] autorelease];
-        [nameField setBezeled:NO];
-        [nameField setBordered:NO];
-        [nameField setEditable:NO];
-        [nameField setDrawsBackground:NO];
-        [nameField setTag:2];
-        cell.textField = nameField;
-        [cell addSubview:nameField];
-
-        NSImageView *dotView = [[[NSImageView alloc] initWithFrame:NSMakeRect(32, 6, 8, 8)] autorelease];
-        [dotView setTag:3];
-        [cell addSubview:dotView];
-
-        NSTextField *statusField = [[[NSTextField alloc] initWithFrame:NSMakeRect(44, 2, width - 46, 16)] autorelease];
-        [statusField setBordered:NO];
-        [statusField setBezeled:NO];
-        [statusField setEditable:NO];
-        [statusField setBackgroundColor:[NSColor clearColor]];
-        [statusField setTag:4];
-        [cell addSubview:statusField];
+    if ([[tableColumn identifier] isEqualToString:@"icon"])
+        return [info objectForKey:@"icon"];
+    if ([[tableColumn identifier] isEqualToString:@"name"]) {
+        BOOL connected = [[info objectForKey:@"connected"] boolValue];
+        NSMutableAttributedString *attrStr = [[[NSMutableAttributedString alloc] init] autorelease];
+        NSDictionary *boldAttrs = @{NSFontAttributeName: [NSFont boldSystemFontOfSize:[NSFont systemFontSize]]};
+        [attrStr appendAttributedString:[[[NSAttributedString alloc]
+            initWithString:[info objectForKey:@"name"]
+                attributes:boldAttrs] autorelease]];
+        NSDictionary *normalAttrs = @{NSFontAttributeName: [NSFont systemFontOfSize:[NSFont smallSystemFontSize]]};
+        NSString *statusText = connected ? @"\nConnected" : @"\nNot Connected";
+        [attrStr appendAttributedString:[[[NSAttributedString alloc]
+            initWithString:statusText
+                attributes:normalAttrs] autorelease]];
+        return attrStr;
     }
-    NSImageView *imageView = [cell viewWithTag:1];
-    NSTextField *nameField = [cell viewWithTag:2];
-    NSImageView *dotView = [cell viewWithTag:3];
-    NSTextField *statusField = [cell viewWithTag:4];
-
-    [imageView setImage:[info objectForKey:@"icon"]];
-    [nameField setStringValue:[info objectForKey:@"name"]];
-    BOOL connected = [[info objectForKey:@"connected"] boolValue];
-    [dotView setImage:[self dotImageForState:connected]];
-    [statusField setStringValue:(connected ? @"Connected" : @"Disconnected")];
-
-    return cell;
+    if ([[tableColumn identifier] isEqualToString:@"status"]) {
+        BOOL connected = [[info objectForKey:@"connected"] boolValue];
+        NSColor *dotColor = connected ? [NSColor greenColor] : [NSColor redColor];
+        NSDictionary *attrs = @{NSForegroundColorAttributeName: dotColor};
+        return [[[NSAttributedString alloc] initWithString:@"●" attributes:attrs] autorelease];
+    }
+    return @"";
 }
 
 - (void)tableViewSelectionDidChange:(NSNotification *)notification {

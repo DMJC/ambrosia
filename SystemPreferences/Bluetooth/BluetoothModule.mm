@@ -253,6 +253,7 @@ static NSButton *BTMakeButton(NSString *title, id target, SEL action)
     NSTextField *heading = BTMakeLabel(@"Bluetooth Devices");
     heading.font  = [NSFont boldSystemFontOfSize:13];
     heading.frame = NSMakeRect(BT_LIST_X, 16, 300, 22);
+    [heading setBezeled:NO];
     [container addSubview:heading];
 
     /* ---- Device list (left panel) ---- */
@@ -305,12 +306,14 @@ static NSButton *BTMakeButton(NSString *title, id target, SEL action)
     NSTextField *detailHeading = BTMakeLabel(@"Device Info");
     detailHeading.font  = [NSFont boldSystemFontOfSize:11];
     detailHeading.frame = NSMakeRect(lblX, y - 24, 200, 18);
+    [detailHeading setBezeled:NO];
     [container addSubview:detailHeading];
 
     NSTextField *(^addRow)(NSString *, CGFloat *) =
         ^NSTextField *(NSString *labelText, CGFloat *yPtr) {
             NSTextField *lbl = BTMakeLabel(labelText);
             lbl.frame = NSMakeRect(lblX, *yPtr, BT_LBL_W, BT_ROW_H);
+            [lbl setBezeled:NO];
             [container addSubview:lbl];
             NSTextField *val = BTMakeValue();
             val.frame = NSMakeRect(BT_VAL_X, *yPtr, BT_VAL_W, BT_ROW_H);
@@ -324,6 +327,11 @@ static NSButton *BTMakeButton(NSString *title, id target, SEL action)
     self.detailPairedField    = addRow(@"Paired:",    &y);
     self.detailTrustedField   = addRow(@"Trusted:",   &y);
     self.detailConnectedField = addRow(@"Connected:", &y);
+    [self.detailNameField setBezeled:NO];
+    [self.detailAddressField setBezeled:NO];
+    [self.detailPairedField setBezeled:NO];
+    [self.detailTrustedField setBezeled:NO];
+    [self.detailConnectedField setBezeled:NO];
 
     y += BT_ROW_GAP * 2;
 
@@ -393,6 +401,7 @@ static NSButton *BTMakeButton(NSString *title, id target, SEL action)
             self.statusField.stringValue =
                 [NSString stringWithFormat:@"%lu device(s)",
                  (unsigned long)enriched.count];
+                 [self.statusField setBezeled:NO];
             [self _updateButtonStates];
         });
     });
