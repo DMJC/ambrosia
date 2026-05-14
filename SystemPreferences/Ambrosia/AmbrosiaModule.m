@@ -19,6 +19,7 @@ static const NSUInteger kIntervalCount   = 6;
 @interface AmbrosiaModule () <NSTableViewDataSource, NSTableViewDelegate>
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *dockItems;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *sessionItems;
+@property (nonatomic, strong) NSMutableArray<NSString *>     *startupCommands;
 @end
 
 /* ---------------------------------------------------------------------- */
@@ -400,12 +401,13 @@ static NSString *intervalLabel(NSInteger secs)
 
 - (NSView *)buildSessionTab
 {
-    NSView *tab = [[GNFlippedView alloc] initWithFrame:NSMakeRect(0, 0, MV_TAB_W, 400)];
+    NSView *tab = [[GNFlippedView alloc] initWithFrame:NSMakeRect(0, 0, MV_TAB_W, 520)];
     tab.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 
     CGFloat y = MV_MARGIN;
 
-    NSTextField *itemsLbl = MakeLabel(@"Session Applications:");
+    /* ---- Ambrosia Applications table ---- */
+    NSTextField *itemsLbl = MakeLabel(@"Ambrosia Applications:");
     itemsLbl.frame = NSMakeRect(MV_MARGIN, y, 250, MV_ROW_H);
     [itemsLbl setBezeled:NO];
     [tab addSubview:itemsLbl];
@@ -434,13 +436,13 @@ static NSString *intervalLabel(NSInteger secs)
     [_sessionItemsTable addTableColumn:nameCol];
     [_sessionItemsTable addTableColumn:pathCol];
 
-    CGFloat tableH = 200;
+    CGFloat tableH = 140;
     NSScrollView *tableScroll = [[NSScrollView alloc]
         initWithFrame:NSMakeRect(MV_MARGIN, y, MV_TAB_W - MV_MARGIN * 2, tableH)];
-    tableScroll.autoresizingMask       = NSViewWidthSizable | NSViewHeightSizable;
-    tableScroll.hasVerticalScroller    = YES;
-    tableScroll.hasHorizontalScroller  = NO;
-    tableScroll.documentView           = _sessionItemsTable;
+    tableScroll.autoresizingMask      = NSViewWidthSizable;
+    tableScroll.hasVerticalScroller   = YES;
+    tableScroll.hasHorizontalScroller = NO;
+    tableScroll.documentView          = _sessionItemsTable;
     [tab addSubview:tableScroll];
     y += tableH + MV_ROW_GAP;
 
@@ -454,6 +456,42 @@ static NSString *intervalLabel(NSInteger secs)
     [_removeSessionItemButton setAction:@selector(removeSessionItem:)];
     [tab addSubview:_addSessionItemButton];
     [tab addSubview:_removeSessionItemButton];
+    y += 28 + MV_ROW_GAP;
+
+    /* ---- Startup Commands table ---- */
+    NSTextField *cmdLbl = MakeLabel(@"Startup Commands:");
+    cmdLbl.frame = NSMakeRect(MV_MARGIN, y, 250, MV_ROW_H);
+    [cmdLbl setBezeled:NO];
+    [tab addSubview:cmdLbl];
+    y += MV_ROW_H + 4;
+
+    _startupCommandsTable = [[NSTableView alloc] initWithFrame:NSZeroRect];
+
+    NSTableColumn *cmdCol = [[NSTableColumn alloc] initWithIdentifier:@"command"];
+    cmdCol.title    = @"Command";
+    cmdCol.editable = YES;
+    [_startupCommandsTable addTableColumn:cmdCol];
+
+    CGFloat cmdTableH = 120;
+    NSScrollView *cmdScroll = [[NSScrollView alloc]
+        initWithFrame:NSMakeRect(MV_MARGIN, y, MV_TAB_W - MV_MARGIN * 2, cmdTableH)];
+    cmdScroll.autoresizingMask      = NSViewWidthSizable;
+    cmdScroll.hasVerticalScroller   = YES;
+    cmdScroll.hasHorizontalScroller = NO;
+    cmdScroll.documentView          = _startupCommandsTable;
+    [tab addSubview:cmdScroll];
+    y += cmdTableH + MV_ROW_GAP;
+
+    _addStartupCommandButton    = MakePushButton(@"+");
+    _removeStartupCommandButton = MakePushButton(@"−");
+    _addStartupCommandButton.frame    = NSMakeRect(MV_MARGIN,      y, 32, 28);
+    _removeStartupCommandButton.frame = NSMakeRect(MV_MARGIN + 36, y, 32, 28);
+    [_addStartupCommandButton    setTarget:self];
+    [_addStartupCommandButton    setAction:@selector(addStartupCommand:)];
+    [_removeStartupCommandButton setTarget:self];
+    [_removeStartupCommandButton setAction:@selector(removeStartupCommand:)];
+    [tab addSubview:_addStartupCommandButton];
+    [tab addSubview:_removeStartupCommandButton];
 
     return tab;
 }
@@ -675,6 +713,10 @@ static NSButton *MakeRadioButton(NSString *title)
     _sessionItemsTable.dataSource = self;
     _sessionItemsTable.delegate   = self;
 
+    _startupCommands = [NSMutableArray array];
+    _startupCommandsTable.dataSource = self;
+    _startupCommandsTable.delegate   = self;
+
     /* Populate controls from on-disk prefs */
     [self loadCurrentValues];
 
@@ -781,6 +823,14 @@ static NSButton *MakeRadioButton(NSString *title)
         [_sessionItems addObject:[d mutableCopy]];
     }
     [_sessionItemsTable reloadData];
+
+    NSArray *rawCmds = _sessionPrefs[@"startupCommands"];
+    _startupCommands = [NSMutableArray array];
+    for (id cmd in rawCmds) {
+        if ([cmd isKindOfClass:[NSString class]])
+            [_startupCommands addObject:cmd];
+    }
+    [_startupCommandsTable reloadData];
 
     /* ---- Desktop ---- */
     _bgImagePathField.stringValue  = _desktopPrefs[@"backgroundImagePath"] ?: @"";
@@ -906,6 +956,24 @@ static NSButton *MakeRadioButton(NSString *title)
     if (row < 0 || row >= (NSInteger)_sessionItems.count) return;
     [_sessionItems removeObjectAtIndex:(NSUInteger)row];
     [_sessionItemsTable reloadData];
+}
+
+- (IBAction)addStartupCommand:(id)sender
+{
+    [_startupCommands addObject:@""];
+    [_startupCommandsTable reloadData];
+    NSInteger newRow = (NSInteger)_startupCommands.count - 1;
+    [_startupCommandsTable selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)newRow]
+                       byExtendingSelection:NO];
+    [_startupCommandsTable editColumn:0 row:newRow withEvent:nil select:YES];
+}
+
+- (IBAction)removeStartupCommand:(id)sender
+{
+    NSInteger row = _startupCommandsTable.selectedRow;
+    if (row < 0 || row >= (NSInteger)_startupCommands.count) return;
+    [_startupCommands removeObjectAtIndex:(NSUInteger)row];
+    [_startupCommandsTable reloadData];
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1165,13 +1233,17 @@ static NSButton *MakeRadioButton(NSString *title)
      deliverImmediately:YES];
 
     /* ---- Session ---- */
-    _sessionPrefs[@"sessionItems"] = [_sessionItems copy];
+    _sessionPrefs[@"sessionItems"]    = [_sessionItems copy];
+    _sessionPrefs[@"startupCommands"] = [_startupCommands copy];
     SavePlist(_sessionPrefs, _sessionPrefsPath);
 
     [[NSDistributedNotificationCenter defaultCenter]
      postNotificationName:kSessionPrefsChanged
                    object:nil
-                 userInfo:@{ @"sessionItems": _sessionPrefs[@"sessionItems"] ?: @[] }
+                 userInfo:@{
+                     @"sessionItems":    _sessionPrefs[@"sessionItems"]    ?: @[],
+                     @"startupCommands": _sessionPrefs[@"startupCommands"] ?: @[],
+                 }
      deliverImmediately:YES];
 
     /* ---- Desktop ---- */
@@ -1206,7 +1278,8 @@ static NSButton *MakeRadioButton(NSString *title)
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tv
 {
-    if (tv == _sessionItemsTable) return (NSInteger)_sessionItems.count;
+    if (tv == _sessionItemsTable)    return (NSInteger)_sessionItems.count;
+    if (tv == _startupCommandsTable) return (NSInteger)_startupCommands.count;
     return (NSInteger)_dockItems.count;
 }
 
@@ -1221,6 +1294,9 @@ objectValueForTableColumn:(NSTableColumn *)col
         if ([col.identifier isEqualToString:@"name"])        return item[@"name"];
         if ([col.identifier isEqualToString:@"sessionPath"]) return item[@"path"];
         return @"";
+    }
+    if (tv == _startupCommandsTable) {
+        return _startupCommands[(NSUInteger)row];
     }
     NSDictionary *item = _dockItems[row];
     if ([col.identifier isEqualToString:@"label"]) return item[@"label"];
@@ -1239,6 +1315,10 @@ objectValueForTableColumn:(NSTableColumn *)col
             item[@"enabled"] = @([obj intValue] == NSControlStateValueOn);
         else if ([col.identifier isEqualToString:@"name"])
             item[@"name"] = obj;
+        return;
+    }
+    if (tv == _startupCommandsTable) {
+        _startupCommands[(NSUInteger)row] = [obj copy] ?: @"";
         return;
     }
     NSMutableDictionary *item = (NSMutableDictionary *)_dockItems[row];

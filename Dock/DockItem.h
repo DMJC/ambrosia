@@ -10,13 +10,15 @@ typedef NS_ENUM(NSInteger, DockItemType) {
     DockItemTypeRunningApp = 2, /**< Transient running app (not pinned) */
     DockItemTypeFolder    = 3,  /**< Folder shortcut    */
     DockItemTypeRecycler  = 4,  /**< The recycler widget (always last, never persisted) */
+    DockItemTypeDesktop   = 5,  /**< freedesktop.org .desktop launcher */
 };
 
 @interface DockItem : NSObject <NSCoding, NSCopying>
 
 @property (nonatomic, copy)   NSString     *label;
 @property (nonatomic, copy)   NSString     *bundleIdentifier;
-@property (nonatomic, copy)   NSString     *launchPath;      /**< Absolute path to .app bundle or folder */
+@property (nonatomic, copy)   NSString     *launchPath;      /**< Absolute path to .app bundle, folder, or .desktop file */
+@property (nonatomic, copy)   NSString     *execCommand;     /**< Parsed Exec= value from .desktop file */
 @property (nonatomic, strong) NSImage      *icon;
 @property (nonatomic)         DockItemType  itemType;
 @property (nonatomic)         BOOL          isRunning;

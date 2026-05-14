@@ -336,14 +336,22 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
             item.label            = name;
             item.bundleIdentifier = d[@"bundleIdentifier"];
             item.launchPath       = path;
+            item.execCommand      = d[@"execCommand"];
             item.keepInDock       = [d[@"keepInDock"] boolValue];
-            /* Restore folder type if the path is a directory */
-            BOOL isDir = NO;
-            if (path.length &&
-                [[NSFileManager defaultManager] fileExistsAtPath:path
-                                                     isDirectory:&isDir]
-                && isDir && ![path.pathExtension isEqualToString:@"app"]) {
-                item.itemType = DockItemTypeFolder;
+
+            /* Restore item type: use saved value if present, else infer */
+            if (d[@"itemType"]) {
+                item.itemType = [d[@"itemType"] integerValue];
+            } else if ([path.pathExtension isEqualToString:@"desktop"]) {
+                item.itemType = DockItemTypeDesktop;
+            } else {
+                BOOL isDir = NO;
+                if (path.length &&
+                    [[NSFileManager defaultManager] fileExistsAtPath:path
+                                                         isDirectory:&isDir]
+                    && isDir && ![path.pathExtension isEqualToString:@"app"]) {
+                    item.itemType = DockItemTypeFolder;
+                }
             }
             [item reloadIcon];
             [_items addObject:item];
@@ -445,6 +453,8 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
             @"label":            item.label ?: @"",
             @"bundleIdentifier": item.bundleIdentifier ?: @"",
             @"launchPath":       item.launchPath ?: @"",
+            @"execCommand":      item.execCommand ?: @"",
+            @"itemType":         @(item.itemType),
             @"keepInDock":       @(item.keepInDock),
         }];
     }
@@ -742,11 +752,59 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
     [[NSWorkspace sharedWorkspace] openFile:path];
 }
 
+- (void)_launchGNUstepApp:(NSString *)path
+{
+    static NSString *openappPath;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        for (NSString *p in @[
+                @"/usr/GNUstep/System/Tools/openapp",
+                @"/usr/local/GNUstep/System/Tools/openapp",
+                @"/usr/GNUstep/Local/Tools/openapp"]) {
+            if ([[NSFileManager defaultManager] isExecutableFileAtPath:p]) {
+                openappPath = p;
+                return;
+            }
+        }
+    });
+
+    NSTask *task = [[NSTask alloc] init];
+    if (openappPath) {
+        task.launchPath = openappPath;
+        task.arguments  = @[path];
+    } else {
+        /* openapp not found at standard paths; try via shell PATH */
+        task.launchPath = @"/bin/sh";
+        task.arguments  = @[@"-c", [NSString stringWithFormat:@"openapp '%@'",
+                             [path stringByReplacingOccurrencesOfString:@"'"
+                                                             withString:@"'\\''"]
+                            ]];
+    }
+    [task launch];
+}
+
+- (void)_launchDesktopItem:(DockItem *)item
+{
+    NSString *exec = item.execCommand;
+    if (!exec.length) return;
+
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = @"/bin/sh";
+    task.arguments  = @[@"-c", exec];
+    [task launch];
+}
+
 - (void)launchItem:(DockItem *)item
 {
     if (!item.launchPath) return;
+
     if (item.itemType == DockItemTypeFolder) {
         [self _openFolderInGFinder:item.launchPath];
+        return;
+    }
+
+    if (item.itemType == DockItemTypeDesktop) {
+        [self _launchDesktopItem:item];
         return;
     }
 
@@ -768,7 +826,7 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
         return;
     }
 
-    [[NSWorkspace sharedWorkspace] launchApplication:item.launchPath];
+    [self _launchGNUstepApp:item.launchPath];
 }
 
 - (void)moveItemFromIndex:(NSInteger)from toIndex:(NSInteger)to
@@ -799,6 +857,8 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
 
     if ([path.pathExtension isEqualToString:@"app"]) {
         [self _addAppAtPath:path];
+    } else if ([path.pathExtension isEqualToString:@"desktop"]) {
+        [self _addDesktopFileAtPath:path];
     } else if (isDir) {
         [self _addFolderAtPath:path];
     }
@@ -842,6 +902,27 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
     item.keepInDock = YES;
     item.itemType   = DockItemTypeFolder;
     [item reloadIcon];
+
+    [self _insertBeforeRecycler:item];
+    [self repositionDock];
+    [_dockView reloadItems];
+    [self savePreferences];
+}
+
+- (void)_addDesktopFileAtPath:(NSString *)path
+{
+    for (DockItem *item in _items) {
+        if ([item.launchPath isEqualToString:path]) return; /* already present */
+    }
+
+    DockItem *item  = [[DockItem alloc] init];
+    item.launchPath = path;
+    item.itemType   = DockItemTypeDesktop;
+    item.keepInDock = YES;
+    /* reloadIcon parses Name=, Exec=, and Icon= from the .desktop file */
+    [item reloadIcon];
+    if (!item.label.length)
+        item.label = [[path lastPathComponent] stringByDeletingPathExtension];
 
     [self _insertBeforeRecycler:item];
     [self repositionDock];

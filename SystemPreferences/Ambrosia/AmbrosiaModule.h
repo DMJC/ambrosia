@@ -46,6 +46,9 @@
 @property (nonatomic, strong) IBOutlet NSTableView    *sessionItemsTable;
 @property (nonatomic, strong) IBOutlet NSButton       *addSessionItemButton;
 @property (nonatomic, strong) IBOutlet NSButton       *removeSessionItemButton;
+@property (nonatomic, strong) IBOutlet NSTableView    *startupCommandsTable;
+@property (nonatomic, strong) IBOutlet NSButton       *addStartupCommandButton;
+@property (nonatomic, strong) IBOutlet NSButton       *removeStartupCommandButton;
 
 /* Desktop settings outlets */
 @property (nonatomic, strong) IBOutlet NSTextField    *bgImagePathField;
@@ -86,6 +89,8 @@
 
 - (IBAction)addSessionItem:(id)sender;
 - (IBAction)removeSessionItem:(id)sender;
+- (IBAction)addStartupCommand:(id)sender;
+- (IBAction)removeStartupCommand:(id)sender;
 
 - (IBAction)chooseBgImage:(id)sender;
 - (IBAction)backgroundModeChanged:(id)sender;

@@ -587,5 +587,23 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
                 [name UTF8String]);
     }
 
+    /* ---- User-configured startup commands from the session plist ---- */
+    NSArray<NSString *> *startupCmds = sessionPrefs[@"startupCommands"] ?: @[];
+    for (NSString *cmd in startupCmds) {
+        if (!cmd.length) continue;
+        const char *cCmd = [cmd UTF8String];
+        pid_t pid = fork();
+        if (pid < 0) {
+            wlr_log(WLR_ERROR, "session: fork failed for startup command '%s': %s",
+                    cCmd, strerror(errno));
+        } else if (pid == 0) {
+            prctl(PR_SET_PDEATHSIG, SIGTERM);
+            execl("/bin/sh", "sh", "-c", cCmd, (char *)NULL);
+            _exit(127);
+        } else {
+            wlr_log(WLR_INFO, "session: launched startup command '%s' pid=%d", cCmd, pid);
+        }
+    }
+
     return session;
 }
