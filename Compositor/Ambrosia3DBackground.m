@@ -726,6 +726,11 @@ static struct a3d_bg_buffer *a3d_buf_create(cairo_surface_t *surf) {
 @property(nonatomic) GLuint                   depthRbo;
 @property(nonatomic) int                      w;
 @property(nonatomic) int                      h;
+/* Double-buffered PBOs for async glReadPixels (avoids blocking the event loop) */
+@property(nonatomic) GLuint                   pbo0;
+@property(nonatomic) GLuint                   pbo1;
+@property(nonatomic) int                      pboIndex;  /* which PBO we wrote into last frame */
+@property(nonatomic) BOOL                     pboReady;  /* at least one frame has been written */
 @end
 @implementation _A3DOutput @end
 
@@ -746,6 +751,7 @@ static int a3d_timer_cb(void *data);   /* forward */
     NSMutableArray<_A3DOutput *> *_outputs;
 
     /* EGL offscreen context */
+    EGLDisplay  _eglHintDpy;  /* preferred display passed in at init time */
     EGLDisplay  _eglDpy;
     EGLContext  _eglCtx;
     EGLSurface  _eglPbuf;
@@ -788,17 +794,19 @@ static int a3d_timer_cb(void *data);   /* forward */
                         sceneTree:(struct wlr_scene_tree *)bgTree
                      outputLayout:(struct wlr_output_layout *)layout
                     sceneFilePath:(NSString *)scenePath
+                       eglDisplay:(EGLDisplay)eglDisplay
 {
     self = [super init];
     if (!self) return nil;
 
-    _loop    = loop;
-    _bgTree  = bgTree;
-    _layout  = layout;
-    _outputs = [NSMutableArray array];
-    _eglDpy  = EGL_NO_DISPLAY;
-    _eglCtx  = EGL_NO_CONTEXT;
-    _eglPbuf = EGL_NO_SURFACE;
+    _loop         = loop;
+    _bgTree       = bgTree;
+    _layout       = layout;
+    _outputs      = [NSMutableArray array];
+    _eglDpy       = EGL_NO_DISPLAY;
+    _eglCtx       = EGL_NO_CONTEXT;
+    _eglPbuf      = EGL_NO_SURFACE;
+    _eglHintDpy   = eglDisplay;   /* preferred display; EGL_NO_DISPLAY → auto */
 
     /* Load scene */
     NSError *err = nil;
@@ -844,9 +852,13 @@ static int a3d_timer_cb(void *data);   /* forward */
  * ---------------------------------------------------------------------- */
 - (BOOL)_setupEGL
 {
-    _eglDpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    /* Prefer the display handed in from wlroots (same GPU, already initialised).
+     * Fall back to EGL_DEFAULT_DISPLAY only if nothing was provided.           */
+    _eglDpy = (_eglHintDpy != EGL_NO_DISPLAY) ? _eglHintDpy
+                                               : eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (_eglDpy == EGL_NO_DISPLAY) return NO;
 
+    /* eglInitialize is idempotent on an already-initialised display. */
     if (!eglInitialize(_eglDpy, NULL, NULL)) return NO;
     if (!eglBindAPI(EGL_OPENGL_ES_API)) return NO;
 
@@ -967,6 +979,18 @@ static int a3d_timer_cb(void *data);   /* forward */
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     rec.fbo = fbo; rec.colorTex = ct; rec.depthRbo = dr;
 
+    /* Allocate two PBOs for double-buffered async pixel readback */
+    GLuint pbo0 = 0, pbo1 = 0;
+    glGenBuffers(1, &pbo0); glGenBuffers(1, &pbo1);
+    GLsizeiptr pboSize = (GLsizeiptr)(w * h * 4);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo0);
+    glBufferData(GL_PIXEL_PACK_BUFFER, pboSize, NULL, GL_STREAM_READ);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo1);
+    glBufferData(GL_PIXEL_PACK_BUFFER, pboSize, NULL, GL_STREAM_READ);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    rec.pbo0 = pbo0; rec.pbo1 = pbo1;
+    rec.pboIndex = 0; rec.pboReady = NO;
+
     /* Set up projection for this output's aspect ratio */
     float asp = (float)w / (float)h;
     float nn = VIEW_NEAR_PLANE, ff = VIEW_FAR_PLANE;
@@ -981,6 +1005,9 @@ static int a3d_timer_cb(void *data);   /* forward */
     if (rec.fbo)      { tmp = rec.fbo;      glDeleteFramebuffers(1,   &tmp); rec.fbo = 0; }
     if (rec.colorTex) { tmp = rec.colorTex; glDeleteTextures(1,       &tmp); rec.colorTex = 0; }
     if (rec.depthRbo) { tmp = rec.depthRbo; glDeleteRenderbuffers(1,  &tmp); rec.depthRbo = 0; }
+    if (rec.pbo0) { GLuint tmp = rec.pbo0; glDeleteBuffers(1, &tmp); rec.pbo0 = 0; }
+    if (rec.pbo1) { GLuint tmp = rec.pbo1; glDeleteBuffers(1, &tmp); rec.pbo1 = 0; }
+    rec.pboReady = NO;
 }
 
 /* -------------------------------------------------------------------------
@@ -1294,14 +1321,46 @@ static int a3d_timer_cb(void *data);   /* forward */
         }
     }
 
-    /* Read pixels back (bottom-to-top in GL → flip for Cairo top-to-bottom) */
     int w=rec.w, h=rec.h;
-    NSMutableData *px=[NSMutableData dataWithLength:(NSUInteger)(w*h*4)];
-    uint8_t *pixels=(uint8_t*)px.mutableBytes;
+
+    /*
+     * Async PBO readback — double-buffered to avoid stalling the event loop.
+     *
+     * Each frame:
+     *   1. Bind the *write* PBO and kick off glReadPixels (returns immediately;
+     *      the GPU DMA runs in the background).
+     *   2. Map the *read* PBO (written two frames ago; the GPU had a full frame
+     *      to finish the transfer) and upload its pixels to Cairo.
+     *
+     * On the very first frame pboReady is NO so we skip the Cairo upload and
+     * just prime the pipeline; the background appears one frame later (~33 ms).
+     */
+    int writeIdx = rec.pboIndex;
+    int readIdx  = writeIdx ^ 1;
+
+    GLuint writePBO = (writeIdx == 0) ? rec.pbo0 : rec.pbo1;
+    GLuint readPBO  = (readIdx  == 0) ? rec.pbo0 : rec.pbo1;
+
+    /* Kick off async readback into writePBO */
     glBindFramebuffer(GL_READ_FRAMEBUFFER, rec.fbo);
-    /* GLES3 gives RGBA; flip rows and swap R↔B to produce Cairo ARGB32 */
-    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, writePBO);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    /* Advance index for next frame */
+    rec.pboIndex = readIdx;
+
+    if (!rec.pboReady) { rec.pboReady = YES; return; }
+
+    /* Map the PBO that was written last frame and upload to Cairo */
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, readPBO);
+    const uint8_t *pixels = (const uint8_t *)glMapBufferRange(
+        GL_PIXEL_PACK_BUFFER, 0, (GLsizeiptr)(w * h * 4), GL_MAP_READ_BIT);
+    if (!pixels) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        return;
+    }
 
     /* Create Cairo surface, flipping rows and converting RGBA → BGRA */
     cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
@@ -1315,6 +1374,8 @@ static int a3d_timer_cb(void *data);   /* forward */
             d[0] = src[2]; d[1] = src[1]; d[2] = src[0]; d[3] = src[3];
         }
     }
+    glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     cairo_surface_mark_dirty(surf);
 
     /* Push to wlr_scene_buffer */

@@ -8,6 +8,8 @@
 
 #include <wayland-server-core.h>
 #include <wlr/util/log.h>
+#include <wlr/render/gles2.h>
+#include <wlr/render/egl.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_seat.h>
@@ -497,6 +499,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     id<AmbrosiaWindowView>            _focusedView;
     AmbrosiaSession                  *_session;
     AmbrosiaBackground               *_background;
+    AmbrosiaDesktopIcons             *_desktopIcons;
     BOOL                              _running;
 
     /* Pending activate request — written by the notification thread,
@@ -533,6 +536,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 @synthesize state               = _state;
 @synthesize session             = _session;
 @synthesize background          = _background;
+@synthesize desktopIcons        = _desktopIcons;
 @synthesize views               = _views;
 @synthesize outputs             = _outputs;
 @synthesize layerSurfaces       = _layerSurfaces;
@@ -643,13 +647,14 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     /*
      * Create scene sub-trees in ascending z-order.  wlroots renders a tree's
      * children in creation order (first = bottom, last = top), so the order
-     * below gives:  background < bottom < windows < top < overlay.
+     * below gives:  background < desktop < bottom < windows < top < overlay.
      *
      * Regular app windows are added to scene_layer_windows.
      * wlr_scene_node_raise_to_top() on a window only moves it within that
      * sub-tree, so it can never rise above scene_layer_top (the menu bar).
      */
     _state->scene_layer_bg          = wlr_scene_tree_create(&_state->scene->tree);
+    _state->scene_layer_desktop     = wlr_scene_tree_create(&_state->scene->tree);
     _state->scene_layer_bottom      = wlr_scene_tree_create(&_state->scene->tree);
     _state->scene_layer_windows     = wlr_scene_tree_create(&_state->scene->tree);
     _state->scene_layer_top         = wlr_scene_tree_create(&_state->scene->tree);
@@ -658,12 +663,30 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     _state->usable_top = 0;
     wlr_log(WLR_DEBUG, "Scene graph initialised (layered sub-trees created)");
 
-    /* Background manager — reads wallpaper prefs and renders into scene_layer_bg. */
+    /* Extract the compositor's EGLDisplay from wlroots so the 3D background can
+     * create its own context on the same display/GPU.  eglGetDisplay(DEFAULT)
+     * is unreliable on bare DRM systems; using the renderer's display avoids
+     * that platform-detection problem entirely.                               */
+    EGLDisplay compositorEGLDisplay = EGL_NO_DISPLAY;
+    if (wlr_renderer_is_gles2(_state->renderer)) {
+        struct wlr_egl *egl = wlr_gles2_renderer_get_egl(_state->renderer);
+        if (egl) compositorEGLDisplay = wlr_egl_get_display(egl);
+    }
+
+    /* Background manager — reads wallpaper prefs and renders into scene_layer_bg.
+     * Preferences are applied in -run after wlr_backend_start so that outputs
+     * are already known and EGL initialises against the live GPU device.      */
     _background = [[AmbrosiaBackground alloc]
                    initWithEventLoop:_state->event_loop
                            sceneTree:_state->scene_layer_bg
-                        outputLayout:_state->output_layout];
-    [_background applyPreferencesFromPlist];
+                        outputLayout:_state->output_layout
+                          eglDisplay:compositorEGLDisplay];
+
+    /* Desktop icons — reads .desktop files from ~/Desktop into scene_layer_desktop. */
+    _desktopIcons = [[AmbrosiaDesktopIcons alloc]
+                     initWithEventLoop:_state->event_loop
+                             sceneTree:_state->scene_layer_desktop
+                          outputLayout:_state->output_layout];
 
     /* XDG shell (version 3) */
     _state->xdg_shell = wlr_xdg_shell_create(_state->display, 3);
@@ -979,6 +1002,13 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
         return;
     }
 
+    /* Apply background preferences now that the backend has started and initial
+     * outputs have been enumerated via handleNewOutput:.  Doing this here
+     * (rather than in -setup:) ensures that EGL initialises against the live
+     * GPU device and that the 3D background can immediately call
+     * handleOutputAdded: for each already-connected output.                    */
+    [_background applyPreferencesFromPlist];
+
     setenv("WAYLAND_DISPLAY", socket, 1);
     wlr_log(WLR_INFO, "Ambrosia compositor running on WAYLAND_DISPLAY=%s", socket);
 
@@ -1056,6 +1086,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     close(_state->comp_pipe[1]);
     [_background stop];
     _background = nil;
+    _desktopIcons = nil;
 
     /* Tear down all Wayland client connections first.  This causes gnustep-back
      * inside each session process to receive a connection error, which unblocks
@@ -1128,8 +1159,8 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
             struct wlr_box geo = [view geometry];
             double frameW = insets.left + geo.width  + insets.right;
             double frameH = insets.top  + geo.height + insets.bottom;
-            double dx = x - view.x + insets.left;   /* frame-relative x */
-            double dy = y - view.y + insets.top;    /* frame-relative y */
+            double dx = x - view.x;   /* frame-relative x */
+            double dy = y - view.y;   /* frame-relative y */
             if (dx >= 0 && dx < frameW && dy >= 0 && dy < frameH) {
                 if (surfaceOut) *surfaceOut = NULL;
                 if (lx) *lx = 0;
@@ -1615,6 +1646,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
     /* Render the desktop background on this output. */
     [_background handleOutputAdded:output];
+    [_desktopIcons handleOutputAdded:output];
 
     [self refreshFractionalScaleForAllViews];
     [self notifyOutputManager];
@@ -2263,6 +2295,9 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
         struct wlr_surface *ls_surface =
             [self layerSurfaceAtX:cx y:cy localX:&lsx localY:&lsy];
         if (!ls_surface) {
+            /* Check for a double-click on a desktop icon. */
+            if ([_desktopIcons handleClickAtX:cx y:cy time:time])
+                return;
             [self focusView:nil surface:nil];
         }
         return;

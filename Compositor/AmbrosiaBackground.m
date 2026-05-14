@@ -251,6 +251,7 @@ static NSString *const kCompPlistName    = @"org.gnustep.AmbrosiaCompositor.plis
     struct wl_event_loop      *_loop;
     struct wlr_scene_tree     *_bgTree;
     struct wlr_output_layout  *_layout;
+    EGLDisplay                 _eglDisplay;  /* passed to 3D background */
 
     NSMutableArray<_ABGOutput *> *_outputs;
 
@@ -278,15 +279,17 @@ static NSString *const kCompPlistName    = @"org.gnustep.AmbrosiaCompositor.plis
 - (instancetype)initWithEventLoop:(struct wl_event_loop *)loop
                         sceneTree:(struct wlr_scene_tree *)bgTree
                      outputLayout:(struct wlr_output_layout *)layout
+                       eglDisplay:(EGLDisplay)eglDisplay
 {
     self = [super init];
     if (!self) return nil;
-    _loop    = loop;
-    _bgTree  = bgTree;
-    _layout  = layout;
-    _outputs = [NSMutableArray array];
+    _loop         = loop;
+    _bgTree       = bgTree;
+    _layout       = layout;
+    _eglDisplay   = eglDisplay;
+    _outputs      = [NSMutableArray array];
     _intervalSecs = 30;
-    _mode = @"image";
+    _mode         = @"image";
     return self;
 }
 
@@ -363,7 +366,8 @@ static NSString *const kCompPlistName    = @"org.gnustep.AmbrosiaCompositor.plis
                           initWithEventLoop:_loop
                                   sceneTree:_bgTree
                                outputLayout:_layout
-                              sceneFilePath:_sceneFilePath];
+                              sceneFilePath:_sceneFilePath
+                                 eglDisplay:_eglDisplay];
                 for (_ABGOutput *rec in _outputs)
                     [_3dBg handleOutputAdded:rec.output];
             } else {

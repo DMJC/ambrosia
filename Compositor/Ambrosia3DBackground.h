@@ -18,6 +18,7 @@
 
 #import <Foundation/Foundation.h>
 
+#include <EGL/egl.h>
 #include <wayland-server-core.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_output.h>
@@ -30,11 +31,14 @@
  * @param bgTree     scene_layer_bg sub-tree to attach buffer nodes to.
  * @param layout     Output layout for querying per-output geometry.
  * @param scenePath  Absolute path to the scene.txt file to load.
+ * @param eglDisplay The compositor's live EGLDisplay (from wlr_egl_get_display).
+ *                   Pass EGL_NO_DISPLAY to fall back to EGL_DEFAULT_DISPLAY.
  */
 - (instancetype)initWithEventLoop:(struct wl_event_loop *)loop
                         sceneTree:(struct wlr_scene_tree *)bgTree
                      outputLayout:(struct wlr_output_layout *)layout
-                    sceneFilePath:(NSString *)scenePath;
+                    sceneFilePath:(NSString *)scenePath
+                       eglDisplay:(EGLDisplay)eglDisplay;
 
 /** Called after a new output has been committed to the layout. */
 - (void)handleOutputAdded:(struct wlr_output *)output;

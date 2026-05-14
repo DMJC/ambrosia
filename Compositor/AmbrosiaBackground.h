@@ -22,6 +22,7 @@
 
 #import <Foundation/Foundation.h>
 
+#include <EGL/egl.h>
 #include <wayland-server-core.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_output.h>
@@ -30,13 +31,16 @@
 @interface AmbrosiaBackground : NSObject
 
 /**
- * @param loop    Compositor's wl_event_loop (for rotation timer).
- * @param bgTree  scene_layer_bg sub-tree to attach buffer nodes to.
- * @param layout  Output layout for querying per-output geometry.
+ * @param loop       Compositor's wl_event_loop (for rotation timer).
+ * @param bgTree     scene_layer_bg sub-tree to attach buffer nodes to.
+ * @param layout     Output layout for querying per-output geometry.
+ * @param eglDisplay Compositor's live EGLDisplay for 3D background context
+ *                   creation.  Pass EGL_NO_DISPLAY to auto-detect.
  */
 - (instancetype)initWithEventLoop:(struct wl_event_loop *)loop
                         sceneTree:(struct wlr_scene_tree *)bgTree
-                     outputLayout:(struct wlr_output_layout *)layout;
+                     outputLayout:(struct wlr_output_layout *)layout
+                       eglDisplay:(EGLDisplay)eglDisplay;
 
 /** Read org.gnustep.AmbrosiaDesktop.plist from disk and apply. */
 - (void)applyPreferencesFromPlist;

@@ -4,6 +4,7 @@
 #import <Foundation/Foundation.h>
 #import "AmbrosiaSession.h"
 #import "AmbrosiaBackground.h"
+#import "AmbrosiaDesktopIcons.h"
 #import "AmbrosiaWindowView.h"
 #include <wayland-server-core.h>
 #include <wlr/backend.h>
@@ -62,6 +63,7 @@ struct ambrosia_compositor_state {
      * (e.g. the Ambrosia menu bar) always render above regular windows.
      */
     struct wlr_scene_tree       *scene_layer_bg;         /* ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND */
+    struct wlr_scene_tree       *scene_layer_desktop;    /* compositor-drawn desktop icons       */
     struct wlr_scene_tree       *scene_layer_bottom;     /* ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM     */
     struct wlr_scene_tree       *scene_layer_windows;    /* xdg-toplevel windows (tiling layer)  */
     struct wlr_scene_tree       *scene_layer_top;        /* ZWLR_LAYER_SHELL_V1_LAYER_TOP        */
@@ -169,6 +171,7 @@ struct ambrosia_compositor_state {
 @property (readonly, nullable) id<AmbrosiaWindowView>  focusedView;
 @property (readonly)           AmbrosiaSession         *session;
 @property (readonly)           AmbrosiaBackground      *background;
+@property (readonly)           AmbrosiaDesktopIcons    *desktopIcons;
 
 /** Whether server-side decorations should be drawn on XWayland managed windows. */
 @property (readonly) BOOL           x11Decorations;
