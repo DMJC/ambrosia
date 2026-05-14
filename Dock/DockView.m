@@ -199,8 +199,6 @@ static const CGFloat kRecyclerGap    = 18.0;
                                                        xRadius:12 yRadius:12];
     [[NSColor colorWithCalibratedWhite:0.12 alpha:0.82] set];
     [bg fill];
-    [[NSColor colorWithCalibratedWhite:0.5 alpha:0.3] set];
-    [bg stroke];
 
     NSArray *items = _controller.items;
 

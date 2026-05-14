@@ -196,6 +196,10 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
     _dockPanel.opaque          = NO;
     _dockPanel.backgroundColor = [NSColor clearColor];
     _dockPanel.hasShadow       = NO;
+    /* Dock is a fixed overlay — signal to gnustep-back that this panel must
+     * never hide on deactivation (prevents spurious unmap/remap cycles that
+     * could trigger decoration re-attachment in the compositor).              */
+    [_dockPanel setHidesOnDeactivate:NO];
 
     _dockView = [[DockView alloc]
                  initWithFrame:((NSView *)_dockPanel.contentView).bounds];

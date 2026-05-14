@@ -99,6 +99,7 @@ static NSTextField *MakeLabel(NSString *text)
     f.stringValue     = text;
     f.editable        = NO;
     f.bordered        = NO;
+    f.bezeled      = NO;
     f.drawsBackground = NO;
     return f;
 }
@@ -109,6 +110,7 @@ static NSTextField *MakeValueLabel(void)
     f.editable        = NO;
     f.bordered        = NO;
     f.drawsBackground = NO;
+    f.bezeled      = NO;
     f.alignment       = NSTextAlignmentRight;
     return f;
 }
@@ -177,6 +179,7 @@ static NSString *intervalLabel(NSInteger secs)
     slider.autoresizingMask = NSViewWidthSizable;
 
     valLabel.frame = NSMakeRect(MV_TAB_W - MV_VAL_W - MV_MARGIN, y, MV_VAL_W, MV_ROW_H);
+    [valLabel setBezeled:NO];
     valLabel.autoresizingMask = NSViewMinXMargin;
 
     [tab addSubview:lbl];
@@ -221,7 +224,7 @@ static NSString *intervalLabel(NSInteger secs)
                      label:@"Window Transparency:"
                     slider:_transparencySlider
                 valueLabel:_transparencyLabel
-                       atY:y];
+                   atY:y];
 
     /* Decoration theme */
     _decorationThemePopUp = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
@@ -312,7 +315,7 @@ static NSString *intervalLabel(NSInteger secs)
     _iconSizeLabel = MakeValueLabel();
     y = [self addSliderRow:tab label:@"Icon Size:"
                     slider:_iconSizeSlider valueLabel:_iconSizeLabel atY:y];
-
+    [_iconSizeLabel setBezeled:NO];
     /* Zoom factor */
     _zoomFactorSlider = [[NSSlider alloc] initWithFrame:NSZeroRect];
     _zoomFactorSlider.minValue = 1.0;
@@ -322,6 +325,7 @@ static NSString *intervalLabel(NSInteger secs)
     _zoomFactorLabel = MakeValueLabel();
     y = [self addSliderRow:tab label:@"Zoom Factor:"
                     slider:_zoomFactorSlider valueLabel:_zoomFactorLabel atY:y];
+    [_zoomFactorLabel setBezeled:NO];
 
     /* Dock position */
     _positionControl = [[NSSegmentedControl alloc] initWithFrame:NSZeroRect];
@@ -356,6 +360,7 @@ static NSString *intervalLabel(NSInteger secs)
     /* Dock items label */
     NSTextField *itemsLbl = MakeLabel(@"Dock Items:");
     itemsLbl.frame = NSMakeRect(MV_MARGIN, y, 200, MV_ROW_H);
+    [itemsLbl setBezeled:NO];
     [tab addSubview:itemsLbl];
     y += MV_ROW_H + 4;
 
@@ -402,6 +407,7 @@ static NSString *intervalLabel(NSInteger secs)
 
     NSTextField *itemsLbl = MakeLabel(@"Session Applications:");
     itemsLbl.frame = NSMakeRect(MV_MARGIN, y, 250, MV_ROW_H);
+    [itemsLbl setBezeled:NO];
     [tab addSubview:itemsLbl];
     y += MV_ROW_H + 4;
 
@@ -473,6 +479,7 @@ static NSButton *MakeRadioButton(NSString *title)
     /* ---- Background Image path (used in "Background Image" mode) ---- */
     NSTextField *imgLbl = MakeLabel(@"Background Image:");
     imgLbl.frame = NSMakeRect(MV_MARGIN, y, MV_LBL_W, MV_ROW_H);
+    [imgLbl setBezeled:NO];
     [tab addSubview:imgLbl];
 
     _bgImagePathField = [[NSTextField alloc] initWithFrame:
@@ -493,6 +500,7 @@ static NSButton *MakeRadioButton(NSString *title)
     /* ---- Background Mode radio buttons ---- */
     NSTextField *modeLbl = MakeLabel(@"Background Mode:");
     modeLbl.frame = NSMakeRect(MV_MARGIN, y, MV_LBL_W, MV_ROW_H);
+    [modeLbl setBezeled:NO];
     [tab addSubview:modeLbl];
 
     _bgImageRadio = MakeRadioButton(@"Background Image");
@@ -522,6 +530,7 @@ static NSButton *MakeRadioButton(NSString *title)
     /* ---- Images Folder (rotating mode) ---- */
     NSTextField *folderLbl = MakeLabel(@"Images Folder:");
     folderLbl.frame = NSMakeRect(MV_MARGIN, y, MV_LBL_W, MV_ROW_H);
+    [folderLbl setBezeled:NO];
     [tab addSubview:folderLbl];
 
     _bgFolderPathField = [[NSTextField alloc] initWithFrame:
@@ -549,7 +558,7 @@ static NSButton *MakeRadioButton(NSString *title)
     [_intervalSlider setAction:@selector(intervalChanged:)];
     _intervalLabel = MakeValueLabel();
     y = [self addSliderRow:tab
-                     label:@"Change every:"
+                     label:@"Change Every:"
                     slider:_intervalSlider
                 valueLabel:_intervalLabel
                        atY:y];
@@ -558,6 +567,7 @@ static NSButton *MakeRadioButton(NSString *title)
     /* ---- Scene File (3D mode) ---- */
     NSTextField *sceneLbl = MakeLabel(@"Scene File:");
     sceneLbl.frame = NSMakeRect(MV_MARGIN, y, MV_LBL_W, MV_ROW_H);
+    [sceneLbl setBezeled:NO];
     [tab addSubview:sceneLbl];
 
     _sceneFilePathField = [[NSTextField alloc] initWithFrame:

@@ -741,7 +741,9 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
     [self updateTitle];
 
     /* Re-classify: the title may have arrived after the map event (race).
-     * If we just identified this as the dock, position it now. */
+     * If we just identified this as the dock, strip any decoration that was
+     * attached before identification, re-negotiate xdg-decoration to CSD,
+     * and position the dock correctly. */
     BOOL wasDock = _isDockWindow;
     _isDockWindow        = isDock(_state->xdg_toplevel);
     _isDesktopBackground = isDesktopToplevel(_state->xdg_toplevel);
@@ -749,6 +751,10 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
     _isGNUstepWindow     = isGNUstepWindow(_state->xdg_toplevel);
 
     if (!wasDock && _isDockWindow && _isMapped) {
+        if (_decoration) [self removeDecoration];
+        if (_state->xdg_decoration)
+            wlr_xdg_toplevel_decoration_v1_set_mode(_state->xdg_decoration,
+                WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
         [self _positionDock];
     }
 }
@@ -762,6 +768,10 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
     _isGNUstepWindow     = isGNUstepWindow(_state->xdg_toplevel);
 
     if (!wasDock && _isDockWindow && _isMapped) {
+        if (_decoration) [self removeDecoration];
+        if (_state->xdg_decoration)
+            wlr_xdg_toplevel_decoration_v1_set_mode(_state->xdg_decoration,
+                WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
         [self _positionDock];
     }
 }
