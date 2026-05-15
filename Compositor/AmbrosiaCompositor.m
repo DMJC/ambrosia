@@ -235,6 +235,38 @@ static void handle_request_set_selection(struct wl_listener *listener, void *dat
     [c handleRequestSetSelection:(struct wlr_seat_request_set_selection_event *)data];
 }
 
+/* DnD: a client called wl_data_device_start_drag — validate and authorise. */
+static void handle_request_start_drag(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_compositor_state *s =
+        wl_container_of(listener, s, request_start_drag);
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)s->objc_compositor;
+    [c handleRequestStartDrag:(struct wlr_seat_request_start_drag_event *)data];
+}
+
+/* DnD: drag has been authorised — create and track the drag icon if present. */
+static void handle_start_drag(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_compositor_state *s =
+        wl_container_of(listener, s, start_drag);
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)s->objc_compositor;
+    [c handleStartDrag:(struct wlr_drag *)data];
+}
+
+/* DnD: drag icon wl_surface destroyed — remove the scene node and clear state. */
+static void handle_drag_icon_destroy(struct wl_listener *listener, void *data)
+{
+    struct ambrosia_compositor_state *s =
+        wl_container_of(listener, s, drag_icon_destroy);
+
+    if (s->drag_icon_tree) {
+        wlr_scene_node_destroy(&s->drag_icon_tree->node);
+        s->drag_icon_tree = NULL;
+    }
+    wl_list_remove(&s->drag_icon_destroy.link);
+    wl_list_init(&s->drag_icon_destroy.link);
+}
+
 /* --------------------------------------------------------------------------
  * Logout pipe watcher — called on the compositor's wl_event_loop thread
  * -------------------------------------------------------------------------- */
@@ -827,6 +859,16 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     _state->request_set_selection.notify = handle_request_set_selection;
     wl_signal_add(&_state->seat->events.request_set_selection, &_state->request_set_selection);
 
+    _state->request_start_drag.notify = handle_request_start_drag;
+    wl_signal_add(&_state->seat->events.request_start_drag, &_state->request_start_drag);
+
+    _state->start_drag.notify = handle_start_drag;
+    wl_signal_add(&_state->seat->events.start_drag, &_state->start_drag);
+
+    /* Initialise drag_icon_destroy link so wl_list_remove in handle_drag_icon_destroy
+     * is safe even if it fires before the listener is ever added to a signal. */
+    wl_list_init(&_state->drag_icon_destroy.link);
+
     _state->output_manager_apply.notify = handle_output_manager_apply;
     wl_signal_add(&_state->output_manager->events.apply, &_state->output_manager_apply);
 
@@ -1361,6 +1403,11 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 {
     double cx = _state->cursor->x;
     double cy = _state->cursor->y;
+
+    /* Keep the drag icon centred on the cursor throughout any DnD operation. */
+    if (_state->drag_icon_tree) {
+        wlr_scene_node_set_position(&_state->drag_icon_tree->node, (int)cx, (int)cy);
+    }
 
     if (_state->cursor_mode == AmbrosiaCursorModeMove) {
         id<AmbrosiaWindowView> grabbed = _focusedView;
@@ -2417,6 +2464,60 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 - (void)handleRequestSetSelection:(struct wlr_seat_request_set_selection_event *)event
 {
     wlr_seat_set_selection(_state->seat, event->source, event->serial);
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Drag and Drop
+
+- (void)handleRequestStartDrag:(struct wlr_seat_request_start_drag_event *)event
+{
+    /* Validate that the drag serial matches the most recent button press
+     * on any of our surfaces.  Passing NULL for the origin surface skips the
+     * focused-surface check — we trust the client to have supplied a correct
+     * serial because wlroots already enforces that the serial comes from a
+     * wl_pointer.button event on a surface owned by this seat client.        */
+    if (wlr_seat_validate_pointer_grab_serial(_state->seat, NULL, event->serial))
+    {
+        wlr_log(WLR_DEBUG, "Ambrosia: authorising pointer drag (serial %u)",
+                event->serial);
+        wlr_seat_start_pointer_drag(_state->seat, event->drag, event->serial);
+        /* seat->events.start_drag fires synchronously → handleStartDrag: */
+    }
+    else
+    {
+        wlr_log(WLR_DEBUG, "Ambrosia: rejecting drag with invalid serial %u",
+                event->serial);
+    }
+}
+
+- (void)handleStartDrag:(struct wlr_drag *)drag
+{
+    wlr_log(WLR_DEBUG, "Ambrosia: drag started (icon=%s)",
+            drag->icon ? "yes" : "no");
+
+    if (!drag->icon)
+        return;  /* Drag with no icon — DnD routing still works fine. */
+
+    /* Place the icon surface in the overlay layer (above all other content)
+     * and position it at the current cursor location.  wlroots tracks the
+     * icon's subsurface tree; we only manage the root node position.         */
+    struct wlr_scene_tree *icon_tree =
+        wlr_scene_drag_icon_create(_state->scene_layer_overlay, drag->icon);
+    if (!icon_tree)
+    {
+        wlr_log(WLR_ERROR, "Ambrosia: failed to create drag icon scene node");
+        return;
+    }
+
+    wlr_scene_node_set_position(&icon_tree->node,
+                                (int)_state->cursor->x,
+                                (int)_state->cursor->y);
+    _state->drag_icon_tree = icon_tree;
+
+    /* Listen for icon surface destruction so we can remove the scene node
+     * and clear the pointer when the drag ends.                              */
+    _state->drag_icon_destroy.notify = handle_drag_icon_destroy;
+    wl_signal_add(&drag->icon->events.destroy, &_state->drag_icon_destroy);
 }
 
 /* ---------------------------------------------------------------------- */

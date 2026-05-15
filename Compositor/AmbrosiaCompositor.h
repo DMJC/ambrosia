@@ -109,6 +109,10 @@ struct ambrosia_compositor_state {
     struct wl_listener new_input;
     struct wl_listener request_set_cursor;
     struct wl_listener request_set_selection;
+    struct wl_listener request_start_drag;   /* seat: client requests DnD start */
+    struct wl_listener start_drag;           /* seat: drag authorised → wire icon */
+    struct wl_listener drag_icon_destroy;    /* drag_icon surface destroyed       */
+    struct wlr_scene_tree *drag_icon_tree;   /* scene node for active drag icon   */
     struct wl_listener output_manager_apply;
     struct wl_listener output_manager_test;
     struct wl_listener drm_lease_request;
@@ -225,6 +229,8 @@ struct ambrosia_compositor_state {
 - (void)handleNewInput:(struct wlr_input_device *)device;
 - (void)handleRequestSetCursor:(struct wlr_seat_pointer_request_set_cursor_event *)event;
 - (void)handleRequestSetSelection:(struct wlr_seat_request_set_selection_event *)event;
+- (void)handleRequestStartDrag:(struct wlr_seat_request_start_drag_event *)event;
+- (void)handleStartDrag:(struct wlr_drag *)drag;
 - (void)handleOutputManagerApply:(struct wlr_output_configuration_v1 *)config;
 - (void)handleOutputManagerTest:(struct wlr_output_configuration_v1 *)config;
 - (void)handleDrmLeaseRequest:(struct wlr_drm_lease_request_v1 *)request;
