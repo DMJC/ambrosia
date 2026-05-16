@@ -253,16 +253,15 @@ static void handle_start_drag(struct wl_listener *listener, void *data)
     [c handleStartDrag:(struct wlr_drag *)data];
 }
 
-/* DnD: drag icon wl_surface destroyed — remove the scene node and clear state. */
+/* DnD: drag icon destroyed — clear our stale pointer and unlink the listener.
+ * wlr_scene_drag_icon_create owns the scene tree and destroys it before this
+ * listener fires, so calling wlr_scene_node_destroy here would double-free. */
 static void handle_drag_icon_destroy(struct wl_listener *listener, void *data)
 {
     struct ambrosia_compositor_state *s =
         wl_container_of(listener, s, drag_icon_destroy);
 
-    if (s->drag_icon_tree) {
-        wlr_scene_node_destroy(&s->drag_icon_tree->node);
-        s->drag_icon_tree = NULL;
-    }
+    s->drag_icon_tree = NULL;
     wl_list_remove(&s->drag_icon_destroy.link);
     wl_list_init(&s->drag_icon_destroy.link);
 }

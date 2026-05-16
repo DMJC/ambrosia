@@ -41,6 +41,37 @@ static NSString *StripExecFieldCodes(NSString *exec)
     return [out stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
 }
 
+/* Render an SVG file to an NSImage via rsvg-convert. */
+static NSImage *LoadSVGImage(NSString *path, NSInteger size)
+{
+    NSTask *task        = [[NSTask alloc] init];
+    task.launchPath     = @"/usr/bin/rsvg-convert";
+    task.arguments      = @[@"-w", [NSString stringWithFormat:@"%ld", (long)size],
+                             @"-h", [NSString stringWithFormat:@"%ld", (long)size],
+                             path];
+    NSPipe *outPipe     = [NSPipe pipe];
+    task.standardOutput = outPipe;
+    task.standardError  = [NSFileHandle fileHandleWithNullDevice];
+
+    @try { [task launch]; }
+    @catch (NSException *e) { return nil; }
+
+    NSData *png = [outPipe.fileHandleForReading readDataToEndOfFile];
+    [task waitUntilExit];
+
+    if (!png.length || task.terminationStatus != 0) return nil;
+    return [[NSImage alloc] initWithData:png];
+}
+
+/* Load an image from a path, transparently handling SVG via rsvg-convert. */
+static NSImage *LoadImageAtPath(NSString *path)
+{
+    if (!path.length) return nil;
+    if ([path.pathExtension.lowercaseString isEqualToString:@"svg"])
+        return LoadSVGImage(path, 128);
+    return [[NSImage alloc] initWithContentsOfFile:path];
+}
+
 /* Resolve a freedesktop icon name to a full filesystem path. */
 static NSString *FindIconPath(NSString *name)
 {
@@ -139,7 +170,7 @@ static NSString *FindIconPath(NSString *name)
             if (exec.length) _execCommand = StripExecFieldCodes(exec);
             if (!_label.length) _label = [info[@"Name"] copy];
             NSString *iconPath = FindIconPath(info[@"Icon"]);
-            if (iconPath) _icon = [[NSImage alloc] initWithContentsOfFile:iconPath];
+            if (iconPath) _icon = LoadImageAtPath(iconPath);
         }
         if (!_icon) _icon = [NSImage imageNamed:@"NSApplicationIcon"];
         return;
@@ -161,15 +192,22 @@ static NSString *FindIconPath(NSString *name)
     }
     NSBundle *bundle = [NSBundle bundleWithPath:_launchPath];
     if (bundle) {
-        NSString *iconName = [bundle objectForInfoDictionaryKey:@"CFBundleIconFile"];
+        NSString *iconName = [bundle objectForInfoDictionaryKey:@"CFBundleIconFile"]
+                          ?: [bundle objectForInfoDictionaryKey:@"NSIcon"];
         if (iconName) {
-            if ([iconName pathExtension].length == 0)
-                iconName = [iconName stringByAppendingPathExtension:@"icns"];
-            NSString *iconPath =
-                [bundle pathForResource:[iconName stringByDeletingPathExtension]
-                                 ofType:[iconName pathExtension]];
-            if (iconPath)
-                _icon = [[NSImage alloc] initWithContentsOfFile:iconPath];
+            NSString *iconPath = nil;
+            if ([iconName pathExtension].length > 0) {
+                /* Name includes extension — look up directly */
+                iconPath = [bundle pathForResource:[iconName stringByDeletingPathExtension]
+                                            ofType:[iconName pathExtension]];
+            } else {
+                /* No extension — try svg, icns, png, tiff in that order */
+                for (NSString *ext in @[@"svg", @"icns", @"png", @"tiff"]) {
+                    iconPath = [bundle pathForResource:iconName ofType:ext];
+                    if (iconPath) break;
+                }
+            }
+            if (iconPath) _icon = LoadImageAtPath(iconPath);
         }
     }
     if (!_icon)
