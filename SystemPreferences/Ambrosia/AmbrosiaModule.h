@@ -10,7 +10,7 @@
  * the Ambrosia Wayland compositor and dock.
  *
  * Sections:
- *   • Compositor  – transparency, decoration theme, compositor flags
+ *   • Compositor  – transparency, compositor flags
  *   • Dock        – icon size, zoom factor, position, auto-hide, items
  */
 @interface AmbrosiaModule : NSPreferencePane
@@ -21,14 +21,8 @@
 @property (nonatomic, strong) IBOutlet NSSlider       *transparencySlider;
 @property (nonatomic, strong) IBOutlet NSTextField    *transparencyLabel;
 @property (nonatomic, strong) IBOutlet NSButton       *enableDecorationsCheck;
-@property (nonatomic, strong) IBOutlet NSPopUpButton  *decorationThemePopUp;
 @property (nonatomic, strong) IBOutlet NSButton       *enableBlurCheck;
 @property (nonatomic, strong) IBOutlet NSButton       *x11DecorationsCheck;
-@property (nonatomic, strong) IBOutlet NSColorWell    *titlebarColorWell;
-@property (nonatomic, strong) IBOutlet NSColorWell    *borderColorWell;
-@property (nonatomic, strong) IBOutlet NSColorWell    *buttonCloseColorWell;
-@property (nonatomic, strong) IBOutlet NSColorWell    *buttonMinColorWell;
-@property (nonatomic, strong) IBOutlet NSColorWell    *buttonMaxColorWell;
 
 /* Dock settings outlets */
 @property (nonatomic, strong) IBOutlet NSSlider       *iconSizeSlider;
@@ -72,12 +66,8 @@
 /* IBActions */
 - (IBAction)transparencyChanged:(id)sender;
 - (IBAction)toggleDecorations:(id)sender;
-- (IBAction)decorationThemeChanged:(id)sender;
 - (IBAction)toggleBlur:(id)sender;
 - (IBAction)toggleX11Decorations:(id)sender;
-- (IBAction)titlebarColorChanged:(id)sender;
-- (IBAction)borderColorChanged:(id)sender;
-- (IBAction)buttonColorsChanged:(id)sender;
 
 - (IBAction)iconSizeChanged:(id)sender;
 - (IBAction)zoomFactorChanged:(id)sender;

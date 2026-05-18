@@ -2,6 +2,7 @@
 #import "AmbrosiaCompositor.h"
 #import "AmbrosiaView.h"
 #import "AmbrosiaWindowView.h"
+#import "AmbrosiaSwitcher.h"
 
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_keyboard.h>
@@ -118,6 +119,13 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
 - (void)handleKeyboardModifiersForState:(struct ambrosia_keyboard_state *)ks
 {
     wlr_seat_set_keyboard(_compositor.state->seat, ks->keyboard);
+
+    /* Confirm the switcher when the Logo (Super/Cmd) modifier is released. */
+    uint32_t mods = wlr_keyboard_get_modifiers(ks->keyboard);
+    AmbrosiaSwitcher *switcher = _compositor.switcher;
+    if (switcher.isVisible && !(mods & WLR_MODIFIER_LOGO))
+        [switcher confirm];
+
     wlr_seat_keyboard_notify_modifiers(_compositor.state->seat,
                                        &ks->keyboard->modifiers);
 }
@@ -136,6 +144,35 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
     BOOL handled = NO;
     uint32_t modifiers = wlr_keyboard_get_modifiers(kb);
 
+    /* -------------------------------------------------------------------- *
+     * Switcher intercept — while the switcher panel is visible, consume all
+     * key events and only handle navigation / confirmation keys.
+     * -------------------------------------------------------------------- */
+    AmbrosiaSwitcher *switcher = _compositor.switcher;
+    if (switcher.isVisible) {
+        if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+            for (int i = 0; i < nsyms; i++) {
+                if (syms[i] == XKB_KEY_Tab) {
+                    BOOL backwards = (modifiers & WLR_MODIFIER_SHIFT) != 0;
+                    [switcher advanceBy:backwards ? -1 : 1];
+                    return YES;
+                }
+                if (syms[i] == XKB_KEY_Escape) {
+                    [switcher cancel];
+                    return YES;
+                }
+                if (syms[i] == XKB_KEY_Return || syms[i] == XKB_KEY_KP_Enter) {
+                    [switcher confirm];
+                    return YES;
+                }
+            }
+        }
+        return YES;   /* eat all other key events while switcher is open */
+    }
+
+    /* -------------------------------------------------------------------- *
+     * Normal compositor key bindings
+     * -------------------------------------------------------------------- */
     for (int i = 0; i < nsyms; i++) {
         /* Ctrl+Alt+Backspace → save session and quit compositor */
         if (syms[i] == XKB_KEY_BackSpace
@@ -167,18 +204,19 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
             [_compositor.focusedView close];
             handled = YES;
         }
-        /* Alt+Tab → cycle windows */
+        /* Alt+Tab → cycle individual windows */
         if (syms[i] == XKB_KEY_Tab && (modifiers & WLR_MODIFIER_ALT)
                 && !(modifiers & WLR_MODIFIER_LOGO)
                 && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
             [self cycleWindows];
             handled = YES;
         }
-        /* Super+Tab → cycle applications */
+        /* Super+Tab / Super+Shift+Tab → app switcher */
         if (syms[i] == XKB_KEY_Tab && (modifiers & WLR_MODIFIER_LOGO)
                 && !(modifiers & WLR_MODIFIER_ALT)
                 && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-            [self cycleApplications];
+            BOOL backwards = (modifiers & WLR_MODIFIER_SHIFT) != 0;
+            [switcher advanceBy:backwards ? -1 : 1];
             handled = YES;
         }
         /* Ctrl+Super+Esc → Force Quit dialog */

@@ -90,6 +90,22 @@
     pa_context_set_default_sink(self.context, name, NULL, NULL);
 }
 
+- (void)refreshInputDevices {
+    [self.inputDeviceNames removeAllObjects];
+    [self.inputDeviceIndexes removeAllObjects];
+    [self.inputDeviceSystemNames removeAllObjects];
+    if (self.context && pa_context_get_state(self.context) == PA_CONTEXT_READY)
+        pa_context_get_source_info_list(self.context, source_list_callback, (__bridge void *)self);
+}
+
+- (void)refreshOutputDevices {
+    [self.outputDeviceNames removeAllObjects];
+    [self.outputDeviceIndexes removeAllObjects];
+    [self.outputDeviceSystemNames removeAllObjects];
+    if (self.context && pa_context_get_state(self.context) == PA_CONTEXT_READY)
+        pa_context_get_sink_info_list(self.context, sink_list_callback, (__bridge void *)self);
+}
+
 #pragma mark - Callbacks
 
 static void context_state_callback(pa_context *context, void *userdata) {

@@ -298,8 +298,9 @@ static BOOL isDockXWayland(struct wlr_xwayland_surface *xs)
     /* When a decoration is active x,y is the FRAME top-left.
      * The scene tree (containing the XWayland surface) must sit at the
      * surface origin, which is inset by (B, T) from the frame.          */
-    int surfX = x + (_decoration ? AMBROSIA_BORDER_WIDTH   : 0);
-    int surfY = y + (_decoration ? AMBROSIA_TITLEBAR_HEIGHT : 0);
+    NSEdgeInsets di = [AmbrosiaDecoration frameInsets];
+    int surfX = x + (_decoration ? (int)di.left : 0);
+    int surfY = y + (_decoration ? (int)di.top  : 0);
 
     if (_state->scene_tree)
         wlr_scene_node_set_position(&_state->scene_tree->node, surfX, surfY);
@@ -407,6 +408,21 @@ static BOOL isDockXWayland(struct wlr_xwayland_surface *xs)
 - (pid_t)clientPid
 {
     return _state->xwayland_surface->pid;
+}
+
+- (NSString *)displayName
+{
+    const char *title = _state->xwayland_surface->title;
+    const char *cls   = _state->xwayland_surface->class;
+    if (title && title[0]) return [NSString stringWithUTF8String:title];
+    if (cls   && cls[0])   return [NSString stringWithUTF8String:cls];
+    return @"Application";
+}
+
+- (NSString *)iconIdentifier
+{
+    const char *cls = _state->xwayland_surface->class;
+    return (cls && cls[0]) ? [NSString stringWithUTF8String:cls] : nil;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -554,7 +570,7 @@ static BOOL isDockXWayland(struct wlr_xwayland_surface *xs)
     static int cascade = 0;
     int usableTop = _compositor.state->usable_top;
     int startX = 60 + cascade * 30;
-    int titlebarH = _compositor.x11Decorations ? AMBROSIA_TITLEBAR_HEIGHT : 0;
+    int titlebarH = _compositor.x11Decorations ? (int)[AmbrosiaDecoration frameInsets].top : 0;
     int startY = MAX(usableTop + titlebarH + 8, 50 + titlebarH) + cascade * 30;
     cascade = (cascade + 1) % 8;
     [self moveTo:startX y:startY];
@@ -631,8 +647,9 @@ static BOOL isDockXWayland(struct wlr_xwayland_surface *xs)
     }
     /* Managed window (mapped or fullscreen): honour the requested size but
      * keep our compositor-assigned position.                                 */
-    int surfX = _x + (_decoration ? AMBROSIA_BORDER_WIDTH : 0);
-    int surfY = _y + (_decoration ? AMBROSIA_TITLEBAR_HEIGHT : 0);
+    NSEdgeInsets di = [AmbrosiaDecoration frameInsets];
+    int surfX = _x + (_decoration ? (int)di.left : 0);
+    int surfY = _y + (_decoration ? (int)di.top  : 0);
     wlr_xwayland_surface_configure(event->surface,
                                    (int16_t)surfX, (int16_t)surfY,
                                    event->width, event->height);
@@ -714,8 +731,9 @@ static BOOL isDockXWayland(struct wlr_xwayland_surface *xs)
          * With decoration, the scene tree sits at (frame + B, frame + T).   */
         _x = _restoreFSX;
         _y = _restoreFSY;
-        int rSurfX = _restoreFSX + (_decoration ? AMBROSIA_BORDER_WIDTH   : 0);
-        int rSurfY = _restoreFSY + (_decoration ? AMBROSIA_TITLEBAR_HEIGHT : 0);
+        NSEdgeInsets di = [AmbrosiaDecoration frameInsets];
+        int rSurfX = _restoreFSX + (_decoration ? (int)di.left : 0);
+        int rSurfY = _restoreFSY + (_decoration ? (int)di.top  : 0);
         wlr_xwayland_surface_configure(xs,
             (int16_t)rSurfX, (int16_t)rSurfY,
             _restoreFSW, _restoreFSH);

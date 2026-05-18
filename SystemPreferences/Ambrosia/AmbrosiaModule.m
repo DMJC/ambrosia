@@ -125,11 +125,6 @@ static NSButton *MakeCheckbox(NSString *title)
     return b;
 }
 
-static NSColorWell *MakeColorWell(void)
-{
-    return [[NSColorWell alloc] initWithFrame:NSMakeRect(0, 0, 44, 22)];
-}
-
 static NSButton *MakePushButton(NSString *title)
 {
     NSButton *b = [[NSButton alloc] initWithFrame:NSZeroRect];
@@ -227,16 +222,6 @@ static NSString *intervalLabel(NSInteger secs)
                 valueLabel:_transparencyLabel
                    atY:y];
 
-    /* Decoration theme */
-    _decorationThemePopUp = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    [_decorationThemePopUp setTarget:self];
-    [_decorationThemePopUp setAction:@selector(decorationThemeChanged:)];
-    y = [self addLabeledRow:tab
-                      label:@"Decoration Theme:"
-                    control:_decorationThemePopUp
-               controlWidth:180
-                        atY:y];
-
     /* Checkboxes */
     _enableDecorationsCheck = MakeCheckbox(@"Server-side Decorations");
     _enableDecorationsCheck.frame = NSMakeRect(MV_MARGIN, y,
@@ -264,38 +249,6 @@ static NSString *intervalLabel(NSInteger secs)
     [_x11DecorationsCheck setAction:@selector(toggleX11Decorations:)];
     [tab addSubview:_x11DecorationsCheck];
     y += MV_ROW_H + MV_ROW_GAP;
-
-    /* Color wells */
-    _titlebarColorWell = MakeColorWell();
-    [_titlebarColorWell setTarget:self];
-    [_titlebarColorWell setAction:@selector(titlebarColorChanged:)];
-    y = [self addLabeledRow:tab label:@"Titlebar Color:"
-                    control:_titlebarColorWell controlWidth:44 atY:y];
-
-    _borderColorWell = MakeColorWell();
-    [_borderColorWell setTarget:self];
-    [_borderColorWell setAction:@selector(borderColorChanged:)];
-    y = [self addLabeledRow:tab label:@"Border Color:"
-                    control:_borderColorWell controlWidth:44 atY:y];
-
-    /* Button colours — label + three wells side by side */
-    NSTextField *btnLbl = MakeLabel(@"Button Colors (×/−/+):");
-    btnLbl.frame = NSMakeRect(MV_MARGIN, y, MV_LBL_W, MV_ROW_H);
-    [tab addSubview:btnLbl];
-
-    _buttonCloseColorWell = MakeColorWell();
-    _buttonMinColorWell   = MakeColorWell();
-    _buttonMaxColorWell   = MakeColorWell();
-    [_buttonCloseColorWell setTarget:self]; [_buttonCloseColorWell setAction:@selector(buttonColorsChanged:)];
-    [_buttonMinColorWell   setTarget:self]; [_buttonMinColorWell   setAction:@selector(buttonColorsChanged:)];
-    [_buttonMaxColorWell   setTarget:self]; [_buttonMaxColorWell   setAction:@selector(buttonColorsChanged:)];
-
-    _buttonCloseColorWell.frame = NSMakeRect(MV_CTRL_X,          y, 44, MV_ROW_H);
-    _buttonMinColorWell.frame   = NSMakeRect(MV_CTRL_X + 48,     y, 44, MV_ROW_H);
-    _buttonMaxColorWell.frame   = NSMakeRect(MV_CTRL_X + 96,     y, 44, MV_ROW_H);
-    [tab addSubview:_buttonCloseColorWell];
-    [tab addSubview:_buttonMinColorWell];
-    [tab addSubview:_buttonMaxColorWell];
 
     return tab;
 }
@@ -753,42 +706,6 @@ static NSButton *MakeRadioButton(NSString *title)
     BOOL x11Dec = [_compPrefs[@"x11Decorations"] boolValue];
     _x11DecorationsCheck.state = x11Dec ? NSControlStateValueOn : NSControlStateValueOff;
 
-    NSString *theme = _compPrefs[@"decorationTheme"] ?: @"Default";
-    [_decorationThemePopUp removeAllItems];
-    [_decorationThemePopUp addItemsWithTitles:@[@"Default", @"Dark", @"Light", @"Minimal"]];
-    [_decorationThemePopUp selectItemWithTitle:theme];
-
-    _titlebarColorWell.color = [self colorFromDictKey:@"titlebarColor"
-                                               dict:_compPrefs
-                                           fallback:[NSColor colorWithCalibratedRed:0.22
-                                                                              green:0.22
-                                                                               blue:0.25
-                                                                              alpha:0.96]];
-    _borderColorWell.color   = [self colorFromDictKey:@"borderColor"
-                                               dict:_compPrefs
-                                           fallback:[NSColor colorWithCalibratedRed:0.18
-                                                                              green:0.18
-                                                                               blue:0.22
-                                                                              alpha:0.96]];
-    _buttonCloseColorWell.color = [self colorFromDictKey:@"buttonCloseColor"
-                                                   dict:_compPrefs
-                                               fallback:[NSColor colorWithCalibratedRed:0.9
-                                                                                  green:0.32
-                                                                                   blue:0.32
-                                                                                  alpha:1.0]];
-    _buttonMinColorWell.color   = [self colorFromDictKey:@"buttonMinColor"
-                                                   dict:_compPrefs
-                                               fallback:[NSColor colorWithCalibratedRed:0.95
-                                                                                  green:0.78
-                                                                                   blue:0.20
-                                                                                  alpha:1.0]];
-    _buttonMaxColorWell.color   = [self colorFromDictKey:@"buttonMaxColor"
-                                                   dict:_compPrefs
-                                               fallback:[NSColor colorWithCalibratedRed:0.32
-                                                                                  green:0.80
-                                                                                   blue:0.40
-                                                                                  alpha:1.0]];
-
     /* ---- Dock ---- */
     CGFloat iconSize = [_dockPrefs[@"iconSize"] doubleValue];
     if (iconSize == 0) iconSize = 48.0;
@@ -869,12 +786,8 @@ static NSButton *MakeRadioButton(NSString *title)
 }
 
 - (IBAction)toggleDecorations:(id)sender { }
-- (IBAction)decorationThemeChanged:(id)sender { }
 - (IBAction)toggleBlur:(id)sender { }
 - (IBAction)toggleX11Decorations:(id)sender { }
-- (IBAction)titlebarColorChanged:(id)sender { }
-- (IBAction)borderColorChanged:(id)sender { }
-- (IBAction)buttonColorsChanged:(id)sender { }
 
 /* ---------------------------------------------------------------------- */
 #pragma mark - IBActions – Dock
@@ -1161,12 +1074,6 @@ static NSButton *MakeRadioButton(NSString *title)
     _compPrefs[@"windowTransparency"]    = @(_transparencySlider.doubleValue);
     _compPrefs[@"serverSideDecorations"] = @(_enableDecorationsCheck.state == NSControlStateValueOn);
     _compPrefs[@"enableBlur"]            = @(_enableBlurCheck.state == NSControlStateValueOn);
-    _compPrefs[@"decorationTheme"]       = _decorationThemePopUp.titleOfSelectedItem ?: @"Default";
-    _compPrefs[@"titlebarColor"]         = [self hexStringFromColor:_titlebarColorWell.color];
-    _compPrefs[@"borderColor"]           = [self hexStringFromColor:_borderColorWell.color];
-    _compPrefs[@"buttonCloseColor"]      = [self hexStringFromColor:_buttonCloseColorWell.color];
-    _compPrefs[@"buttonMinColor"]        = [self hexStringFromColor:_buttonMinColorWell.color];
-    _compPrefs[@"buttonMaxColor"]        = [self hexStringFromColor:_buttonMaxColorWell.color];
     _compPrefs[@"x11Decorations"]        = @(x11Dec);
 
     /* When X11 decorations are enabled, bake in the current GNUstep theme
@@ -1212,7 +1119,6 @@ static NSButton *MakeRadioButton(NSString *title)
         @"windowTransparency":    _compPrefs[@"windowTransparency"],
         @"serverSideDecorations": _compPrefs[@"serverSideDecorations"],
         @"enableBlur":            _compPrefs[@"enableBlur"],
-        @"decorationTheme":       _compPrefs[@"decorationTheme"],
         @"x11Decorations":        _compPrefs[@"x11Decorations"] ?: @NO,
         @"backgroundMode":        bgMode,
         @"sceneFilePath":         _desktopPrefs[@"sceneFilePath"] ?: @"",
@@ -1327,15 +1233,6 @@ objectValueForTableColumn:(NSTableColumn *)col
 
 /* ---------------------------------------------------------------------- */
 #pragma mark - Colour helpers
-
-- (NSColor *)colorFromDictKey:(NSString *)key
-                         dict:(NSDictionary *)dict
-                     fallback:(NSColor *)fallback
-{
-    NSString *hex = dict[key];
-    if (!hex) return fallback;
-    return [self colorFromHexString:hex] ?: fallback;
-}
 
 - (NSColor *)colorFromHexString:(NSString *)hex
 {

@@ -6,6 +6,7 @@
 #import "AmbrosiaBackground.h"
 #import "AmbrosiaDesktopIcons.h"
 #import "AmbrosiaWindowView.h"
+#import "AmbrosiaSwitcher.h"
 #include <wayland-server-core.h>
 #include <wlr/backend.h>
 #include <wlr/render/allocator.h>
@@ -176,6 +177,7 @@ struct ambrosia_compositor_state {
 @property (readonly)           AmbrosiaSession         *session;
 @property (readonly)           AmbrosiaBackground      *background;
 @property (readonly)           AmbrosiaDesktopIcons    *desktopIcons;
+@property (readonly)           AmbrosiaSwitcher        *switcher;
 
 /** Whether server-side decorations should be drawn on XWayland managed windows. */
 @property (readonly) BOOL           x11Decorations;

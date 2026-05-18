@@ -5,12 +5,9 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/render/wlr_renderer.h>
 
-/* Decoration geometry constants — match Milk.theme dimensions */
-#define AMBROSIA_TITLEBAR_HEIGHT  24   /* Milk TITLE_HEIGHT                          */
-#define AMBROSIA_BORDER_WIDTH      4   /* frame hit-zone width; stroke is 1 px       */
-#define AMBROSIA_BTN_SIZE         15   /* Milk TITLEBAR_BUTTON_SIZE                  */
-#define AMBROSIA_BTN_PAD_SIDE     10   /* Milk TITLEBAR_PADDING_LEFT/RIGHT (rounded) */
-#define AMBROSIA_BTN_PAD_TOP       5   /* Milk TITLEBAR_PADDING_TOP (rounded)        */
+/* Compositor-level constant: side and bottom frame width in pixels.
+ * Not a theme concept — keeps a consistent grab margin around every window. */
+#define AMBROSIA_BORDER_WIDTH  4
 
 typedef NS_ENUM(NSInteger, AmbrosiaDecorationHit) {
     AmbrosiaDecorationHitNone = 0,
@@ -39,6 +36,14 @@ typedef NS_ENUM(NSInteger, AmbrosiaDecorationHit) {
                        sceneTree:(struct wlr_scene_tree *)parentTree;
 
 /**
+ * Reload decoration metrics (titlebar height, button size, padding, corner
+ * radius, and button images) from the currently active GNUstep theme.
+ * Call once at startup and again on GSThemeDidActivateNotification so that
+ * all subsequent decorations reflect the new theme without restarting.
+ */
++ (void)reloadThemeMetrics;
+
+/**
  * Update the decoration dimensions and title.
  * Call whenever the surface is mapped or resized.
  */
@@ -47,7 +52,7 @@ typedef NS_ENUM(NSInteger, AmbrosiaDecorationHit) {
                   title:(NSString *)title;
 
 /**
- * Override the Milk-theme default colours from a dictionary of RRGGBBAA hex strings.
+ * Override the theme-derived colours from a dictionary of RRGGBBAA hex strings.
  * Recognised keys: titlebarGradientTopColor, titlebarGradientBottomColor,
  * titlebarInactiveTopColor, titlebarInactiveBottomColor, titlebarSeparatorColor,
  * windowBorderColor, windowBodyColor, buttonActiveColor, buttonInactiveColor.

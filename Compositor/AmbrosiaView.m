@@ -291,8 +291,9 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
     /* When a decoration is active, x/y is the FRAME top-left.
      * The scene tree must sit at the surface origin, which is inset
      * (B, T) from the frame — matching AmbrosiaXWaylandView.moveTo:y: */
-    int scene_x = x + (_decoration ? AMBROSIA_BORDER_WIDTH  : 0);
-    int scene_y = y + (_decoration ? AMBROSIA_TITLEBAR_HEIGHT : 0);
+    NSEdgeInsets di = [AmbrosiaDecoration frameInsets];
+    int scene_x = x + (_decoration ? (int)di.left : 0);
+    int scene_y = y + (_decoration ? (int)di.top  : 0);
 
     wlr_scene_node_set_position(&_state->scene_tree->node, scene_x, scene_y);
     [_compositor updateFractionalScaleForSurface:[self surface] x:scene_x y:scene_y];
@@ -334,9 +335,10 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
     _decoration.focused = (_compositor.focusedView == self);
 
     /* Re-position the scene tree to account for the new (B, T) inset */
+    NSEdgeInsets di = [AmbrosiaDecoration frameInsets];
     wlr_scene_node_set_position(&_state->scene_tree->node,
-                                _x + AMBROSIA_BORDER_WIDTH,
-                                _y + AMBROSIA_TITLEBAR_HEIGHT);
+                                _x + (int)di.left,
+                                _y + (int)di.top);
 }
 
 - (void)removeDecoration
@@ -633,8 +635,9 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
             struct wlr_box ob;
             wlr_output_layout_get_box(_compositor.state->output_layout,
                                       output, &ob);
-            int B         = AMBROSIA_BORDER_WIDTH;
-            int T         = AMBROSIA_TITLEBAR_HEIGHT;
+            NSEdgeInsets _fi = [AmbrosiaDecoration frameInsets];
+            int B         = (int)_fi.left;
+            int T         = (int)_fi.top;
             int usableTop = _compositor.state->usable_top;
             int sw = ob.width  - B * 2;
             int sh = ob.height - usableTop - T - B;
@@ -784,6 +787,21 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
     pid_t pid = 0;
     wl_client_get_credentials(client, &pid, NULL, NULL);
     return pid;
+}
+
+- (NSString *)displayName
+{
+    const char *title  = _state->xdg_toplevel->title;
+    const char *app_id = _state->xdg_toplevel->app_id;
+    if (title  && title[0])  return [NSString stringWithUTF8String:title];
+    if (app_id && app_id[0]) return [NSString stringWithUTF8String:app_id];
+    return @"Application";
+}
+
+- (NSString *)iconIdentifier
+{
+    const char *app_id = _state->xdg_toplevel->app_id;
+    return (app_id && app_id[0]) ? [NSString stringWithUTF8String:app_id] : nil;
 }
 
 @end

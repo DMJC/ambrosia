@@ -5,7 +5,7 @@
 #import <PreferencePanes/PreferencePanes.h>
 #import "AudioBackend.h"
 
-@interface AudioModule : NSPreferencePane <NSTableViewDelegate, NSTableViewDataSource, AudioBackendDelegate>
+@interface AudioModule : NSPreferencePane <NSTableViewDelegate, NSTableViewDataSource, NSTabViewDelegate, AudioBackendDelegate>
 @property (nonatomic, strong) id<AudioBackend> audioBackend;
 @property (strong) NSTableView *inputDeviceTableView;
 @property (strong) NSTableView *outputDeviceTableView;

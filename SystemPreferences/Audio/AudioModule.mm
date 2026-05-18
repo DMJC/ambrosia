@@ -44,6 +44,7 @@
     NSTabView *tabView = [[NSTabView alloc] initWithFrame:self.mainView.bounds];
     tabView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     tabView.tabViewType = NSTopTabsBezelBorder;
+    tabView.delegate = self;
 
     // Sound Effects tab
     NSTabViewItem *audioTab = [[NSTabViewItem alloc] initWithIdentifier:@"Sound Effects"];
@@ -286,6 +287,16 @@
 - (void)audioBackend:(id<AudioBackend>)backend didUpdateOutputVolume:(double)volume mute:(BOOL)mute {
     self.outputVolumeSlider.doubleValue = volume;
     [self.outputMuteButton setState:(mute ? NSControlStateValueOn : NSControlStateValueOff)];
+}
+
+#pragma mark - NSTabViewDelegate
+
+- (void)tabView:(NSTabView *)tabView didSelectTabViewItem:(NSTabViewItem *)tabViewItem {
+    NSString *ident = [tabViewItem identifier];
+    if ([ident isEqualToString:@"Output"])
+        [self.audioBackend refreshOutputDevices];
+    else if ([ident isEqualToString:@"Input"])
+        [self.audioBackend refreshInputDevices];
 }
 
 @end

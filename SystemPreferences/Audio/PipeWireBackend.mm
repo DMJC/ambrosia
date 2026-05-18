@@ -241,6 +241,18 @@ static const struct pw_node_events node_events = {
     pw_thread_loop_unlock(_threadLoop);
 }
 
+- (void)refreshInputDevices {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.delegate audioBackendDidUpdateInputDevices:self];
+    });
+}
+
+- (void)refreshOutputDevices {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.delegate audioBackendDidUpdateOutputDevices:self];
+    });
+}
+
 - (void)refreshVolumeForInputDeviceIndex:(uint32_t)index {
     if (!_threadLoop) return;
     pw_thread_loop_lock(_threadLoop);

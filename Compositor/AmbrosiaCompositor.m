@@ -46,6 +46,8 @@
 - (void)activateConstraintForSurface:(struct wlr_surface *)surface;
 - (void)deactivateActiveConstraint;
 - (void)handleActiveConstraintDestroy;
+/** Theme change: reload decoration metrics and redraw all decorations. */
+- (void)_handleThemeChange:(NSNotification *)note;
 /** Compositor prefs (X11 decorations etc.) */
 - (void)_handleCompPrefsNotification:(NSNotification *)note;
 - (void)_applyCompPrefsUpdate;
@@ -533,6 +535,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     AmbrosiaSession                  *_session;
     AmbrosiaBackground               *_background;
     AmbrosiaDesktopIcons             *_desktopIcons;
+    AmbrosiaSwitcher                 *_switcher;
     BOOL                              _running;
 
     /* Pending activate request — written by the notification thread,
@@ -567,6 +570,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 @synthesize session             = _session;
 @synthesize background          = _background;
 @synthesize desktopIcons        = _desktopIcons;
+@synthesize switcher            = _switcher;
 @synthesize views               = _views;
 @synthesize outputs             = _outputs;
 @synthesize layerSurfaces       = _layerSurfaces;
@@ -613,6 +617,15 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 {
     wlr_log_init(WLR_DEBUG, NULL);
     wlr_log(WLR_INFO, "Ambrosia: initialising compositor");
+
+    /* Load decoration metrics from the active GNUstep theme before any
+     * decorations are created.  Re-load whenever the theme changes. */
+    [AmbrosiaDecoration reloadThemeMetrics];
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_handleThemeChange:)
+               name:@"GSThemeDidActivateNotification"
+             object:nil];
 
     /* Wayland display + event loop */
     _state->display    = wl_display_create();
@@ -715,6 +728,9 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
                      initWithEventLoop:_state->event_loop
                              sceneTree:_state->scene_layer_desktop
                           outputLayout:_state->output_layout];
+
+    /* App switcher overlay — rendered into scene_layer_overlay on Cmd+Tab. */
+    _switcher = [[AmbrosiaSwitcher alloc] initWithCompositor:self];
 
     /* XDG shell (version 3) */
     _state->xdg_shell = wlr_xdg_shell_create(_state->display, 3);
@@ -1284,8 +1300,11 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     struct wlr_keyboard *kb = wlr_seat_get_keyboard(_state->seat);
     struct wlr_surface *focusSurface = surface ?: [view surface];
     if (kb && focusSurface) {
+        /* Pass empty keycodes so no physically-held key (e.g. Tab from the
+         * Command-Tab switcher) is synthesised as a KeyPress in the newly
+         * focused surface/XWayland window.  Modifier state is still correct. */
         wlr_seat_keyboard_notify_enter(_state->seat,
-            focusSurface, kb->keycodes, kb->num_keycodes, &kb->modifiers);
+            focusSurface, NULL, 0, &kb->modifiers);
     }
 
     /* Re-activate any pointer constraint registered for this surface. */
@@ -2647,6 +2666,18 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
     wlr_log(WLR_INFO, "background: applying desktop prefs update");
     [_background applyPreferences:prefs];
+}
+
+- (void)_handleThemeChange:(NSNotification *)note
+{
+    /* Reload decoration metrics from the newly active GNUstep theme and
+     * redraw all existing decorations so they pick up the new appearance. */
+    [AmbrosiaDecoration reloadThemeMetrics];
+    for (id<AmbrosiaWindowView> view in _views) {
+        if (!view.decoration) continue;
+        struct wlr_box geo = [view geometry];
+        [view.decoration updateWithWidth:geo.width height:geo.height title:nil];
+    }
 }
 
 - (void)_handleCompPrefsNotification:(NSNotification *)note

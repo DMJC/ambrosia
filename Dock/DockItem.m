@@ -216,31 +216,49 @@ static NSString *FindIconPath(NSString *name)
         return;
     }
 
-    /* App: try bundle icon, then workspace, then generic */
+    /* App: system icon theme first (override), then bundle, then fallback.
+     *
+     * The bare bundle name (e.g. "TextEdit" from "TextEdit.app") is used as the
+     * theme icon name so that GNUstep apps whose bundles carry only a TIFF icon
+     * can still be represented by a higher-quality PNG from the installed theme.
+     * The bundle identifier is tried as a secondary theme key.               */
     if (!_launchPath) {
         _icon = [NSImage imageNamed:@"NSApplicationIcon"];
         return;
     }
-    NSBundle *bundle = [NSBundle bundleWithPath:_launchPath];
-    if (bundle) {
-        NSString *iconName = [bundle objectForInfoDictionaryKey:@"CFBundleIconFile"]
-                          ?: [bundle objectForInfoDictionaryKey:@"NSIcon"];
-        if (iconName) {
-            NSString *iconPath = nil;
-            if ([iconName pathExtension].length > 0) {
-                /* Name includes extension — look up directly */
-                iconPath = [bundle pathForResource:[iconName stringByDeletingPathExtension]
-                                            ofType:[iconName pathExtension]];
-            } else {
-                /* No extension — try svg, icns, png, tiff in that order */
-                for (NSString *ext in @[@"svg", @"icns", @"png", @"tiff"]) {
-                    iconPath = [bundle pathForResource:iconName ofType:ext];
-                    if (iconPath) break;
+
+    NSString *appBaseName = [[_launchPath lastPathComponent] stringByDeletingPathExtension];
+
+    /* 1. System icon theme — bare app name, then bundle identifier. */
+    NSString *themeIconPath = FindIconPath(appBaseName);
+    if (!themeIconPath && _bundleIdentifier.length)
+        themeIconPath = FindIconPath(_bundleIdentifier);
+    if (themeIconPath)
+        _icon = LoadImageAtPath(themeIconPath);
+
+    /* 2. Bundle icon (GNUstep NSIcon / CFBundleIconFile). */
+    if (!_icon) {
+        NSBundle *bundle = [NSBundle bundleWithPath:_launchPath];
+        if (bundle) {
+            NSString *iconName = [bundle objectForInfoDictionaryKey:@"CFBundleIconFile"]
+                              ?: [bundle objectForInfoDictionaryKey:@"NSIcon"];
+            if (iconName) {
+                NSString *iconPath = nil;
+                if ([iconName pathExtension].length > 0) {
+                    iconPath = [bundle pathForResource:[iconName stringByDeletingPathExtension]
+                                                ofType:[iconName pathExtension]];
+                } else {
+                    for (NSString *ext in @[@"svg", @"icns", @"png", @"tiff"]) {
+                        iconPath = [bundle pathForResource:iconName ofType:ext];
+                        if (iconPath) break;
+                    }
                 }
+                if (iconPath) _icon = LoadImageAtPath(iconPath);
             }
-            if (iconPath) _icon = LoadImageAtPath(iconPath);
         }
     }
+
+    /* 3. Workspace / generic fallback. */
     if (!_icon)
         _icon = [[NSWorkspace sharedWorkspace] iconForFile:_launchPath];
     if (!_icon)

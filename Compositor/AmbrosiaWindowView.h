@@ -65,6 +65,12 @@ struct wlr_surface;
 /** Returns the OS pid of the client process. */
 - (pid_t)clientPid;
 
+/** Human-readable display name for use in the app switcher. */
+- (NSString *)displayName;
+
+/** XDG app_id / X11 window class used for Freedesktop icon lookup. May be nil. */
+- (nullable NSString *)iconIdentifier;
+
 @end
 
 #endif /* AMBROSIA_WINDOW_VIEW_H */

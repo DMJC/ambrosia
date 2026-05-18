@@ -28,6 +28,8 @@
 - (void)refreshVolumeForOutputDeviceIndex:(uint32_t)index;
 - (void)setDefaultInputDevice:(uint32_t)index;
 - (void)setDefaultOutputDevice:(uint32_t)index;
+- (void)refreshInputDevices;
+- (void)refreshOutputDevices;
 @end
 
 #endif // AUDIOBACKEND_H

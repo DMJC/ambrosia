@@ -12,16 +12,33 @@
 #include <stdio.h>
 #include <cairo/cairo.h>
 
+#import <GNUstepGUI/GSTheme.h>
+
 /* DRM_FORMAT_ARGB8888: little-endian 0xAARRGGBB */
 #ifndef DRM_FORMAT_ARGB8888
 #define DRM_FORMAT_ARGB8888 0x34325241
 #endif
 
-/* Milk.theme corner radius (WINDOW_CORNER_RADIUS) */
-#define MILK_CORNER_RADIUS 6.0f
+/* --------------------------------------------------------------------------
+ * Cached theme metrics — loaded once from [GSTheme theme] and reloaded on
+ * GSThemeDidActivateNotification.  All layout code reads these instead of
+ * the old compile-time constants.
+ * -------------------------------------------------------------------------- */
+
+static int   _gTitlebarH   = 24;    /* [GSTheme titlebarHeight]       */
+static int   _gBtnSize     = 15;    /* [GSTheme titlebarButtonSize]   */
+static int   _gBtnPadLeft  = 10;    /* [GSTheme titlebarPaddingLeft]  */
+static int   _gBtnPadRight = 10;    /* [GSTheme titlebarPaddingRight] */
+static int   _gBtnPadTop   =  5;    /* [GSTheme titlebarPaddingTop]   */
+static float _gCornerR     =  0.f;  /* GSThemeDomain GSWindowCornerRadius */
+
+/* Cairo image surfaces loaded from the theme bundle (NULL = use fallback circles) */
+static cairo_surface_t *_gCloseImg      = NULL;
+static cairo_surface_t *_gMiniaturizeImg = NULL;
 
 /* --------------------------------------------------------------------------
- * Default colour palette — Milk.theme source values
+ * Default colour palette — derived from GNUstep system colors at load time;
+ * overridden by ambrosia_gnustep_decoration_palette() in the compositor.
  * -------------------------------------------------------------------------- */
 
 static const float kGradTopActive[4]    = { 1.000f, 1.000f, 1.000f, 1.0f };
@@ -137,6 +154,37 @@ static struct ambrosia_shm_buf *ambrosia_shm_buf_create(int w, int h)
  * Output is premultiplied ARGB8888 into the buffer's mmap'd data.
  * -------------------------------------------------------------------------- */
 
+/* Draw a single theme button image centred at (cx, cy) scaled to size S×S.
+ * Falls back to a solid-colour circle when no image is available. */
+static void draw_button(cairo_t *cr,
+                        cairo_surface_t *img,
+                        float cx, float cy, float S,
+                        const float fallback[4])
+{
+    if (img && cairo_surface_status(img) == CAIRO_STATUS_SUCCESS) {
+        int imgW = cairo_image_surface_get_width(img);
+        int imgH = cairo_image_surface_get_height(img);
+        if (imgW > 0 && imgH > 0) {
+            double scale = (imgW >= imgH)
+                ? (double)S / imgW
+                : (double)S / imgH;
+            double ox = cx - (imgW * scale) * 0.5;
+            double oy = cy - (imgH * scale) * 0.5;
+            cairo_save(cr);
+            cairo_translate(cr, ox, oy);
+            cairo_scale(cr, scale, scale);
+            cairo_set_source_surface(cr, img, 0, 0);
+            cairo_paint(cr);
+            cairo_restore(cr);
+            return;
+        }
+    }
+    /* Fallback: plain filled circle */
+    cairo_set_source_rgba(cr, fallback[0], fallback[1], fallback[2], fallback[3]);
+    cairo_arc(cr, cx, cy, S * 0.5, 0, 2 * M_PI);
+    cairo_fill(cr);
+}
+
 static void render_titlebar(struct ambrosia_shm_buf *sb,
                              const float gradTop[4],
                              const float gradBot[4],
@@ -146,26 +194,38 @@ static void render_titlebar(struct ambrosia_shm_buf *sb,
                              float fontSize)
 {
     const int W = sb->width, H = sb->height;
-    const int S = AMBROSIA_BTN_SIZE, PD = AMBROSIA_BTN_PAD_SIDE, PT = AMBROSIA_BTN_PAD_TOP;
+    const int S   = _gBtnSize;
+    const int PDL = _gBtnPadLeft;
+    const int PDR = _gBtnPadRight;
+    const int PT  = _gBtnPadTop;
+    const float CR = _gCornerR;
+
     cairo_surface_t *surf = cairo_image_surface_create_for_data((unsigned char *)sb->data,
         CAIRO_FORMAT_ARGB32, W, H, (int)sb->stride);
     cairo_t *cr = cairo_create(surf);
 
+    /* Clear to transparent */
     cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
     cairo_set_source_rgba(cr, 0, 0, 0, 0);
     cairo_paint(cr);
 
+    /* Titlebar shape — rounded top corners when theme requests it */
     cairo_new_path(cr);
-    cairo_move_to(cr, MILK_CORNER_RADIUS, 0);
-    cairo_line_to(cr, W - MILK_CORNER_RADIUS, 0);
-    cairo_arc(cr, W - MILK_CORNER_RADIUS, MILK_CORNER_RADIUS, MILK_CORNER_RADIUS, -M_PI_2, 0);
-    cairo_line_to(cr, W, H);
-    cairo_line_to(cr, 0, H);
-    cairo_line_to(cr, 0, MILK_CORNER_RADIUS);
-    cairo_arc(cr, MILK_CORNER_RADIUS, MILK_CORNER_RADIUS, MILK_CORNER_RADIUS, M_PI, -M_PI_2);
+    if (CR > 0.5f) {
+        cairo_move_to(cr, CR, 0);
+        cairo_line_to(cr, W - CR, 0);
+        cairo_arc(cr, W - CR, CR, CR, -M_PI_2, 0);
+        cairo_line_to(cr, W, H);
+        cairo_line_to(cr, 0, H);
+        cairo_line_to(cr, 0, CR);
+        cairo_arc(cr, CR, CR, CR, M_PI, -M_PI_2);
+    } else {
+        cairo_rectangle(cr, 0, 0, W, H);
+    }
     cairo_close_path(cr);
     cairo_clip(cr);
 
+    /* Gradient fill */
     cairo_pattern_t *grad = cairo_pattern_create_linear(0, 0, 0, H);
     cairo_pattern_add_color_stop_rgba(grad, 0, gradTop[0], gradTop[1], gradTop[2], gradTop[3]);
     cairo_pattern_add_color_stop_rgba(grad, 1, gradBot[0], gradBot[1], gradBot[2], gradBot[3]);
@@ -173,16 +233,18 @@ static void render_titlebar(struct ambrosia_shm_buf *sb,
     cairo_paint(cr);
     cairo_pattern_destroy(grad);
 
+    /* Buttons — use theme images over OVER so transparency composites correctly */
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+
     float radius = (float)S * 0.5f;
     float cy = PT + radius;
-    float leftCx = PD + radius;
-    float rightCx = W - PD - radius;
-    cairo_set_source_rgba(cr, button[0], button[1], button[2], button[3]);
-    cairo_arc(cr, leftCx, cy, radius, 0, 2 * M_PI);
-    cairo_fill(cr);
-    cairo_arc(cr, rightCx, cy, radius, 0, 2 * M_PI);
-    cairo_fill(cr);
+    float leftCx  = PDL + radius;          /* miniaturize: left side  */
+    float rightCx = W - PDR - radius;     /* close:       right side */
 
+    draw_button(cr, _gMiniaturizeImg, leftCx,  cy, (float)S, button);
+    draw_button(cr, _gCloseImg,       rightCx, cy, (float)S, button);
+
+    /* Window title — centred between the two buttons */
     if (title && title[0] != '\0') {
         cairo_text_extents_t ext;
         cairo_select_font_face(cr, (fontName && fontName[0]) ? fontName : "Sans",
@@ -227,29 +289,46 @@ static BOOL parseHexColor(NSString *hex, float out[4])
     return YES;
 }
 
+/* Parse a GNUstep font spec "Family [Bold|Italic…] size" into family + size.
+ * Falls back to "Sans 12" when the spec is absent or malformed. */
+static void parse_font_spec(NSString *spec, NSString **familyOut, float *sizeOut)
+{
+    if (!spec || !spec.length) return;
+    NSArray<NSString *> *parts = [spec componentsSeparatedByCharactersInSet:
+                                  [NSCharacterSet whitespaceCharacterSet]];
+    NSMutableArray<NSString *> *tokens = [NSMutableArray array];
+    for (NSString *p in parts) if (p.length) [tokens addObject:p];
+    if (tokens.count < 2) return;
+    NSString *last = tokens.lastObject;
+    float parsed = [last floatValue];
+    if (parsed > 1.0f) {
+        if (sizeOut) *sizeOut = parsed;
+        [tokens removeLastObject];
+    }
+    NSString *joined = [tokens componentsJoinedByString:@" "];
+    if (joined.length && familyOut) *familyOut = joined;
+}
+
 static void ambrosia_theme_title_font(NSString **familyOut, float *sizeOut)
 {
     NSString *family = @"Sans";
     float size = 12.0f;
 
-    NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
-    id raw = [defs objectForKey:@"TitleBarFont"];
-    if (![raw isKindOfClass:[NSString class]]) raw = [defs objectForKey:@"NSFont"];
-
-    if ([raw isKindOfClass:[NSString class]]) {
-        NSString *spec = (NSString *)raw;
-        NSArray<NSString *> *parts = [spec componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        NSMutableArray<NSString *> *tokens = [NSMutableArray array];
-        for (NSString *p in parts) if (p.length) [tokens addObject:p];
-        if (tokens.count >= 2) {
-            NSString *last = tokens.lastObject;
-            float parsed = [last floatValue];
-            if (parsed > 1.0f) size = parsed;
-            [tokens removeLastObject];
-            NSString *joined = [tokens componentsJoinedByString:@" "];
-            if (joined.length) family = joined;
-        }
+    /* Prefer NSTitleBarFont from the active theme's info dictionary, then fall
+     * back to the user default TitleBarFont / NSFont keys. */
+    GSTheme *theme = [GSTheme theme];
+    NSDictionary *info = theme ? [theme infoDictionary] : nil;
+    NSString *spec = info[@"NSTitleBarFont"];
+    if (!spec) {
+        /* Some themes store the title font under the plain NSFont key */
+        spec = info[@"NSBoldFont"] ?: info[@"NSFont"];
     }
+    if (!spec) {
+        NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
+        spec = [defs objectForKey:@"TitleBarFont"] ?: [defs objectForKey:@"NSFont"];
+    }
+
+    parse_font_spec(spec, &family, &size);
 
     if (familyOut) *familyOut = family;
     if (sizeOut) *sizeOut = size;
@@ -258,18 +337,33 @@ static void ambrosia_theme_title_font(NSString **familyOut, float *sizeOut)
 /* --------------------------------------------------------------------------
  * AmbrosiaDecoration
  *
- * Visual layout (Milk.theme style, all positions relative to the decoration
- * sub-tree which sits at (-B, -T) from the surface scene-tree origin):
+ * Visual layout (positions relative to the decoration sub-tree which sits
+ * at (-B, -T) from the surface scene-tree origin):
  *
- *  ┌─[TITLEBAR BUFFER: gradient + rounded top corners, totalW×T px]────┐ y=0
- *  │  ○ miniaturize (left)                       ×  close (right)      │
- *  ├─[separator 1px]───────────────────────────────────────────────────┤ y=T
- *  │ ║ left (1px stroke + 3px fill)   [surface]  ║ right (same)        │
- *  └─[bottom border (1px stroke + 3px fill)]────────────────────────────┘ y=T+H+B
+ *  ┌─[TITLEBAR BUFFER: gradient + optional rounded top corners, totalW×T px]─┐ y=0
+ *  │  [miniaturize img] (left)                       [close img] (right)      │
+ *  ├─[separator 1px]────────────────────────────────────────────────────────┤ y=T
+ *  │ ║ left (1px stroke + 3px fill)   [surface]  ║ right (same)              │
+ *  └─[bottom border (1px stroke + 3px fill)]───────────────────────────────────┘ y=T+H+B
  *
+ * Titlebar dimensions, button size, and padding come from [GSTheme theme] so
+ * that the SSD matches whatever GNUstep theme is currently active.
+ * Button images are loaded from the theme bundle via Cairo PNG.
  * Titlebar buffer is a wlr_scene_buffer backed by a memfd SHM allocation so
  * both the Pixman and GLES2 wlroots renderers can import it.
  * -------------------------------------------------------------------------- */
+
+/* Load a Cairo PNG image from the given path; returns NULL on any error. */
+static cairo_surface_t *load_png_image(NSString *path)
+{
+    if (!path) return NULL;
+    cairo_surface_t *s = cairo_image_surface_create_from_png([path UTF8String]);
+    if (!s || cairo_surface_status(s) != CAIRO_STATUS_SUCCESS) {
+        if (s) cairo_surface_destroy(s);
+        return NULL;
+    }
+    return s;
+}
 
 @implementation AmbrosiaDecoration {
     struct wlr_scene_tree   *_parentTree;
@@ -371,11 +465,8 @@ static void ambrosia_theme_title_font(NSString **familyOut, float *sizeOut)
 
     int W  = _surfaceWidth;
     int H  = _surfaceHeight;
-    int T  = AMBROSIA_TITLEBAR_HEIGHT;
+    int T  = _gTitlebarH;
     int B  = AMBROSIA_BORDER_WIDTH;
-    int S  = AMBROSIA_BTN_SIZE;
-    int PD = AMBROSIA_BTN_PAD_SIDE;
-    int PT = AMBROSIA_BTN_PAD_TOP;
 
     if (W <= 0 || H <= 0) return;
 
@@ -386,7 +477,7 @@ static void ambrosia_theme_title_font(NSString **familyOut, float *sizeOut)
     /* Shift decoration tree so surface origin sits at (B, T) in the view tree */
     wlr_scene_node_set_position(&_decorTree->node, -B, -T);
 
-    /* ---- Titlebar pixel buffer (gradient + rounded top corners) ---- */
+    /* ---- Titlebar pixel buffer (gradient + theme images) ---- */
     [self _uploadTitlebarWidth:totalW height:T];
     wlr_scene_node_set_position(&_titleSceneBuf->node, 0, 0);
 
@@ -411,12 +502,12 @@ static void ambrosia_theme_title_font(NSString **familyOut, float *sizeOut)
     wlr_scene_node_set_position(&_strokeBottom->node, 0,          totalH - 1);
 
     /* ---- Buttons ---- */
-    /* Buttons are now rasterized as circles into the titlebar buffer; keep
-     * scene_rect nodes non-visible while preserving hit-testing geometry. */
+    /* Buttons are rasterized into the titlebar buffer; keep scene_rect nodes
+     * zero-sized so they don't render but still mark the hit-test zones. */
     wlr_scene_rect_set_size(_btnMinimize, 0, 0);
-    wlr_scene_node_set_position(&_btnMinimize->node, PD,              PT);
+    wlr_scene_node_set_position(&_btnMinimize->node, _gBtnPadLeft,                _gBtnPadTop);
     wlr_scene_rect_set_size(_btnClose, 0, 0);
-    wlr_scene_node_set_position(&_btnClose->node,    totalW - PD - S, PT);
+    wlr_scene_node_set_position(&_btnClose->node,    totalW - _gBtnPadRight - _gBtnSize, _gBtnPadTop);
 
     [self _applyRectColors];
 }
@@ -449,7 +540,7 @@ static void ambrosia_theme_title_font(NSString **familyOut, float *sizeOut)
     /* Re-render titlebar with the new gradient (active/inactive palette). */
     if (_surfaceWidth > 0 && _surfaceHeight > 0) {
         int totalW = _surfaceWidth + AMBROSIA_BORDER_WIDTH * 2;
-        [self _uploadTitlebarWidth:totalW height:AMBROSIA_TITLEBAR_HEIGHT];
+        [self _uploadTitlebarWidth:totalW height:_gTitlebarH];
     }
     [self _applyRectColors];
 }
@@ -485,7 +576,7 @@ static void ambrosia_theme_title_font(NSString **familyOut, float *sizeOut)
     /* Re-render titlebar and refresh rect colours */
     if (_surfaceWidth > 0 && _surfaceHeight > 0) {
         int totalW = _surfaceWidth + AMBROSIA_BORDER_WIDTH * 2;
-        [self _uploadTitlebarWidth:totalW height:AMBROSIA_TITLEBAR_HEIGHT];
+        [self _uploadTitlebarWidth:totalW height:_gTitlebarH];
     }
     [self _applyRectColors];
 }
@@ -495,11 +586,12 @@ static void ambrosia_theme_title_font(NSString **familyOut, float *sizeOut)
 
 - (AmbrosiaDecorationHit)hitTestX:(double)x y:(double)y
 {
-    int T      = AMBROSIA_TITLEBAR_HEIGHT;
+    int T      = _gTitlebarH;
     int B      = AMBROSIA_BORDER_WIDTH;
-    int S      = AMBROSIA_BTN_SIZE;
-    int PD     = AMBROSIA_BTN_PAD_SIDE;
-    int PT     = AMBROSIA_BTN_PAD_TOP;
+    int S      = _gBtnSize;
+    int PDL    = _gBtnPadLeft;
+    int PDR    = _gBtnPadRight;
+    int PT     = _gBtnPadTop;
     int totalW = _surfaceWidth  + B * 2;
     int totalH = _surfaceHeight + T + B;
     int corner = 12;
@@ -513,12 +605,12 @@ static void ambrosia_theme_title_font(NSString **familyOut, float *sizeOut)
             return AmbrosiaDecorationHitResizeTop;
         }
 
-        /* Buttons — Milk layout: miniaturize LEFT, close RIGHT */
+        /* Buttons: miniaturize LEFT, close RIGHT */
         int btn_y0 = PT - 3;
         int btn_y1 = PT + S + 3;
         if ((int)y >= btn_y0 && (int)y < btn_y1) {
-            int minX   = PD;
-            int closeX = totalW - PD - S;
+            int minX   = PDL;
+            int closeX = totalW - PDR - S;
             if (x >= minX-3   && x < minX+S+3)   return AmbrosiaDecorationHitMinimize;
             if (x >= closeX-3 && x < closeX+S+3) return AmbrosiaDecorationHitClose;
         }
@@ -542,9 +634,54 @@ static void ambrosia_theme_title_font(NSString **familyOut, float *sizeOut)
 /* ---------------------------------------------------------------------- */
 #pragma mark - Class helpers
 
++ (void)reloadThemeMetrics
+{
+    GSTheme *theme = [GSTheme theme];
+    if (!theme) return;
+
+    _gTitlebarH   = MAX(1, (int)ceilf([theme titlebarHeight]));
+    _gBtnSize     = MAX(4, (int)roundf([theme titlebarButtonSize]));
+    _gBtnPadLeft  = MAX(1, (int)roundf([theme titlebarPaddingLeft]));
+    _gBtnPadRight = MAX(1, (int)roundf([theme titlebarPaddingRight]));
+    _gBtnPadTop   = MAX(1, (int)roundf([theme titlebarPaddingTop]));
+
+    /* Corner radius: read from GSThemeDomain dict; fall back to 6 for Milk.
+     * Use [theme name] (not infoDictionary[@"GSThemeName"]) — the latter key
+     * is absent from standard GNUstep theme plists and always returns nil. */
+    NSDictionary *domain = [theme infoDictionary][@"GSThemeDomain"];
+    id cr = domain[@"GSWindowCornerRadius"];
+    if (cr) {
+        _gCornerR = [cr floatValue];
+    } else {
+        NSString *name = [theme name];
+        _gCornerR = ([name rangeOfString:@"Milk"
+                                 options:NSCaseInsensitiveSearch].location != NSNotFound)
+                    ? 6.0f : 0.0f;
+    }
+
+    /* Button images from the theme bundle.
+     * GNUstep theme bundles store images under "Images/", not "ThemeImages/". */
+    if (_gCloseImg)       { cairo_surface_destroy(_gCloseImg);       _gCloseImg       = NULL; }
+    if (_gMiniaturizeImg) { cairo_surface_destroy(_gMiniaturizeImg); _gMiniaturizeImg = NULL; }
+
+    NSBundle *bundle = [theme bundle];
+    if (bundle) {
+        NSString *closePath =
+            [bundle pathForResource:@"common_Close" ofType:@"png" inDirectory:@"Images"]
+            ?: [bundle pathForResource:@"common_Close" ofType:@"png" inDirectory:@"ThemeImages"]
+            ?: [bundle pathForResource:@"common_Close" ofType:@"png"];
+        NSString *miniPath =
+            [bundle pathForResource:@"common_Miniaturize" ofType:@"png" inDirectory:@"Images"]
+            ?: [bundle pathForResource:@"common_Miniaturize" ofType:@"png" inDirectory:@"ThemeImages"]
+            ?: [bundle pathForResource:@"common_Miniaturize" ofType:@"png"];
+        _gCloseImg       = load_png_image(closePath);
+        _gMiniaturizeImg = load_png_image(miniPath);
+    }
+}
+
 + (NSEdgeInsets)frameInsets
 {
-    return NSEdgeInsetsMake(AMBROSIA_TITLEBAR_HEIGHT,
+    return NSEdgeInsetsMake(_gTitlebarH,
                             AMBROSIA_BORDER_WIDTH,
                             AMBROSIA_BORDER_WIDTH,
                             AMBROSIA_BORDER_WIDTH);
