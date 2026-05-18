@@ -85,19 +85,50 @@ static NSString *FindIconPath(NSString *name)
     NSArray<NSString *> *cats  = @[@"apps", @"devices", @"mimetypes"];
     NSFileManager *fm = [NSFileManager defaultManager];
 
-    for (NSString *size in sizes) {
-        for (NSString *cat in cats) {
-            for (NSString *ext in exts) {
-                NSString *p = [NSString stringWithFormat:
-                    @"/usr/share/icons/hicolor/%@/%@/%@.%@", size, cat, name, ext];
-                if ([fm fileExistsAtPath:p]) return p;
+    NSString *userBase = [@"~/.local/share/icons" stringByExpandingTildeInPath];
+    NSArray<NSString *> *baseDirs = @[userBase, @"/usr/share/icons"];
+
+    for (NSString *base in baseDirs) {
+        /* Collect theme subdirectories, hicolor first. */
+        NSMutableArray<NSString *> *themes = [NSMutableArray array];
+        [themes addObject:@"hicolor"];
+        NSArray *entries = [fm contentsOfDirectoryAtPath:base error:nil];
+        for (NSString *entry in entries) {
+            if ([entry isEqualToString:@"hicolor"]) continue;
+            BOOL isDir = NO;
+            NSString *full = [base stringByAppendingPathComponent:entry];
+            if ([fm fileExistsAtPath:full isDirectory:&isDir] && isDir)
+                [themes addObject:entry];
+        }
+
+        /* Search size/category subdirectories within each theme. */
+        for (NSString *theme in themes) {
+            NSString *themeDir = [base stringByAppendingPathComponent:theme];
+            for (NSString *size in sizes) {
+                for (NSString *cat in cats) {
+                    for (NSString *ext in exts) {
+                        NSString *p = [[[[themeDir
+                            stringByAppendingPathComponent:size]
+                            stringByAppendingPathComponent:cat]
+                            stringByAppendingPathComponent:name]
+                            stringByAppendingPathExtension:ext];
+                        if ([fm fileExistsAtPath:p]) return p;
+                    }
+                }
             }
         }
+
+        /* Flat files directly in the base directory. */
+        for (NSString *ext in exts) {
+            NSString *p = [[base stringByAppendingPathComponent:name]
+                           stringByAppendingPathExtension:ext];
+            if ([fm fileExistsAtPath:p]) return p;
+        }
     }
+
+    /* Final fallback: /usr/share/pixmaps. */
     for (NSString *ext in exts) {
         NSString *p = [NSString stringWithFormat:@"/usr/share/pixmaps/%@.%@", name, ext];
-        if ([fm fileExistsAtPath:p]) return p;
-        p = [NSString stringWithFormat:@"/usr/share/icons/%@.%@", name, ext];
         if ([fm fileExistsAtPath:p]) return p;
     }
     return nil;

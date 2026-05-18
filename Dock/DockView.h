@@ -21,6 +21,9 @@
 /** YES when dock is laid out vertically (left/right position) */
 @property (nonatomic) BOOL verticalLayout;
 
+/** YES when dock is on the right side of the screen (labels/dots face left) */
+@property (nonatomic) BOOL rightSideDock;
+
 /** YES while a drag is in progress originating from this dock */
 @property (nonatomic, readonly) BOOL isDragging;
 

@@ -25,7 +25,8 @@
  * @implementation block is visible to the compiler.                       */
 @interface AmbrosiaCompositor (PrivateCallbacks)
 - (void)applyExclusiveZonesToBox:(struct wlr_box *)box
-                       forOutput:(struct wlr_output *)output;
+                       forOutput:(struct wlr_output *)output
+                excludingSurface:(nullable struct wlr_layer_surface_v1 *)exclude;
 - (void)recalculateUsableTop;
 - (void)focusNextWindowExcluding:(nullable id<AmbrosiaWindowView>)excluded;
 /** Called from handle_activate_pipe on the wl_event_loop thread. */
@@ -369,7 +370,6 @@ static void handle_new_layer_surface(struct wl_listener *listener, void *data)
 static void handle_layer_surface_commit(struct wl_listener *listener, void *data)
 {
     struct ambrosia_layer_surface *ls = wl_container_of(listener, ls, surface_commit);
-    if (!ls->wlr_layer_surface->initial_commit) return;
 
     struct wlr_output *output = ls->wlr_layer_surface->output;
     if (!output)
@@ -379,11 +379,13 @@ static void handle_layer_surface_commit(struct wl_listener *listener, void *data
     struct wlr_box full_area = {0};
     wlr_output_layout_get_box(gCompositor.state->output_layout, output, &full_area);
 
-    /* Build usable_area by applying exclusive zones from all LAYER_TOP/BOTTOM
-     * surfaces on this output.  This causes the compositor to place new windows
-     * inside the reserved region (below the menu bar, etc.).                   */
+    /* Build usable_area from all OTHER layer surfaces' exclusive zones.
+     * Exclude the surface being configured so it is not pushed away from its
+     * own anchor edge by its own exclusive zone — wlr_scene_layer_surface_v1_configure
+     * will add this surface's zone to usable_area as a side-effect.            */
     struct wlr_box usable_area = full_area;
-    [gCompositor applyExclusiveZonesToBox:&usable_area forOutput:output];
+    [gCompositor applyExclusiveZonesToBox:&usable_area forOutput:output
+                         excludingSurface:ls->wlr_layer_surface];
 
     wlr_scene_layer_surface_v1_configure(ls->scene_layer, &full_area, &usable_area);
 
@@ -2094,16 +2096,21 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
 /**
  * Apply exclusive zones from all mapped LAYER_TOP and LAYER_BOTTOM surfaces
- * on the given output, shrinking *box inward accordingly.  Passed as the
- * usable_area to wlr_scene_layer_surface_v1_configure so that the compositor
- * reports a correct usable area to clients via xdg-output.
+ * on the given output, shrinking *box inward accordingly.
+ *
+ * Pass a non-NULL @exclude to skip one surface — used when configuring that
+ * surface so it is not pushed away from its anchor by its own zone.
+ * wlr_scene_layer_surface_v1_configure adds the excluded surface's zone as a
+ * side-effect, so the returned usable_area remains correct after the call.
  */
 - (void)applyExclusiveZonesToBox:(struct wlr_box *)box
                        forOutput:(struct wlr_output *)output
+                excludingSurface:(nullable struct wlr_layer_surface_v1 *)exclude
 {
     for (NSValue *v in _layerSurfaces) {
         struct ambrosia_layer_surface *ls = [v pointerValue];
         struct wlr_layer_surface_v1 *wls  = ls->wlr_layer_surface;
+        if (wls == exclude) continue;
         if (wls->output != output) continue;
 
         int ez = wls->current.exclusive_zone;

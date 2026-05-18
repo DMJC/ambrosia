@@ -27,6 +27,7 @@ static const CGFloat kRecyclerGap    = 18.0;
 @synthesize baseIconSize    = _baseIconSize;
 @synthesize maxZoomFactor   = _maxZoomFactor;
 @synthesize verticalLayout  = _verticalLayout;
+@synthesize rightSideDock   = _rightSideDock;
 @synthesize isDragging      = _isDragging;
 
 - (instancetype)initWithFrame:(NSRect)frame
@@ -261,12 +262,18 @@ static const CGFloat kRecyclerGap    = 18.0;
 
         /* ---- Running dot ---- */
         if (item.isRunning) {
-            CGFloat dotX = _verticalLayout
-                ? kDockPadding * 0.4
-                : (NSMidX(iconRect) - kRunningDotSize * 0.5);
-            CGFloat dotY = _verticalLayout
-                ? (NSMidY(iconRect) - kRunningDotSize * 0.5)
-                : (kDockPadding * 0.4);
+            CGFloat dotX, dotY;
+            if (_verticalLayout) {
+                /* Dot faces toward the screen centre:
+                 * right dock → left edge; left dock → right edge */
+                dotX = _rightSideDock
+                    ? kDockPadding * 0.4
+                    : (NSMaxX(iconRect) + kRunningDotGap);
+                dotY = NSMidY(iconRect) - kRunningDotSize * 0.5;
+            } else {
+                dotX = NSMidX(iconRect) - kRunningDotSize * 0.5;
+                dotY = kDockPadding * 0.4;
+            }
             [[NSColor colorWithCalibratedWhite:0.9 alpha:0.85] set];
             [[NSBezierPath bezierPathWithOvalInRect:
               NSMakeRect(dotX, dotY, kRunningDotSize, kRunningDotSize)] fill];
@@ -291,13 +298,19 @@ static const CGFloat kRecyclerGap    = 18.0;
         NSForegroundColorAttributeName: [NSColor whiteColor],
     };
     NSSize ts  = [label sizeWithAttributes:attrs];
-    NSRect lr  = _verticalLayout
-        ? NSMakeRect(NSMaxX(iconRect) + 6,
-                     NSMidY(iconRect) - (ts.height + 4) * 0.5,
-                     ts.width + 8, ts.height + 4)
-        : NSMakeRect(NSMidX(iconRect) - ts.width * 0.5 - 4,
-                     NSMaxY(iconRect) + 4,
-                     ts.width + 8, ts.height + 4);
+    NSRect lr;
+    if (_verticalLayout) {
+        CGFloat lw = ts.width + 8;
+        CGFloat lx = _rightSideDock
+            ? (iconRect.origin.x - 6 - lw)   /* right dock: label left of icon */
+            : (NSMaxX(iconRect) + 6);          /* left dock:  label right of icon */
+        lr = NSMakeRect(lx, NSMidY(iconRect) - (ts.height + 4) * 0.5,
+                        lw, ts.height + 4);
+    } else {
+        lr = NSMakeRect(NSMidX(iconRect) - ts.width * 0.5 - 4,
+                        NSMaxY(iconRect) + 4,
+                        ts.width + 8, ts.height + 4);
+    }
     NSBezierPath *lbg = [NSBezierPath bezierPathWithRoundedRect:lr xRadius:4 yRadius:4];
     [[NSColor colorWithCalibratedWhite:0.1 alpha:0.85] set];
     [lbg fill];

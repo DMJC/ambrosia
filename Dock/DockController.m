@@ -10,6 +10,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+/* Height of the AmbrosiaMenuServer bar — the left/right dock must not
+ * extend into this area, so we subtract it from the sidebar panel height. */
+static const CGFloat kMenuBarHeight = 24.0;
+
 static NSString *const kPrefsIconSize    = @"iconSize";
 static NSString *const kPrefsZoomFactor  = @"zoomFactor";
 static NSString *const kPrefsPosition    = @"dockPosition";
@@ -217,12 +221,14 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
     CGFloat panelW = _iconSize * _zoomFactor + 44.0;
 
     if ([_dockPosition isEqualToString:@"left"]) {
-        return NSMakeRect(sf.origin.x, sf.origin.y,
-                          _iconSize * _zoomFactor + 44.0, sf.size.height);
+        CGFloat panelW = _iconSize * _zoomFactor + 44.0;
+        CGFloat panelH = sf.size.height - kMenuBarHeight;
+        return NSMakeRect(sf.origin.x, sf.origin.y, panelW, panelH);
     }
     if ([_dockPosition isEqualToString:@"right"]) {
         CGFloat panelW = _iconSize * _zoomFactor + 44.0;
-        return NSMakeRect(NSMaxX(sf) - panelW, sf.origin.y, panelW, sf.size.height);
+        CGFloat panelH = sf.size.height - kMenuBarHeight;
+        return NSMakeRect(NSMaxX(sf) - panelW, sf.origin.y, panelW, panelH);
     }
 
     /* Bottom-centre: count only non-recycler items for regular slots;
@@ -1044,9 +1050,10 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
     NSScreen *screen = [NSScreen mainScreen];
     NSRect rect = [self dockRectForScreen:screen];
     [_dockPanel setFrame:rect display:YES animate:NO];
-    _dockView.baseIconSize  = _iconSize;
-    _dockView.maxZoomFactor = _zoomFactor;
+    _dockView.baseIconSize   = _iconSize;
+    _dockView.maxZoomFactor  = _zoomFactor;
     _dockView.verticalLayout = ![_dockPosition isEqualToString:@"bottom"];
+    _dockView.rightSideDock  = [_dockPosition isEqualToString:@"right"];
     [_dockView setFrame:((NSView *)_dockPanel.contentView).bounds];
     [_dockView setNeedsDisplay:YES];
 }
