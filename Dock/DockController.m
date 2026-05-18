@@ -62,6 +62,14 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
 
 /* ---------------------------------------------------------------------- */
 
+/* Window level that gnustep-back maps to a wlr-layer-shell LAYER_TOP surface
+ * with namespace "gnustep-dock".  The value 22 is one above NSStatusWindowLevel
+ * (21) and is reserved for the Ambrosia dock in gnustep-back's WaylandServer.m.
+ * The layer-shell surface is anchored to the appropriate screen edge and sets
+ * an exclusive zone equal to the dock height/width so other windows do not
+ * overlap the dock area.                                                       */
+static const NSInteger kAmbrosiaDockWindowLevel = 22;
+
 @implementation DockController {
     NSMutableArray<DockItem *> *_items;
     NSMutableArray<NSRunningApplication *> *_runningApps;
@@ -72,9 +80,6 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
     NSTimer *_runningAppsSweepTimer;
     CGFloat _primaryScreenWidth;
     CGFloat _primaryScreenHeight;
-    CGFloat _configuredDockX;
-    CGFloat _configuredDockY;
-    BOOL    _hasConfiguredDockPoint;
 }
 
 @synthesize dockPanel       = _dockPanel;
@@ -99,9 +104,6 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
     _showRunningDots = YES;
     _primaryScreenWidth  = 0.0;
     _primaryScreenHeight = 0.0;
-    _configuredDockX     = 0.0;
-    _configuredDockY     = 0.0;
-    _hasConfiguredDockPoint = NO;
 
     NSArray *domainDirs = NSSearchPathForDirectoriesInDomains(
         NSLibraryDirectory, NSUserDomainMask, YES);
@@ -125,13 +127,9 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
 /* ---------------------------------------------------------------------- */
 #pragma mark - NSApplicationDelegate
 
-/**
- * Override position and sizing with values passed by the Compositor at launch.
- * The Compositor reads org.gnustep.AmbrosiaDock.plist and forwards the relevant
- * keys as command-line arguments, making itself the authoritative source of
- * dock geometry.  Arguments take precedence over anything loaded from the
- * preferences file so the two sources cannot diverge.
- */
+/* Apply sizing overrides passed by the compositor at launch.
+ * Position (DockX/DockY) is now handled by wlr-layer-shell anchoring;
+ * only icon-size, zoom, position label, and screen dimensions are needed. */
 - (void)_applyCompositorArgs
 {
     NSArray<NSString *> *args = [[NSProcessInfo processInfo] arguments];
@@ -152,12 +150,6 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
         } else if ([flag isEqualToString:@"-AmbrosiaPrimaryHeight"]) {
             double v = [val doubleValue];
             if (v > 0) _primaryScreenHeight = v;
-        } else if ([flag isEqualToString:@"-AmbrosiaDockX"]) {
-            _configuredDockX = [val doubleValue];
-            _hasConfiguredDockPoint = YES;
-        } else if ([flag isEqualToString:@"-AmbrosiaDockY"]) {
-            _configuredDockY = [val doubleValue];
-            _hasConfiguredDockPoint = YES;
         }
     }
 }
@@ -192,13 +184,14 @@ static BOOL IsLiveNonZombieProcess(pid_t pid)
                               backing:NSBackingStoreBuffered
                                 defer:NO];
     [_dockPanel setTitle:@"AmbrosiaDock"];
-    _dockPanel.level           = NSStatusWindowLevel;
+    /* kAmbrosiaDockWindowLevel (22) causes gnustep-back to create a
+     * wlr-layer-shell LAYER_TOP surface with namespace "gnustep-dock".
+     * The compositor positions it via anchor + exclusive zone rather than
+     * compositor-supplied X/Y args, eliminating the XDG-toplevel fallback. */
+    _dockPanel.level           = kAmbrosiaDockWindowLevel;
     _dockPanel.opaque          = NO;
     _dockPanel.backgroundColor = [NSColor clearColor];
     _dockPanel.hasShadow       = NO;
-    /* Dock is a fixed overlay — signal to gnustep-back that this panel must
-     * never hide on deactivation (prevents spurious unmap/remap cycles that
-     * could trigger decoration re-attachment in the compositor).              */
     [_dockPanel setHidesOnDeactivate:NO];
 
     _dockView = [[DockView alloc]

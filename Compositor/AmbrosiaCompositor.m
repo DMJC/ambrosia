@@ -559,9 +559,6 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     BOOL          _serverSideDecorations;
     NSDictionary *_x11DecorationColors;
 
-    /* Dock position preference, cached at launch so AmbrosiaView can
-     * position the dock correctly when it maps ("bottom", "left", "right"). */
-    NSString     *_dockPosition;
 }
 
 @synthesize state               = _state;
@@ -574,8 +571,6 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 @synthesize x11Decorations      = _x11Decorations;
 @synthesize serverSideDecorations = _serverSideDecorations;
 @synthesize x11DecorationColors = _x11DecorationColors;
-@synthesize dockPosition        = _dockPosition;
-
 - (instancetype)init
 {
     self = [super init];
@@ -1056,21 +1051,6 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     if (_state->xwayland && _state->xwayland->display_name) {
         setenv("DISPLAY", _state->xwayland->display_name, 1);
         wlr_log(WLR_INFO, "XWayland socket ready: DISPLAY=%s", _state->xwayland->display_name);
-    }
-
-    /* Cache dock position so AmbrosiaView can position the Dock on map. */
-    {
-        const char *userLib = getenv("GNUSTEP_USER_LIBRARY");
-        NSString *prefsDir = (userLib && userLib[0])
-            ? [[NSString stringWithUTF8String:userLib]
-               stringByAppendingPathComponent:@"Preferences"]
-            : [NSHomeDirectory()
-               stringByAppendingPathComponent:@"GNUstep/Library/Preferences"];
-        NSString *plistPath =
-            [prefsDir stringByAppendingPathComponent:@"org.gnustep.AmbrosiaDock.plist"];
-        NSDictionary *prefs =
-            [NSDictionary dictionaryWithContentsOfFile:plistPath] ?: @{};
-        _dockPosition = prefs[@"dockPosition"] ?: @"bottom";
     }
 
     /* Start the session manager — launches AmbrosiaDock and GFinder,
@@ -1992,6 +1972,12 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
  */
 - (void)handleNewServerDecoration:(struct wlr_server_decoration *)decoration
 {
+    /* Layer-shell surfaces must never receive server-side decorations. */
+    if (wlr_layer_surface_v1_try_from_wlr_surface(decoration->surface)) {
+        wlr_log(WLR_DEBUG, "server-decoration: ignoring layer-shell surface");
+        return;
+    }
+
     AmbrosiaView *view = nil;
     for (id<AmbrosiaWindowView> v in _views) {
         if (![v isKindOfClass:[AmbrosiaView class]]) continue;

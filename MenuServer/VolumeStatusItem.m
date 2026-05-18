@@ -81,8 +81,8 @@ static void ApplyVolume(CGFloat percent)
 - (NSArray<NSDictionary *> *)dropdownItems
 {
     return @[
-        @{ kMenuItemTitle:   @"Output Volume", kMenuItemEnabled: @NO },
-        @{ kMenuItemSeparator: @YES },
+/*        @{ kMenuItemTitle:   @"Output Volume", kMenuItemEnabled: @NO },
+        @{ kMenuItemSeparator: @YES },*/
         /* Vertical slider row — rendered specially by MenuBarView. */
         @{ kMenuItemSlider:      @YES,
            kMenuItemSliderValue: @(_volume) },

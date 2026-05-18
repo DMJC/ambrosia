@@ -183,8 +183,6 @@ struct ambrosia_compositor_state {
 @property (readonly) BOOL           serverSideDecorations;
 /** Colour prefs for X11 decorations (hex strings keyed to titlebarActiveColor etc.) */
 @property (readonly, nullable) NSDictionary *x11DecorationColors;
-/** Configured dock position ("bottom", "left", or "right"). Read at launch time. */
-@property (readonly, nullable) NSString *dockPosition;
 
 - (instancetype)init;
 - (BOOL)setup:(NSError **)error;

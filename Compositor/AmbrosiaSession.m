@@ -484,9 +484,11 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
 
     /* ---- AmbrosiaDock ---- */
 
-    /* Read dock preferences so the Compositor can pass authoritative geometry
-     * to the Dock at launch.  The Dock uses these args rather than computing
-     * its own position, keeping the Compositor as the single source of truth. */
+    /* The dock uses wlr-layer-shell (window level 22 / "gnustep-dock") so
+     * the compositor no longer needs to supply X/Y coordinates.  We only pass
+     * icon-size, zoom, position label, and primary-screen dimensions so the
+     * dock can compute the correct surface SIZE.  Positioning is handled by
+     * the layer-shell anchor and exclusive-zone mechanism in gnustep-back.   */
     NSString *prefsDir = gnustepPrefsDirectory();
     NSString *dockPlistPath = [prefsDir
                                stringByAppendingPathComponent:
@@ -501,33 +503,14 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
     if (iconSize   <= 0) iconSize   = 48.0;
     if (zoomFactor <= 0) zoomFactor = 1.7;
 
-    CGFloat dockX = floor(primarySize.width * 0.5);
-    CGFloat dockY = 0.0;
-    if ([dockPosition isEqualToString:@"left"]) {
-        dockX = 0.0;
-        dockY = floor(primarySize.height * 0.5);
-    } else if ([dockPosition isEqualToString:@"right"]) {
-        dockX = primarySize.width;
-        dockY = floor(primarySize.height * 0.5);
-    }
-
     NSArray<NSString *> *dockArgs =
         [gnustepWaylandArgs arrayByAddingObjectsFromArray:@[
-            @"-AmbrosiaPosition",   dockPosition,
-            @"-AmbrosiaIconSize",   [NSString stringWithFormat:@"%.1f", iconSize],
-            @"-AmbrosiaZoomFactor", [NSString stringWithFormat:@"%.2f", zoomFactor],
+            @"-AmbrosiaPosition",      dockPosition,
+            @"-AmbrosiaIconSize",      [NSString stringWithFormat:@"%.1f", iconSize],
+            @"-AmbrosiaZoomFactor",    [NSString stringWithFormat:@"%.2f", zoomFactor],
             @"-AmbrosiaPrimaryWidth",  [NSString stringWithFormat:@"%.0f", primarySize.width],
             @"-AmbrosiaPrimaryHeight", [NSString stringWithFormat:@"%.0f", primarySize.height],
-            @"-AmbrosiaDockX", [NSString stringWithFormat:@"%.0f", dockX],
-            @"-AmbrosiaDockY", [NSString stringWithFormat:@"%.0f", dockY],
         ]];
-
-    /* Expose authoritative dock placement to the compositor process itself.
-     * AmbrosiaView uses these values when mapping the dock to avoid forcing
-     * a hard-coded bottom-center placement that ignores configured X/Y. */
-    setenv("AMBROSIA_DOCK_POSITION", [dockPosition UTF8String], 1);
-    setenv("AMBROSIA_DOCK_X", [[NSString stringWithFormat:@"%.0f", dockX] UTF8String], 1);
-    setenv("AMBROSIA_DOCK_Y", [[NSString stringWithFormat:@"%.0f", dockY] UTF8String], 1);
 
     NSString *dockExec = findExecutable(candidatePaths(@"AmbrosiaDock.app",
                                                        @"AmbrosiaDock"));

@@ -83,6 +83,7 @@
     [self.outputDeviceTableView setDataSource:self];
     [self.outputDeviceTableView setTag:1];
     [self.outputDeviceTableView setDrawsGrid:NO];
+    [self.outputDeviceTableView setHeaderView:nil];
     NSTableColumn *outputColumn = [[NSTableColumn alloc] initWithIdentifier:@"DeviceColumn"];
     [outputColumn setTitle:@"Output Devices"];
     [outputColumn setWidth:width - 40];

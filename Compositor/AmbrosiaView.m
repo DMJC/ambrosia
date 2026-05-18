@@ -349,49 +349,6 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
 }
 
 /* ---------------------------------------------------------------------- */
-#pragma mark - Dock positioning
-
-/**
- * Position the Dock on the correct edge of the primary output, respecting
- * the configured dock position ("bottom", "left", "right").
- *
- * Uses the xdg surface geometry when available, falling back to the committed
- * surface buffer dimensions.  Both can be zero on the first map frame if the
- * client hasn't committed real content yet; in that case the dock lands at a
- * reasonable fallback and the compositor relies on subsequent commits to correct
- * it via handleSetTitle / handleSetAppId re-classification if needed.
- */
-- (void)_positionDock
-{
-    struct wlr_output *output =
-        wlr_output_layout_get_center_output(_compositor.state->output_layout);
-    struct wlr_box ob = {0};
-    if (output) wlr_output_layout_get_box(_compositor.state->output_layout, output, &ob);
-
-    struct wlr_box geo = [self geometry];
-    struct wlr_surface *surf = _state->xdg_toplevel->base->surface;
-    int dockW = geo.width  > 0 ? geo.width
-              : (surf ? (int)surf->current.width  : 0);
-    int dockH = geo.height > 0 ? geo.height
-              : (surf ? (int)surf->current.height : 0);
-
-    NSString *dockPos = _compositor.dockPosition ?: @"bottom";
-    int dockX, dockY;
-    if ([dockPos isEqualToString:@"left"]) {
-        dockX = ob.x;
-        dockY = ob.y;
-    } else if ([dockPos isEqualToString:@"right"]) {
-        dockX = ob.x + ob.width - (dockW > 0 ? dockW : 0);
-        dockY = ob.y;
-    } else {
-        /* bottom (default) */
-        dockX = ob.x + (dockW > 0 ? (ob.width - dockW) / 2 : 0);
-        dockY = ob.y + ob.height - (dockH > 0 ? dockH : 64);
-    }
-    [self moveTo:dockX y:dockY];
-}
-
-/* ---------------------------------------------------------------------- */
 #pragma mark - Event handlers
 
 - (void)handleMap
@@ -422,7 +379,10 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
         return;
     }
 
-    /* ---- Dock ---- */
+    /* ---- Dock (XDG-toplevel fallback) ----
+     * The dock normally uses wlr-layer-shell (window level 22 / "gnustep-dock")
+     * and is never seen here.  This branch only fires if gnustep-back falls
+     * back to an XDG toplevel (e.g., layer-shell not supported by compositor). */
     if (_isDockWindow) {
         struct wlr_output *output =
             wlr_output_layout_get_center_output(_compositor.state->output_layout);
@@ -431,27 +391,9 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
         struct wlr_box geo = [self geometry];
         int dockW = geo.width  > 0 ? geo.width  : ob.width;
         int dockH = geo.height > 0 ? geo.height : 64;
-        const char *dockPosEnv = getenv("AMBROSIA_DOCK_POSITION");
-        const char *dockXEnv   = getenv("AMBROSIA_DOCK_X");
-        const char *dockYEnv   = getenv("AMBROSIA_DOCK_Y");
-
-        int anchorX = dockXEnv ? (int)strtol(dockXEnv, NULL, 10) : (ob.width / 2);
-        int anchorY = dockYEnv ? (int)strtol(dockYEnv, NULL, 10) : 0;
-        NSString *dockPos = dockPosEnv
-            ? [NSString stringWithUTF8String:dockPosEnv]
-            : @"bottom";
-
-        int dockX = ob.x + anchorX - dockW / 2;
-        int dockY = ob.y + anchorY;
-        if ([dockPos isEqualToString:@"left"]) {
-            dockX = ob.x + anchorX;
-            dockY = ob.y + anchorY - dockH / 2;
-        } else if ([dockPos isEqualToString:@"right"]) {
-            dockX = ob.x + anchorX - dockW;
-            dockY = ob.y + anchorY - dockH / 2;
-        }
+        int dockX = ob.x + (ob.width - dockW) / 2;
+        int dockY = ob.y + ob.height - dockH;
         [self moveTo:dockX y:dockY];
-        /* Dock does not steal keyboard focus on map */
         return;
     }
 
@@ -755,7 +697,15 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
         if (_state->xdg_decoration)
             wlr_xdg_toplevel_decoration_v1_set_mode(_state->xdg_decoration,
                 WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
-        [self _positionDock];
+        /* XDG-toplevel fallback: position at bottom-centre of primary output */
+        struct wlr_output *out =
+            wlr_output_layout_get_center_output(_compositor.state->output_layout);
+        struct wlr_box ob = {0};
+        if (out) wlr_output_layout_get_box(_compositor.state->output_layout, out, &ob);
+        struct wlr_box geo = [self geometry];
+        int dW = geo.width  > 0 ? geo.width  : 120;
+        int dH = geo.height > 0 ? geo.height : 64;
+        [self moveTo:ob.x + (ob.width - dW) / 2 y:ob.y + ob.height - dH];
     }
 }
 
@@ -772,7 +722,15 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
         if (_state->xdg_decoration)
             wlr_xdg_toplevel_decoration_v1_set_mode(_state->xdg_decoration,
                 WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
-        [self _positionDock];
+        /* XDG-toplevel fallback: position at bottom-centre of primary output */
+        struct wlr_output *out =
+            wlr_output_layout_get_center_output(_compositor.state->output_layout);
+        struct wlr_box ob = {0};
+        if (out) wlr_output_layout_get_box(_compositor.state->output_layout, out, &ob);
+        struct wlr_box geo = [self geometry];
+        int dW = geo.width  > 0 ? geo.width  : 120;
+        int dH = geo.height > 0 ? geo.height : 64;
+        [self moveTo:ob.x + (ob.width - dW) / 2 y:ob.y + ob.height - dH];
     }
 }
 
