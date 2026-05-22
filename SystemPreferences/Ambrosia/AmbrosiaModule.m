@@ -325,6 +325,7 @@ static NSString *intervalLabel(NSInteger secs)
     labelCol.width = 150;
     NSTableColumn *pathCol = [[NSTableColumn alloc] initWithIdentifier:@"path"];
     pathCol.title = @"Path";
+    [_dockItemsTable setDrawsGrid:NO];
     [_dockItemsTable addTableColumn:labelCol];
     [_dockItemsTable addTableColumn:pathCol];
 
@@ -367,6 +368,7 @@ static NSString *intervalLabel(NSInteger secs)
     y += MV_ROW_H + 4;
 
     _sessionItemsTable = [[NSTableView alloc] initWithFrame:NSZeroRect];
+    [_sessionItemsTable setDrawsGrid:NO];
 
     /* Checkbox column for enabled/disabled */
     NSTableColumn *enabledCol = [[NSTableColumn alloc] initWithIdentifier:@"enabled"];
@@ -389,7 +391,7 @@ static NSString *intervalLabel(NSInteger secs)
     [_sessionItemsTable addTableColumn:nameCol];
     [_sessionItemsTable addTableColumn:pathCol];
 
-    CGFloat tableH = 140;
+    CGFloat tableH = 120;
     NSScrollView *tableScroll = [[NSScrollView alloc]
         initWithFrame:NSMakeRect(MV_MARGIN, y, MV_TAB_W - MV_MARGIN * 2, tableH)];
     tableScroll.autoresizingMask      = NSViewWidthSizable;
@@ -419,6 +421,7 @@ static NSString *intervalLabel(NSInteger secs)
     y += MV_ROW_H + 4;
 
     _startupCommandsTable = [[NSTableView alloc] initWithFrame:NSZeroRect];
+    [_startupCommandsTable setDrawsGrid:NO];
 
     NSTableColumn *cmdCol = [[NSTableColumn alloc] initWithIdentifier:@"command"];
     cmdCol.title    = @"Command";

@@ -336,19 +336,15 @@ static BOOL isDockXWayland(struct wlr_xwayland_surface *xs)
 - (void)updateTitle
 {
     if (!_decoration) return;
-    struct wlr_box geo  = [self geometry];
-    const char    *raw  = _state->xwayland_surface->title;
-    NSString      *title = raw ? [NSString stringWithUTF8String:raw] : @"";
-    [_decoration updateWithWidth:geo.width height:geo.height title:title];
+    struct wlr_box geo = [self geometry];
+    [_decoration updateWithWidth:geo.width height:geo.height title:[self displayName]];
 }
 
 - (void)_updateDecorationForSurfaceWidth:(uint16_t)width
                                   height:(uint16_t)height
 {
     if (!_decoration) return;
-    const char *raw = _state->xwayland_surface->title;
-    NSString *title = raw ? [NSString stringWithUTF8String:raw] : @"";
-    [_decoration updateWithWidth:(int)width height:(int)height title:title];
+    [_decoration updateWithWidth:(int)width height:(int)height title:[self displayName]];
 }
 
 - (void)activateFocus:(BOOL)focused
@@ -416,7 +412,8 @@ static BOOL isDockXWayland(struct wlr_xwayland_surface *xs)
     const char *cls   = _state->xwayland_surface->class;
     if (title && title[0]) return [NSString stringWithUTF8String:title];
     if (cls   && cls[0])   return [NSString stringWithUTF8String:cls];
-    return @"Application";
+    NSString *menuName = [_compositor appNameForPID:[self clientPid]];
+    return menuName ?: @"Application";
 }
 
 - (NSString *)iconIdentifier
@@ -439,9 +436,7 @@ static BOOL isDockXWayland(struct wlr_xwayland_surface *xs)
         [_decoration updateColorsFromDictionary:colors];
 
     struct wlr_box geo = [self geometry];
-    NSString *title = _state->xwayland_surface->title
-        ? [NSString stringWithUTF8String:_state->xwayland_surface->title] : @"";
-    [_decoration updateWithWidth:geo.width height:geo.height title:title];
+    [_decoration updateWithWidth:geo.width height:geo.height title:[self displayName]];
     _decoration.focused = (_compositor.focusedView == self);
 }
 
@@ -578,7 +573,7 @@ static BOOL isDockXWayland(struct wlr_xwayland_surface *xs)
     /* Attach server-side decoration if the compositor pref is active. */
     if (_compositor.x11Decorations && !_isDockWindow) {
         [self attachDecorationWithRenderer:_compositor.state->renderer
-                                    colors:_compositor.x11DecorationColors];
+                                    colors:_compositor.decorationColors];
     }
 
     [_compositor focusView:self surface:self.surface];
@@ -774,11 +769,8 @@ static BOOL isDockXWayland(struct wlr_xwayland_surface *xs)
      * If the geometry changed, redraw the decoration frame to match.         */
     if (!_decoration || !_isMapped) return;
     struct wlr_box geo = [self geometry];
-    if (geo.width > 0 && geo.height > 0) {
-        const char *raw = _state->xwayland_surface->title;
-        NSString *title = raw ? [NSString stringWithUTF8String:raw] : @"";
-        [_decoration updateWithWidth:geo.width height:geo.height title:title];
-    }
+    if (geo.width > 0 && geo.height > 0)
+        [_decoration updateWithWidth:geo.width height:geo.height title:[self displayName]];
 }
 
 - (void)handleSetTitle

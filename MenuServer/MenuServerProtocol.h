@@ -89,6 +89,20 @@ static NSString * const kMenuItemSelectedIdentifierKey = @"identifier";
 static NSString * const kAmbrosiaApplicationActivatedNotification = @"AmbrosiaApplicationActivated";
 static NSString * const kAmbrosiaActivatedPIDKey                  = @"pid";
 
+/* ---- App-name registration notification (NSDistributedNotificationCenter) ----
+ *
+ * MenuServer posts this notification whenever a GNUstep application registers
+ * its menus via -applicationDidActivate:menuItems:pid:.  The compositor
+ * subscribes so it can map PID→human-readable name and use it as the window
+ * title fallback instead of "Application".
+ *
+ *   kAmbrosiaAppNameKey  NSString  — value of [NSProcessInfo processName]
+ *   kAmbrosiaAppPIDKey   NSNumber  — int32 PID of the registering application
+ * ------------------------------------------------------------------ */
+static NSString * const kAmbrosiaAppNameRegisteredNotification = @"AmbrosiaAppNameRegistered";
+static NSString * const kAmbrosiaAppNameKey                    = @"appName";
+static NSString * const kAmbrosiaAppPIDKey                     = @"appPID";
+
 /* ------------------------------------------------------------------ */
 #pragma mark - Server-side protocol (vended by MenuServer)
 

@@ -488,6 +488,17 @@ static NSString * const kForeignWindowIdentifierPrefix = @"__ambrosia_foreign_wi
     _activeMenuItems = [items copy];
     _activeClientPID = pid;
     [_menuBarView setActiveAppName:_activeAppName menuItems:_activeMenuItems];
+
+    /* Broadcast the PID→name mapping so the compositor can use it as the
+     * window title fallback instead of "Application".                      */
+    if (appName.length && pid != 0) {
+        [[NSDistributedNotificationCenter defaultCenter]
+            postNotificationName:kAmbrosiaAppNameRegisteredNotification
+                          object:nil
+                        userInfo:@{ kAmbrosiaAppNameKey: appName,
+                                    kAmbrosiaAppPIDKey:  @(pid) }
+              deliverImmediately:YES];
+    }
 }
 
 /* ---------------------------------------------------------------------- */

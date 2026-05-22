@@ -303,10 +303,7 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
 {
     if (!_decoration) return;
     struct wlr_box geo = [self geometry];
-    NSString *title = _state->xdg_toplevel->title
-        ? [NSString stringWithUTF8String:_state->xdg_toplevel->title]
-        : @"";
-    [_decoration updateWithWidth:geo.width height:geo.height title:title];
+    [_decoration updateWithWidth:geo.width height:geo.height title:[self displayName]];
 }
 
 - (void)handleSurfaceCommit
@@ -329,9 +326,7 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
         [_decoration updateColorsFromDictionary:colors];
 
     struct wlr_box geo = [self geometry];
-    NSString *title = _state->xdg_toplevel->title
-        ? [NSString stringWithUTF8String:_state->xdg_toplevel->title] : @"";
-    [_decoration updateWithWidth:geo.width height:geo.height title:title];
+    [_decoration updateWithWidth:geo.width height:geo.height title:[self displayName]];
     _decoration.focused = (_compositor.focusedView == self);
 
     /* Re-position the scene tree to account for the new (B, T) inset */
@@ -445,7 +440,7 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
     if (shouldAttachSSD && _compositor.serverSideDecorations
             && !_isDockWindow && !_isGNUstepWindow && !_decoration) {
         [self attachDecorationWithRenderer:_compositor.state->renderer
-                                    colors:_compositor.x11DecorationColors];
+                                    colors:_compositor.decorationColors];
     } else if (!shouldAttachSSD && _decoration) {
         /* CSD was negotiated (or window role forbids SSD): remove any decoration
          * left over from a previous map/SSD cycle.  _applyDecorationMode: only
@@ -795,7 +790,8 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
     const char *app_id = _state->xdg_toplevel->app_id;
     if (title  && title[0])  return [NSString stringWithUTF8String:title];
     if (app_id && app_id[0]) return [NSString stringWithUTF8String:app_id];
-    return @"Application";
+    NSString *menuName = [_compositor appNameForPID:[self clientPid]];
+    return menuName ?: @"Application";
 }
 
 - (NSString *)iconIdentifier

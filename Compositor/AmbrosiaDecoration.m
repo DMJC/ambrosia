@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <cairo/cairo.h>
 
+#import <AppKit/AppKit.h>
 #import <GNUstepGUI/GSTheme.h>
 
 /* DRM_FORMAT_ARGB8888: little-endian 0xAARRGGBB */
@@ -32,9 +33,15 @@ static int   _gBtnPadRight = 10;    /* [GSTheme titlebarPaddingRight] */
 static int   _gBtnPadTop   =  5;    /* [GSTheme titlebarPaddingTop]   */
 static float _gCornerR     =  0.f;  /* GSThemeDomain GSWindowCornerRadius */
 
-/* Cairo image surfaces loaded from the theme bundle (NULL = use fallback circles) */
+/* Reserved for future PNG overlays; always NULL — buttons are drawn as spheres. */
 static cairo_surface_t *_gCloseImg      = NULL;
 static cairo_surface_t *_gMiniaturizeImg = NULL;
+static cairo_surface_t *_gZoomImg       = NULL;
+
+/* Per-button colours loaded from ThemeExtraColors; fallback to macOS-style defaults */
+static float _gCloseColor[4] = { 1.000f, 0.270f, 0.270f, 1.0f };
+static float _gMinColor[4]   = { 1.000f, 0.850f, 0.000f, 1.0f };
+static float _gZoomColor[4]  = { 0.200f, 0.780f, 0.350f, 1.0f };
 
 /* --------------------------------------------------------------------------
  * Default colour palette — derived from GNUstep system colors at load time;
@@ -50,6 +57,7 @@ static const float kBorderStroke[4]     = { 0.400f, 0.400f, 0.400f, 1.0f };
 static const float kBodyFill[4]         = { 0.863f, 0.863f, 0.863f, 1.0f };
 static const float kBtnActive[4]        = { 0.850f, 0.850f, 0.850f, 1.0f };
 static const float kBtnInactive[4]      = { 0.720f, 0.720f, 0.720f, 0.70f };
+static const float kTitleTextColor[4]   = { 0.050f, 0.050f, 0.050f, 1.0f  };
 
 /* --------------------------------------------------------------------------
  * Shared-memory pixel buffer for the titlebar
@@ -154,20 +162,125 @@ static struct ambrosia_shm_buf *ambrosia_shm_buf_create(int w, int h)
  * Output is premultiplied ARGB8888 into the buffer's mmap'd data.
  * -------------------------------------------------------------------------- */
 
-/* Draw a single theme button image centred at (cx, cy) scaled to size S×S.
- * Falls back to a solid-colour circle when no image is available. */
+/* Draw a spherical window button matching GSThemeWindowButtonCell -drawBallWithRect:
+ * All coordinates are screen-space (y increases downward).
+ * S is the button diameter; base is the RGBA base colour from ThemeExtraColors. */
+static void draw_button_ball(cairo_t *cr, double cx, double cy, double S,
+                              const float base[4])
+{
+    double R  = S * 0.5;
+    double r  = base[0], g = base[1], b = base[2];
+    const double lum = 0.5;
+
+    /* Derived colours — match GSThemeWindowButtonCell logic exactly.
+     * highlight(l): blend toward white   → c*(1-l) + l
+     * shadow(l):    blend toward black   → c*(1-l)        */
+    double sc1r = r*0.6,  sc1g = g*0.6,  sc1b = b*0.6;          /* shadow 0.4 */
+    double sc2r = r*0.4,  sc2g = g*0.4,  sc2b = b*0.4;          /* shadow 0.6 */
+    double gsc2r = sc1r+(1-sc1r)*lum, gsc2g = sc1g+(1-sc1g)*lum, gsc2b = sc1b+(1-sc1b)*lum;
+    double uc1r = r*0.3+0.7, uc1g = g*0.3+0.7, uc1b = b*0.3+0.7; /* highlight 0.7 */
+    double dc1r = r*0.5+0.5, dc1g = g*0.5+0.5, dc1b = b*0.5+0.5; /* highlight 0.5 */
+
+    /* Geometry — mirrors Cocoa inset sequence */
+    double Ro = R - 0.5;                   /* outer stroke ring */
+    double Ri = R - 1.0;                   /* inner stroke ring */
+    double Rc = (R - 1.5) * 0.9333;       /* main filled circle */
+    double rr = Rc / 6.5;                  /* radial gradient scale */
+
+    /* frame rect (used for halfPath Bezier) */
+    double W  = (R - 1.5) * 2.0;
+    double x0 = cx - (R - 1.5);
+    double y0 = cy - (R - 1.5);
+
+    cairo_pattern_t *p;
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+
+    /* 1. Outer stroke ring — gradientStroke (white@0.2→transparent@1.0)
+     *    Cocoa angle 90 = gradient from visual bottom (loc 0) to top (loc 1).
+     *    Screen y-down: bottom = cy+Ro, top = cy-Ro.                        */
+    p = cairo_pattern_create_linear(cx, cy+Ro, cx, cy-Ro);
+    cairo_pattern_add_color_stop_rgba(p, 0.0, 1,1,1, 1.0);
+    cairo_pattern_add_color_stop_rgba(p, 0.2, 1,1,1, 1.0);
+    cairo_pattern_add_color_stop_rgba(p, 1.0, 1,1,1, 0.0);
+    cairo_arc(cr, cx, cy, Ro, 0, 2*M_PI);
+    cairo_set_source(cr, p); cairo_fill(cr);
+    cairo_pattern_destroy(p);
+
+    /* 2. Inner stroke ring — gradientStroke2 (sc2@0.47→gsc2@1.0)
+     *    Cocoa angle -90 = gradient from visual top (loc 0) to bottom (loc 1). */
+    p = cairo_pattern_create_linear(cx, cy-Ri, cx, cy+Ri);
+    cairo_pattern_add_color_stop_rgba(p, 0.0,  sc2r,sc2g,sc2b, 0.0);
+    cairo_pattern_add_color_stop_rgba(p, 0.47, sc2r,sc2g,sc2b, 1.0);
+    cairo_pattern_add_color_stop_rgba(p, 1.0,  gsc2r,gsc2g,gsc2b, 1.0);
+    cairo_arc(cr, cx, cy, Ri, 0, 2*M_PI);
+    cairo_set_source(cr, p); cairo_fill(cr);
+    cairo_pattern_destroy(p);
+
+    /* 3. Main sphere — baseGradient (bc@0.0→sc1@0.80) concentric radial */
+    cairo_save(cr);
+    cairo_arc(cr, cx, cy, Rc, 0, 2*M_PI);
+    cairo_clip(cr);
+    p = cairo_pattern_create_radial(cx, cy, 2.85*rr, cx, cy, 7.32*rr);
+    cairo_pattern_add_color_stop_rgba(p, 0.0,  r,g,b,     1.0);
+    cairo_pattern_add_color_stop_rgba(p, 0.80, sc1r,sc1g,sc1b, 1.0);
+    cairo_pattern_set_extend(p, CAIRO_EXTEND_PAD);
+    cairo_set_source(cr, p); cairo_paint(cr);
+    cairo_pattern_destroy(p);
+    cairo_restore(cr);
+
+    /* 4. Lower darkening overlay — gradientDown (dc1→transparent) offset radial.
+     *    Cocoa offset (-0.98*rr, -6.5*rr) in y-up → screen y-down (+6.5*rr). */
+    cairo_save(cr);
+    cairo_arc(cr, cx, cy, Rc, 0, 2*M_PI);
+    cairo_clip(cr);
+    p = cairo_pattern_create_radial(cx-0.98*rr, cy+6.5*rr,  1.54*rr,
+                                    cx-1.86*rr, cy+8.73*rr, 8.65*rr);
+    cairo_pattern_add_color_stop_rgba(p, 0.0, dc1r,dc1g,dc1b, 1.0);
+    cairo_pattern_add_color_stop_rgba(p, 1.0, dc1r,dc1g,dc1b, 0.0);
+    cairo_pattern_set_extend(p, CAIRO_EXTEND_PAD);
+    cairo_set_source(cr, p); cairo_paint(cr);
+    cairo_pattern_destroy(p);
+    cairo_restore(cr);
+
+    /* 5. Top glossy cap — gradientUp (uc1@0.1→uc2@0.3→transparent@1.0)
+     *    Drawn inside the halfPath (upper portion of button).
+     *    halfPath Bezier translated from Cocoa y-up to screen y-down
+     *    by mirroring the y fractions: y_screen = y0 + (1 - frac_cocoa)*W  */
+    cairo_save(cr);
+    cairo_move_to   (cr, x0+0.93316*W, y0+0.53843*W);
+    cairo_curve_to  (cr, x0+0.93316*W, y0+0.53843*W,   /* cp1 = start */
+                         x0+0.94476*W, y0+0.33624*W,   /* cp2 */
+                         x0+0.78652*W, y0+0.18452*W);  /* end */
+    cairo_curve_to  (cr, x0+0.62828*W, y0+0.03279*W,
+                         x0+0.37172*W, y0+0.03279*W,
+                         x0+0.21348*W, y0+0.18452*W);
+    cairo_curve_to  (cr, x0+0.05524*W, y0+0.33624*W,
+                         x0+0.06684*W, y0+0.53843*W,   /* cp2 = end */
+                         x0+0.06684*W, y0+0.53843*W);  /* end */
+    cairo_close_path(cr);
+    cairo_clip(cr);
+    /* Cocoa angle -90 → gradient from screen top (y0) to bottom (y0+W) */
+    p = cairo_pattern_create_linear(cx, y0, cx, y0+W);
+    cairo_pattern_add_color_stop_rgba(p, 0.0, uc1r,uc1g,uc1b, 1.0);
+    cairo_pattern_add_color_stop_rgba(p, 0.1, uc1r,uc1g,uc1b, 1.0);
+    cairo_pattern_add_color_stop_rgba(p, 0.3, uc1r,uc1g,uc1b, 0.5);
+    cairo_pattern_add_color_stop_rgba(p, 1.0, uc1r,uc1g,uc1b, 0.0);
+    cairo_set_source(cr, p); cairo_paint(cr);
+    cairo_pattern_destroy(p);
+    cairo_restore(cr);
+}
+
+/* Draw a button: PNG theme image if available, otherwise the sphere. */
 static void draw_button(cairo_t *cr,
                         cairo_surface_t *img,
-                        float cx, float cy, float S,
-                        const float fallback[4])
+                        double cx, double cy, double S,
+                        const float color[4])
 {
     if (img && cairo_surface_status(img) == CAIRO_STATUS_SUCCESS) {
         int imgW = cairo_image_surface_get_width(img);
         int imgH = cairo_image_surface_get_height(img);
         if (imgW > 0 && imgH > 0) {
-            double scale = (imgW >= imgH)
-                ? (double)S / imgW
-                : (double)S / imgH;
+            double scale = (imgW >= imgH) ? S / imgW : S / imgH;
             double ox = cx - (imgW * scale) * 0.5;
             double oy = cy - (imgH * scale) * 0.5;
             cairo_save(cr);
@@ -179,16 +292,16 @@ static void draw_button(cairo_t *cr,
             return;
         }
     }
-    /* Fallback: plain filled circle */
-    cairo_set_source_rgba(cr, fallback[0], fallback[1], fallback[2], fallback[3]);
-    cairo_arc(cr, cx, cy, S * 0.5, 0, 2 * M_PI);
-    cairo_fill(cr);
+    draw_button_ball(cr, cx, cy, S, color);
 }
 
 static void render_titlebar(struct ambrosia_shm_buf *sb,
                              const float gradTop[4],
                              const float gradBot[4],
-                             const float button[4],
+                             const float closeColor[4],
+                             const float minColor[4],
+                             const float zoomColor[4],
+                             const float titleText[4],
                              const char *title,
                              const char *fontName,
                              float fontSize)
@@ -196,7 +309,6 @@ static void render_titlebar(struct ambrosia_shm_buf *sb,
     const int W = sb->width, H = sb->height;
     const int S   = _gBtnSize;
     const int PDL = _gBtnPadLeft;
-    const int PDR = _gBtnPadRight;
     const int PT  = _gBtnPadTop;
     const float CR = _gCornerR;
 
@@ -233,16 +345,20 @@ static void render_titlebar(struct ambrosia_shm_buf *sb,
     cairo_paint(cr);
     cairo_pattern_destroy(grad);
 
-    /* Buttons — use theme images over OVER so transparency composites correctly */
+    /* Buttons — macOS order: close / miniaturize / zoom, left to right.
+     * Gap between buttons = 40% of button size.                          */
     cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 
-    float radius = (float)S * 0.5f;
-    float cy = PT + radius;
-    float leftCx  = PDL + radius;          /* miniaturize: left side  */
-    float rightCx = W - PDR - radius;     /* close:       right side */
+    double radius = S * 0.5;
+    double bcy    = PT + radius;
+    double gap    = S * 0.4;
+    double closeCx = PDL + radius;
+    double minCx   = closeCx + S + gap;
+    double zoomCx  = minCx  + S + gap;
 
-    draw_button(cr, _gMiniaturizeImg, leftCx,  cy, (float)S, button);
-    draw_button(cr, _gCloseImg,       rightCx, cy, (float)S, button);
+    draw_button(cr, _gCloseImg,       closeCx, bcy, S, closeColor);
+    draw_button(cr, _gMiniaturizeImg, minCx,   bcy, S, minColor);
+    draw_button(cr, _gZoomImg,        zoomCx,  bcy, S, zoomColor);
 
     /* Window title — centred between the two buttons */
     if (title && title[0] != '\0') {
@@ -253,7 +369,7 @@ static void render_titlebar(struct ambrosia_shm_buf *sb,
         cairo_text_extents(cr, title, &ext);
         double tx = ((double)W - ext.width) * 0.5 - ext.x_bearing;
         double ty = ((double)H - ext.height) * 0.5 - ext.y_bearing;
-        cairo_set_source_rgba(cr, 0.05, 0.05, 0.05, 1.0);
+        cairo_set_source_rgba(cr, titleText[0], titleText[1], titleText[2], titleText[3]);
         cairo_move_to(cr, tx, ty);
         cairo_show_text(cr, title);
     }
@@ -388,6 +504,7 @@ static cairo_surface_t *load_png_image(NSString *path)
     /* Window control buttons (Milk: miniaturize LEFT, close RIGHT, no maximize) */
     struct wlr_scene_rect   *_btnMinimize;
     struct wlr_scene_rect   *_btnClose;
+    struct wlr_scene_rect   *_btnMaximize;
 
     int  _surfaceWidth;
     int  _surfaceHeight;
@@ -402,6 +519,7 @@ static cairo_surface_t *load_png_image(NSString *path)
     float _bodyFill[4];
     float _btnActive[4];
     float _btnInactive[4];
+    float _titleTextColor[4];
     NSString *_title;
 }
 
@@ -426,6 +544,7 @@ static cairo_surface_t *load_png_image(NSString *path)
     memcpy(_bodyFill,        kBodyFill,        sizeof(_bodyFill));
     memcpy(_btnActive,       kBtnActive,       sizeof(_btnActive));
     memcpy(_btnInactive,     kBtnInactive,     sizeof(_btnInactive));
+    memcpy(_titleTextColor,  kTitleTextColor,  sizeof(_titleTextColor));
 
     /* Decoration sub-tree — positioned at (-B, -T) in updateWith… */
     _decorTree = wlr_scene_tree_create(parentTree);
@@ -450,6 +569,7 @@ static cairo_surface_t *load_png_image(NSString *path)
     /* Buttons (rendered on top) */
     _btnMinimize = wlr_scene_rect_create(_decorTree, 1, 1, dummy);
     _btnClose    = wlr_scene_rect_create(_decorTree, 1, 1, dummy);
+    _btnMaximize = wlr_scene_rect_create(_decorTree, 1, 1, dummy);
 
     return self;
 }
@@ -501,13 +621,20 @@ static cairo_surface_t *load_png_image(NSString *path)
     wlr_scene_rect_set_size(_strokeBottom, totalW, 1);
     wlr_scene_node_set_position(&_strokeBottom->node, 0,          totalH - 1);
 
-    /* ---- Buttons ---- */
-    /* Buttons are rasterized into the titlebar buffer; keep scene_rect nodes
-     * zero-sized so they don't render but still mark the hit-test zones. */
-    wlr_scene_rect_set_size(_btnMinimize, 0, 0);
-    wlr_scene_node_set_position(&_btnMinimize->node, _gBtnPadLeft,                _gBtnPadTop);
+    /* ---- Buttons: close / miniaturize / zoom, left to right ---- */
+    /* Buttons are rasterized into the titlebar buffer; scene_rect nodes are
+     * zero-sized (invisible) but mark hit-test zones for the compositor. */
+    int gap = (int)(_gBtnSize * 0.4f + 0.5f);
+    int closeX = _gBtnPadLeft;
+    int minX   = closeX + _gBtnSize + gap;
+    int zoomX  = minX   + _gBtnSize + gap;
+
     wlr_scene_rect_set_size(_btnClose, 0, 0);
-    wlr_scene_node_set_position(&_btnClose->node,    totalW - _gBtnPadRight - _gBtnSize, _gBtnPadTop);
+    wlr_scene_node_set_position(&_btnClose->node,    closeX, _gBtnPadTop);
+    wlr_scene_rect_set_size(_btnMinimize, 0, 0);
+    wlr_scene_node_set_position(&_btnMinimize->node, minX,   _gBtnPadTop);
+    wlr_scene_rect_set_size(_btnMaximize, 0, 0);
+    wlr_scene_node_set_position(&_btnMaximize->node, zoomX,  _gBtnPadTop);
 
     [self _applyRectColors];
 }
@@ -517,7 +644,21 @@ static cairo_surface_t *load_png_image(NSString *path)
 {
     const float *gradTop = _focused ? _gradTopActive : _gradTopInactive;
     const float *gradBot = _focused ? _gradBotActive : _gradBotInactive;
-    const float *btn     = _focused ? _btnActive     : _btnInactive;
+
+    /* Inactive buttons are blended 75 % toward neutral gray. */
+    float closeC[4], minC[4], zoomC[4];
+    if (_focused) {
+        memcpy(closeC, _gCloseColor, sizeof(closeC));
+        memcpy(minC,   _gMinColor,   sizeof(minC));
+        memcpy(zoomC,  _gZoomColor,  sizeof(zoomC));
+    } else {
+        for (int i = 0; i < 3; i++) {
+            closeC[i] = _gCloseColor[i] * 0.25f + 0.65f * 0.75f;
+            minC[i]   = _gMinColor[i]   * 0.25f + 0.65f * 0.75f;
+            zoomC[i]  = _gZoomColor[i]  * 0.25f + 0.65f * 0.75f;
+        }
+        closeC[3] = minC[3] = zoomC[3] = 1.0f;
+    }
 
     struct ambrosia_shm_buf *buf = ambrosia_shm_buf_create(w, h);
     if (!buf) return;
@@ -525,9 +666,11 @@ static cairo_surface_t *load_png_image(NSString *path)
     NSString *fontFamily = nil;
     float fontSize = 12.0f;
     ambrosia_theme_title_font(&fontFamily, &fontSize);
-    render_titlebar(buf, gradTop, gradBot, btn, _title.UTF8String, fontFamily.UTF8String, fontSize);
+    render_titlebar(buf, gradTop, gradBot,
+                    closeC, minC, zoomC,
+                    _titleTextColor, _title.UTF8String,
+                    fontFamily.UTF8String, fontSize);
     wlr_scene_buffer_set_buffer(_titleSceneBuf, &buf->base);
-    /* Drop the producer reference — the scene now holds the only lock. */
     wlr_buffer_drop(&buf->base);
 }
 
@@ -557,8 +700,9 @@ static cairo_surface_t *load_png_image(NSString *path)
     wlr_scene_rect_set_color(_strokeLeft,   _borderStroke);
     wlr_scene_rect_set_color(_strokeRight,  _borderStroke);
     wlr_scene_rect_set_color(_strokeBottom, _borderStroke);
-    wlr_scene_rect_set_color(_btnMinimize,  btn);
-    wlr_scene_rect_set_color(_btnClose,     btn);
+    wlr_scene_rect_set_color(_btnClose,    btn);
+    wlr_scene_rect_set_color(_btnMinimize, btn);
+    wlr_scene_rect_set_color(_btnMaximize, btn);
 }
 
 - (void)updateColorsFromDictionary:(NSDictionary *)dict
@@ -572,6 +716,7 @@ static cairo_surface_t *load_png_image(NSString *path)
     parseHexColor(dict[@"windowBodyColor"],             _bodyFill);
     parseHexColor(dict[@"buttonActiveColor"],           _btnActive);
     parseHexColor(dict[@"buttonInactiveColor"],         _btnInactive);
+    parseHexColor(dict[@"titleTextColor"],              _titleTextColor);
 
     /* Re-render titlebar and refresh rect colours */
     if (_surfaceWidth > 0 && _surfaceHeight > 0) {
@@ -590,7 +735,6 @@ static cairo_surface_t *load_png_image(NSString *path)
     int B      = AMBROSIA_BORDER_WIDTH;
     int S      = _gBtnSize;
     int PDL    = _gBtnPadLeft;
-    int PDR    = _gBtnPadRight;
     int PT     = _gBtnPadTop;
     int totalW = _surfaceWidth  + B * 2;
     int totalH = _surfaceHeight + T + B;
@@ -605,14 +749,17 @@ static cairo_surface_t *load_png_image(NSString *path)
             return AmbrosiaDecorationHitResizeTop;
         }
 
-        /* Buttons: miniaturize LEFT, close RIGHT */
+        /* Buttons: close / miniaturize / zoom, left to right */
         int btn_y0 = PT - 3;
         int btn_y1 = PT + S + 3;
         if ((int)y >= btn_y0 && (int)y < btn_y1) {
-            int minX   = PDL;
-            int closeX = totalW - PDR - S;
-            if (x >= minX-3   && x < minX+S+3)   return AmbrosiaDecorationHitMinimize;
+            int gap    = (int)(S * 0.4f + 0.5f);
+            int closeX = PDL;
+            int minX   = closeX + S + gap;
+            int zoomX  = minX   + S + gap;
             if (x >= closeX-3 && x < closeX+S+3) return AmbrosiaDecorationHitClose;
+            if (x >= minX-3   && x < minX+S+3)   return AmbrosiaDecorationHitMinimize;
+            if (x >= zoomX-3  && x < zoomX+S+3)  return AmbrosiaDecorationHitMaximize;
         }
 
         return AmbrosiaDecorationHitTitlebar;
@@ -645,38 +792,38 @@ static cairo_surface_t *load_png_image(NSString *path)
     _gBtnPadRight = MAX(1, (int)roundf([theme titlebarPaddingRight]));
     _gBtnPadTop   = MAX(1, (int)roundf([theme titlebarPaddingTop]));
 
-    /* Corner radius: read from GSThemeDomain dict; fall back to 6 for Milk.
-     * Use [theme name] (not infoDictionary[@"GSThemeName"]) — the latter key
-     * is absent from standard GNUstep theme plists and always returns nil. */
+    /* Corner radius: read from GSThemeDomain dict; default to square corners. */
     NSDictionary *domain = [theme infoDictionary][@"GSThemeDomain"];
     id cr = domain[@"GSWindowCornerRadius"];
-    if (cr) {
-        _gCornerR = [cr floatValue];
-    } else {
-        NSString *name = [theme name];
-        _gCornerR = ([name rangeOfString:@"Milk"
-                                 options:NSCaseInsensitiveSearch].location != NSNotFound)
-                    ? 6.0f : 0.0f;
-    }
+    _gCornerR = cr ? [cr floatValue] : 0.0f;
 
-    /* Button images from the theme bundle.
-     * GNUstep theme bundles store images under "Images/", not "ThemeImages/". */
+    /* Button colours from ThemeExtraColors (closeColor / minColor / zoomColor).
+     * Falls back to macOS-style defaults when the key is absent.            */
+    NSBundle *bundle = [theme bundle];
+    NSString *clrPath = [bundle pathForResource:@"ThemeExtraColors" ofType:@"clr"];
+    NSColorList *extras = clrPath
+        ? [[NSColorList alloc] initWithName:@"ThemeExtraColors" fromFile:clrPath]
+        : nil;
+
+    NSColor *(^extra)(NSString *) = ^NSColor *(NSString *key) {
+        NSColor *c = [extras colorWithKey:key];
+        return c ? [c colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]] : nil;
+    };
+
+    NSColor *cc = extra(@"closeColor");
+    NSColor *mc = extra(@"minColor");
+    NSColor *zc = extra(@"zoomColor");
+    if (cc) { CGFloat r,g,b,a; [cc getRed:&r green:&g blue:&b alpha:&a];
+               _gCloseColor[0]=r; _gCloseColor[1]=g; _gCloseColor[2]=b; _gCloseColor[3]=a; }
+    if (mc) { CGFloat r,g,b,a; [mc getRed:&r green:&g blue:&b alpha:&a];
+               _gMinColor[0]=r;   _gMinColor[1]=g;   _gMinColor[2]=b;   _gMinColor[3]=a; }
+    if (zc) { CGFloat r,g,b,a; [zc getRed:&r green:&g blue:&b alpha:&a];
+               _gZoomColor[0]=r;  _gZoomColor[1]=g;  _gZoomColor[2]=b;  _gZoomColor[3]=a; }
+
+    /* Buttons are drawn programmatically as spheres; clear any stale surfaces. */
     if (_gCloseImg)       { cairo_surface_destroy(_gCloseImg);       _gCloseImg       = NULL; }
     if (_gMiniaturizeImg) { cairo_surface_destroy(_gMiniaturizeImg); _gMiniaturizeImg = NULL; }
-
-    NSBundle *bundle = [theme bundle];
-    if (bundle) {
-        NSString *closePath =
-            [bundle pathForResource:@"common_Close" ofType:@"png" inDirectory:@"Images"]
-            ?: [bundle pathForResource:@"common_Close" ofType:@"png" inDirectory:@"ThemeImages"]
-            ?: [bundle pathForResource:@"common_Close" ofType:@"png"];
-        NSString *miniPath =
-            [bundle pathForResource:@"common_Miniaturize" ofType:@"png" inDirectory:@"Images"]
-            ?: [bundle pathForResource:@"common_Miniaturize" ofType:@"png" inDirectory:@"ThemeImages"]
-            ?: [bundle pathForResource:@"common_Miniaturize" ofType:@"png"];
-        _gCloseImg       = load_png_image(closePath);
-        _gMiniaturizeImg = load_png_image(miniPath);
-    }
+    if (_gZoomImg)        { cairo_surface_destroy(_gZoomImg);        _gZoomImg        = NULL; }
 }
 
 + (NSEdgeInsets)frameInsets

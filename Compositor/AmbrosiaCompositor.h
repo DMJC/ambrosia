@@ -163,6 +163,12 @@ struct ambrosia_compositor_state {
     int                  comp_pipe[2];
     struct wl_event_source *comp_source;
 
+    /* Theme-change self-pipe: background notification thread → wl_event_loop
+     * Written when "GSThemeDidActivateNotification" arrives (distributed) so
+     * decoration metrics and colours are reloaded on the compositor's thread. */
+    int                  theme_pipe[2];
+    struct wl_event_source *theme_source;
+
     /* Back-reference (not retained – ObjC object owns this struct) */
     void               *objc_compositor;
 };
@@ -185,6 +191,12 @@ struct ambrosia_compositor_state {
 @property (readonly) BOOL           serverSideDecorations;
 /** Colour prefs for X11 decorations (hex strings keyed to titlebarActiveColor etc.) */
 @property (readonly, nullable) NSDictionary *x11DecorationColors;
+/** Active decoration palette: x11DecorationColors if set, else the GNUstep theme palette. */
+@property (readonly, nonnull)  NSDictionary *decorationColors;
+
+/** Returns the human-readable app name registered by the given PID via the
+ *  menu server, or nil if no registration has been received for that PID.   */
+- (nullable NSString *)appNameForPID:(pid_t)pid;
 
 - (instancetype)init;
 - (BOOL)setup:(NSError **)error;

@@ -5,6 +5,8 @@
 #import "AmbrosiaDecoration.h"
 #import "AmbrosiaInput.h"
 #import <AppKit/AppKit.h>
+#import <GNUstepGUI/GSTheme.h>
+#import "../MenuServer/MenuServerProtocol.h"
 
 #include <wayland-server-core.h>
 #include <wlr/util/log.h>
@@ -46,8 +48,11 @@
 - (void)activateConstraintForSurface:(struct wlr_surface *)surface;
 - (void)deactivateActiveConstraint;
 - (void)handleActiveConstraintDestroy;
-/** Theme change: reload decoration metrics and redraw all decorations. */
+/** Theme change: pipe-write handler (notification thread) and wl_event_loop handler. */
+- (void)_handleThemeChangeNotification:(NSNotification *)note;
 - (void)_handleThemeChange:(NSNotification *)note;
+/** Menu-server app-name registration (notification thread). */
+- (void)_handleAppNameNotification:(NSNotification *)note;
 /** Compositor prefs (X11 decorations etc.) */
 - (void)_handleCompPrefsNotification:(NSNotification *)note;
 - (void)_applyCompPrefsUpdate;
@@ -74,14 +79,30 @@ static NSString *ambrosia_hex_from_color(NSColor *c)
 
 static NSDictionary *ambrosia_gnustep_decoration_palette(void)
 {
-    NSColor *wf = [NSColor windowFrameColor] ?: [NSColor colorWithCalibratedWhite:0.22 alpha:0.96];
-    NSColor *bg = [NSColor windowBackgroundColor] ?: [NSColor colorWithCalibratedWhite:0.86 alpha:1.0];
-    NSColor *sh = [NSColor controlShadowColor] ?: [NSColor colorWithCalibratedWhite:0.40 alpha:1.0];
+    NSColor *wf  = [NSColor windowFrameColor]
+               ?: [NSColor colorWithCalibratedWhite:0.22 alpha:0.96];
+    NSColor *wft = [NSColor windowFrameTextColor]
+               ?: [NSColor colorWithCalibratedWhite:0.05 alpha:1.0];
+    NSColor *bg  = [NSColor windowBackgroundColor]
+               ?: [NSColor colorWithCalibratedWhite:0.86 alpha:1.0];
+    NSColor *sh  = [NSColor controlShadowColor]
+               ?: [NSColor colorWithCalibratedWhite:0.40 alpha:1.0];
 
-    NSColor *gradTop  = [wf highlightWithLevel:0.60] ?: wf;
-    NSColor *gradBot  = wf;
-    NSColor *gradTopI = [wf highlightWithLevel:0.80] ?: gradTop;
-    NSColor *gradBotI = [wf highlightWithLevel:0.40] ?: gradBot;
+    /* Load titleBarGradient1/2 from the theme's ThemeExtraColors list.
+     * Falls back to windowFrameColor-derived values when absent. */
+    NSBundle *themeBundle = [[GSTheme theme] bundle];
+    NSString *clrPath = [themeBundle pathForResource:@"ThemeExtraColors" ofType:@"clr"];
+    NSColorList *extras = clrPath
+        ? [[NSColorList alloc] initWithName:@"ThemeExtraColors" fromFile:clrPath]
+        : nil;
+    NSColor *g1 = [extras colorWithKey:@"titleBarGradient1"]
+               ?: [wf highlightWithLevel:0.60] ?: wf;
+    NSColor *g2 = [extras colorWithKey:@"titleBarGradient2"] ?: wf;
+
+    NSColor *gradTop  = g1;
+    NSColor *gradBot  = g2;
+    NSColor *gradTopI = [g1 highlightWithLevel:0.40] ?: g1;
+    NSColor *gradBotI = [g2 highlightWithLevel:0.20] ?: g2;
     NSColor *btnA = [bg shadowWithLevel:0.10] ?: bg;
     NSColor *btnI = [bg shadowWithLevel:0.25] ?: bg;
 
@@ -91,10 +112,11 @@ static NSDictionary *ambrosia_gnustep_decoration_palette(void)
         @"titlebarInactiveTopColor":    ambrosia_hex_from_color(gradTopI),
         @"titlebarInactiveBottomColor": ambrosia_hex_from_color(gradBotI),
         @"titlebarSeparatorColor":      ambrosia_hex_from_color(sh),
-        @"windowBorderColor":           ambrosia_hex_from_color(sh),
+        @"windowBorderColor":           ambrosia_hex_from_color(wf),
         @"windowBodyColor":             ambrosia_hex_from_color(bg),
         @"buttonActiveColor":           ambrosia_hex_from_color(btnA),
         @"buttonInactiveColor":         ambrosia_hex_from_color(btnI),
+        @"titleTextColor":              ambrosia_hex_from_color(wft),
     };
 }
 
@@ -319,6 +341,16 @@ static int handle_comp_pipe(int fd, uint32_t mask, void *data)
     while (read(fd, &byte, 1) == 1) {}
     AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)data;
     [c _applyCompPrefsUpdate];
+    return 0;
+}
+
+/* Theme-change pipe watcher — called on the compositor's wl_event_loop thread */
+static int handle_theme_pipe(int fd, uint32_t mask, void *data)
+{
+    char byte;
+    while (read(fd, &byte, 1) == 1) {}
+    AmbrosiaCompositor *c = (__bridge AmbrosiaCompositor *)data;
+    [c _handleThemeChange:nil];
     return 0;
 }
 
@@ -564,6 +596,13 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     BOOL          _serverSideDecorations;
     NSDictionary *_x11DecorationColors;
 
+    /* PID → human-readable app name, populated from AmbrosiaAppNameRegistered
+     * notifications sent by MenuServer when a GNUstep app registers its menu.
+     * Written on the notification thread, read on the compositor thread;
+     * protected by _appNameLock.                                              */
+    NSMutableDictionary<NSNumber *, NSString *> *_appNameByPID;
+    NSLock                                      *_appNameLock;
+
 }
 
 @synthesize state               = _state;
@@ -577,6 +616,12 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 @synthesize x11Decorations      = _x11Decorations;
 @synthesize serverSideDecorations = _serverSideDecorations;
 @synthesize x11DecorationColors = _x11DecorationColors;
+
+- (NSDictionary *)decorationColors
+{
+    return ambrosia_gnustep_decoration_palette();
+}
+
 - (instancetype)init
 {
     self = [super init];
@@ -589,6 +634,8 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     _sessionLock   = [[NSLock alloc] init];
     _desktopLock   = [[NSLock alloc] init];
     _compLock      = [[NSLock alloc] init];
+    _appNameByPID  = [NSMutableDictionary dictionary];
+    _appNameLock   = [[NSLock alloc] init];
     _state   = calloc(1, sizeof(struct ambrosia_compositor_state));
     if (!_state) return nil;
 
@@ -619,13 +666,8 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     wlr_log(WLR_INFO, "Ambrosia: initialising compositor");
 
     /* Load decoration metrics from the active GNUstep theme before any
-     * decorations are created.  Re-load whenever the theme changes. */
+     * decorations are created.  Re-loaded on theme change via theme_pipe. */
     [AmbrosiaDecoration reloadThemeMetrics];
-    [[NSNotificationCenter defaultCenter]
-        addObserver:self
-           selector:@selector(_handleThemeChange:)
-               name:@"GSThemeDidActivateNotification"
-             object:nil];
 
     /* Wayland display + event loop */
     _state->display    = wl_display_create();
@@ -1005,6 +1047,26 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
         handle_comp_pipe,
         (__bridge void *)self);
 
+    /* Theme-change self-pipe: background notification thread → wl_event_loop */
+    if (pipe(_state->theme_pipe) != 0) {
+        wlr_log(WLR_ERROR, "Failed to create theme pipe: %s", strerror(errno));
+        if (error) *error = [NSError errorWithDomain:@"AmbrosiaCompositor"
+                                                code:10
+                                            userInfo:@{NSLocalizedDescriptionKey:@"Failed to create theme pipe"}];
+        return NO;
+    }
+    for (int i = 0; i < 2; i++) {
+        fcntl(_state->theme_pipe[i], F_SETFD, FD_CLOEXEC);
+        fcntl(_state->theme_pipe[i], F_SETFL,
+              fcntl(_state->theme_pipe[i], F_GETFL) | O_NONBLOCK);
+    }
+    _state->theme_source = wl_event_loop_add_fd(
+        _state->event_loop,
+        _state->theme_pipe[0],
+        WL_EVENT_READABLE,
+        handle_theme_pipe,
+        (__bridge void *)self);
+
     /* Load initial compositor prefs from disk */
     {
         NSString *prefsDir = nil;
@@ -1123,6 +1185,12 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     }
     close(_state->comp_pipe[0]);
     close(_state->comp_pipe[1]);
+    if (_state->theme_source) {
+        wl_event_source_remove(_state->theme_source);
+        _state->theme_source = NULL;
+    }
+    close(_state->theme_pipe[0]);
+    close(_state->theme_pipe[1]);
     [_background stop];
     _background = nil;
     _desktopIcons = nil;
@@ -1976,7 +2044,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     if (mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE) {
         if (_serverSideDecorations && !view.isDockWindow && !view.decoration)
             [view attachDecorationWithRenderer:_state->renderer
-                                        colors:(_x11DecorationColors ?: ambrosia_gnustep_decoration_palette())];
+                                        colors:self.decorationColors];
     } else {
         if (view.decoration)
             [view removeDecoration];
@@ -2036,7 +2104,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     if (mode == WLR_SERVER_DECORATION_MANAGER_MODE_SERVER) {
         if (_serverSideDecorations && !view.isDockWindow && !view.isGNUstepWindow && !view.decoration)
             [view attachDecorationWithRenderer:_state->renderer
-                                        colors:(_x11DecorationColors ?: ambrosia_gnustep_decoration_palette())];
+                                        colors:self.decorationColors];
     } else {
         if (view.decoration)
             [view removeDecoration];
@@ -2566,8 +2634,18 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
            selector:@selector(_handleCompPrefsNotification:)
                name:@"AmbrosiaCompositorPrefsChanged"
              object:nil];
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_handleThemeChangeNotification:)
+               name:@"GSThemeDidActivateNotification"
+             object:nil];
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_handleAppNameNotification:)
+               name:kAmbrosiaAppNameRegisteredNotification
+             object:nil];
     wlr_log(WLR_DEBUG,
-        "Notification listener running (Logout, Activate, Session, Desktop, Compositor)");
+        "Notification listener running (Logout, Activate, Session, Desktop, Compositor, Theme, AppName)");
     /* Runs until the process exits; the observer keeps the loop alive. */
     [[NSRunLoop currentRunLoop] run];
 }
@@ -2668,16 +2746,45 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     [_background applyPreferences:prefs];
 }
 
+/* Called from the notification thread — writes to the pipe so the actual
+ * work runs on the wl_event_loop thread where wlr_scene calls are safe. */
+- (void)_handleThemeChangeNotification:(NSNotification *)note
+{
+    char byte = 1;
+    (void)write(_state->theme_pipe[1], &byte, 1);
+}
+
+/* Called on the compositor's wl_event_loop thread via handle_theme_pipe. */
 - (void)_handleThemeChange:(NSNotification *)note
 {
-    /* Reload decoration metrics from the newly active GNUstep theme and
-     * redraw all existing decorations so they pick up the new appearance. */
     [AmbrosiaDecoration reloadThemeMetrics];
+    NSDictionary *palette = self.decorationColors;
     for (id<AmbrosiaWindowView> view in _views) {
         if (!view.decoration) continue;
+        [view.decoration updateColorsFromDictionary:palette];
         struct wlr_box geo = [view geometry];
-        [view.decoration updateWithWidth:geo.width height:geo.height title:nil];
+        [view.decoration updateWithWidth:geo.width height:geo.height title:[view displayName]];
     }
+}
+
+/* Called on the notification thread when MenuServer posts kAmbrosiaAppNameRegisteredNotification.
+ * Safe to update the dictionary here under _appNameLock; no wlr calls needed. */
+- (void)_handleAppNameNotification:(NSNotification *)note
+{
+    NSString *name = note.userInfo[kAmbrosiaAppNameKey];
+    NSNumber *pid  = note.userInfo[kAmbrosiaAppPIDKey];
+    if (!name.length || !pid) return;
+    [_appNameLock lock];
+    _appNameByPID[pid] = name;
+    [_appNameLock unlock];
+}
+
+- (nullable NSString *)appNameForPID:(pid_t)pid
+{
+    [_appNameLock lock];
+    NSString *name = _appNameByPID[@(pid)];
+    [_appNameLock unlock];
+    return name;
 }
 
 - (void)_handleCompPrefsNotification:(NSNotification *)note
@@ -2705,6 +2812,10 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
             x11Enabled ? "YES" : "NO", ssdEnabled ? "YES" : "NO");
     [self _applyX11DecorationsEnabled:x11Enabled colors:prefs];
     [self _applyServerSideDecorationsEnabled:ssdEnabled];
+
+    /* Reload theme metrics and redraw all decorations so appearance changes
+     * (colour, titlebar height, corner radius) take effect immediately. */
+    [self _handleThemeChange:nil];
 
     /* Background mode change */
     NSString *bgMode = prefs[@"backgroundMode"];
@@ -2734,7 +2845,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
             /* Propagate colour updates to any already-attached SSD decorations */
             AmbrosiaView *av = (AmbrosiaView *)view;
             if (av.decoration)
-                [av.decoration updateColorsFromDictionary:(colors ?: ambrosia_gnustep_decoration_palette())];
+                [av.decoration updateColorsFromDictionary:self.decorationColors];
         }
     }
 }
@@ -2773,8 +2884,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
             }
             if (wantsSSD)
                 [av attachDecorationWithRenderer:_state->renderer
-                                          colors:(_x11DecorationColors
-                                                  ?: ambrosia_gnustep_decoration_palette())];
+                                          colors:self.decorationColors];
         }
     }
 }
