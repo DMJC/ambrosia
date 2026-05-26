@@ -72,16 +72,71 @@ static NSImage *LoadImageAtPath(NSString *path)
     return [[NSImage alloc] initWithContentsOfFile:path];
 }
 
-/* Resolve a freedesktop icon name to a full filesystem path. */
-static NSString *FindIconPath(NSString *name)
+/*
+ * Return the active icon theme name from GTK or GNUstep settings.
+ * Checked in order: GTK-3 user config → GTK-4 user config →
+ * GTK-3 system config → GNUstep NSGlobalDomain GSTheme.
+ * Returns nil if none is found (caller falls back to "hicolor").
+ */
+/* Active GNUstep icon theme name from NSUserDefaults (GSTheme key). */
+static NSString *GNUstepIconThemeName(void)
+{
+    NSString *name = [[NSUserDefaults standardUserDefaults] stringForKey:@"GSTheme"];
+    return name.length ? name : nil;
+}
+
+/* Active GTK icon theme name, read from GTK-3/4 settings INI files. */
+static NSString *GTKIconThemeName(void)
+{
+    NSArray<NSString *> *candidates = @[
+        [@"~/.config/gtk-3.0/settings.ini" stringByExpandingTildeInPath],
+        [@"~/.config/gtk-4.0/settings.ini" stringByExpandingTildeInPath],
+        @"/etc/gtk-3.0/settings.ini",
+        @"/etc/gtk-4.0/settings.ini",
+    ];
+    NSCharacterSet *ws = [NSCharacterSet whitespaceCharacterSet];
+    for (NSString *iniPath in candidates) {
+        NSString *content = [NSString stringWithContentsOfFile:iniPath
+                                                      encoding:NSUTF8StringEncoding
+                                                         error:nil];
+        if (!content) continue;
+        for (NSString *raw in [content componentsSeparatedByString:@"\n"]) {
+            NSString *line = [raw stringByTrimmingCharactersInSet:ws];
+            if (![line hasPrefix:@"gtk-icon-theme-name"]) continue;
+            NSRange eq = [line rangeOfString:@"="];
+            if (eq.location == NSNotFound) continue;
+            NSString *val = [[line substringFromIndex:NSMaxRange(eq)]
+                             stringByTrimmingCharactersInSet:ws];
+            if (val.length >= 2 &&
+                ([val hasPrefix:@"\""] || [val hasPrefix:@"'"])) {
+                val = [val substringWithRange:NSMakeRange(1, val.length - 2)];
+            }
+            if (val.length) return val;
+        }
+    }
+    return nil;
+}
+
+/*
+ * Core icon search.  Looks for 'name' in freedesktop icon base directories,
+ * trying only the file extensions in 'exts' (in order).
+ *
+ * Theme search order: preferredTheme (if non-nil) → hicolor → other themes.
+ * Pass nil for preferredTheme to search hicolor first.
+ *
+ * An absolute path for 'name' short-circuits the search.
+ */
+static NSString *FindIconPathWithExtensions(NSString *name,
+                                            NSArray<NSString *> *exts,
+                                            NSString *preferredTheme)
 {
     if (!name.length) return nil;
-    if ([name hasPrefix:@"/"])
+    if ([name hasPrefix:@"/"]) {
         return [[NSFileManager defaultManager] fileExistsAtPath:name] ? name : nil;
+    }
 
-    NSArray<NSString *> *exts  = @[@"png", @"svg", @"xpm"];
-    NSArray<NSString *> *sizes = @[@"48x48", @"32x32", @"64x64",
-                                   @"128x128", @"256x256", @"scalable"];
+    NSArray<NSString *> *sizes = @[@"scalable", @"48x48", @"64x64",
+                                   @"128x128", @"256x256", @"32x32"];
     NSArray<NSString *> *cats  = @[@"apps", @"devices", @"mimetypes"];
     NSFileManager *fm = [NSFileManager defaultManager];
 
@@ -89,19 +144,19 @@ static NSString *FindIconPath(NSString *name)
     NSArray<NSString *> *baseDirs = @[userBase, @"/usr/share/icons"];
 
     for (NSString *base in baseDirs) {
-        /* Collect theme subdirectories, hicolor first. */
+        /* Build theme order: preferred → hicolor → others. */
         NSMutableArray<NSString *> *themes = [NSMutableArray array];
+        if (preferredTheme.length) [themes addObject:preferredTheme];
         [themes addObject:@"hicolor"];
-        NSArray *entries = [fm contentsOfDirectoryAtPath:base error:nil];
-        for (NSString *entry in entries) {
-            if ([entry isEqualToString:@"hicolor"]) continue;
+        for (NSString *entry in [fm contentsOfDirectoryAtPath:base error:nil]) {
+            if ([entry isEqualToString:preferredTheme]) continue;
+            if ([entry isEqualToString:@"hicolor"])     continue;
             BOOL isDir = NO;
             NSString *full = [base stringByAppendingPathComponent:entry];
             if ([fm fileExistsAtPath:full isDirectory:&isDir] && isDir)
                 [themes addObject:entry];
         }
 
-        /* Search size/category subdirectories within each theme. */
         for (NSString *theme in themes) {
             NSString *themeDir = [base stringByAppendingPathComponent:theme];
             for (NSString *size in sizes) {
@@ -118,7 +173,6 @@ static NSString *FindIconPath(NSString *name)
             }
         }
 
-        /* Flat files directly in the base directory. */
         for (NSString *ext in exts) {
             NSString *p = [[base stringByAppendingPathComponent:name]
                            stringByAppendingPathExtension:ext];
@@ -126,12 +180,74 @@ static NSString *FindIconPath(NSString *name)
         }
     }
 
-    /* Final fallback: /usr/share/pixmaps. */
     for (NSString *ext in exts) {
         NSString *p = [NSString stringWithFormat:@"/usr/share/pixmaps/%@.%@", name, ext];
         if ([fm fileExistsAtPath:p]) return p;
     }
     return nil;
+}
+
+/*
+ * GNUstep library base directories searched for themes, in priority order.
+ * Mirrors the GNUstep path convention: user → Local → System.
+ */
+static NSArray<NSString *> *GNUstepThemeBaseDirs(void)
+{
+    return @[
+        [@"~/GNUstep/Library/Themes"         stringByExpandingTildeInPath],
+        @"/usr/GNUstep/Local/Library/Themes",
+        @"/usr/GNUstep/System/Library/Themes",
+        @"/usr/local/GNUstep/Local/Library/Themes",
+        @"/usr/local/GNUstep/System/Library/Themes",
+    ];
+}
+
+/*
+ * GNUstep themes store per-app icon overrides at:
+ *   ThemeImages/<bundleIdentifier>/<iconBaseName>.<ext>
+ *
+ * Look for 'iconBase' (no extension) inside that per-bundle sub-directory.
+ * Returns the first matching path, or nil.
+ */
+static NSString *FindGNUstepThemeAppIcon(NSString *bundleId, NSString *iconBase,
+                                          NSArray<NSString *> *exts)
+{
+    if (!bundleId.length || !iconBase.length) return nil;
+    NSString *themeName = GNUstepIconThemeName();
+    if (!themeName.length) return nil;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *themeBundleName = [themeName stringByAppendingPathExtension:@"theme"];
+    for (NSString *base in GNUstepThemeBaseDirs()) {
+        NSString *iconDir = [[[[base
+            stringByAppendingPathComponent:themeBundleName]
+            stringByAppendingPathComponent:@"Resources"]
+            stringByAppendingPathComponent:@"ThemeImages"]
+            stringByAppendingPathComponent:bundleId];
+        for (NSString *ext in exts) {
+            NSString *p = [[iconDir stringByAppendingPathComponent:iconBase]
+                           stringByAppendingPathExtension:ext];
+            if ([fm fileExistsAtPath:p]) return p;
+        }
+    }
+    return nil;
+}
+
+/* Flat name search in ThemeImages/ (no per-bundle sub-directory), then hicolor. */
+static NSString *FindGNUstepThemeSVGPath(NSString *name)
+{
+    return FindIconPathWithExtensions(name, @[@"svg"], GNUstepIconThemeName());
+}
+
+static NSString *FindGNUstepThemeRasterPath(NSString *name)
+{
+    return FindIconPathWithExtensions(name, @[@"png", @"xpm"], GNUstepIconThemeName());
+}
+
+/* Any icon in the active GTK theme, SVG preferred, hicolor fallback.
+ * Used for freedesktop .desktop items. */
+static NSString *FindGTKThemeIconPath(NSString *name)
+{
+    return FindIconPathWithExtensions(name, @[@"svg", @"png", @"xpm"], GTKIconThemeName());
 }
 
 @implementation DockItem
@@ -200,7 +316,7 @@ static NSString *FindIconPath(NSString *name)
             NSString *exec = info[@"Exec"];
             if (exec.length) _execCommand = StripExecFieldCodes(exec);
             if (!_label.length) _label = [info[@"Name"] copy];
-            NSString *iconPath = FindIconPath(info[@"Icon"]);
+            NSString *iconPath = FindGTKThemeIconPath(info[@"Icon"]);
             if (iconPath) _icon = LoadImageAtPath(iconPath);
         }
         if (!_icon) _icon = [NSImage imageNamed:@"NSApplicationIcon"];
@@ -216,12 +332,12 @@ static NSString *FindIconPath(NSString *name)
         return;
     }
 
-    /* App: system icon theme first (override), then bundle, then fallback.
-     *
-     * The bare bundle name (e.g. "TextEdit" from "TextEdit.app") is used as the
-     * theme icon name so that GNUstep apps whose bundles carry only a TIFF icon
-     * can still be represented by a higher-quality PNG from the installed theme.
-     * The bundle identifier is tried as a secondary theme key.               */
+    /* App icons — priority order:
+     *   1. SVG from the current system icon theme
+     *   2. SVG from the application bundle
+     *   3. Raster (PNG/XPM) from the system icon theme
+     *   4. TIFF/PNG/ICNS from the application bundle
+     *   5. NSWorkspace / generic fallback                                    */
     if (!_launchPath) {
         _icon = [NSImage imageNamed:@"NSApplicationIcon"];
         return;
@@ -229,36 +345,63 @@ static NSString *FindIconPath(NSString *name)
 
     NSString *appBaseName = [[_launchPath lastPathComponent] stringByDeletingPathExtension];
 
-    /* 1. System icon theme — bare app name, then bundle identifier. */
-    NSString *themeIconPath = FindIconPath(appBaseName);
-    if (!themeIconPath && _bundleIdentifier.length)
-        themeIconPath = FindIconPath(_bundleIdentifier);
-    if (themeIconPath)
-        _icon = LoadImageAtPath(themeIconPath);
+    /* Resolve the bundle icon name once; used for both theme and bundle lookups. */
+    NSBundle *bundle   = [NSBundle bundleWithPath:_launchPath];
+    NSString *iconName = [bundle objectForInfoDictionaryKey:@"CFBundleIconFile"]
+                      ?: [bundle objectForInfoDictionaryKey:@"NSIcon"]
+                      ?: [bundle objectForInfoDictionaryKey:@"ApplicationIcon"];
+    NSString *iconBase = [iconName stringByDeletingPathExtension];
 
-    /* 2. Bundle icon (GNUstep NSIcon / CFBundleIconFile). */
-    if (!_icon) {
-        NSBundle *bundle = [NSBundle bundleWithPath:_launchPath];
-        if (bundle) {
-            NSString *iconName = [bundle objectForInfoDictionaryKey:@"CFBundleIconFile"]
-                              ?: [bundle objectForInfoDictionaryKey:@"NSIcon"];
-            if (iconName) {
-                NSString *iconPath = nil;
-                if ([iconName pathExtension].length > 0) {
-                    iconPath = [bundle pathForResource:[iconName stringByDeletingPathExtension]
-                                                ofType:[iconName pathExtension]];
-                } else {
-                    for (NSString *ext in @[@"svg", @"icns", @"png", @"tiff"]) {
-                        iconPath = [bundle pathForResource:iconName ofType:ext];
-                        if (iconPath) break;
-                    }
-                }
-                if (iconPath) _icon = LoadImageAtPath(iconPath);
-            }
-        }
+    /* 1. SVG from the GNUstep system theme.
+     *    Primary:  ThemeImages/<bundleId>/<iconBase>.svg  (per-app theme override)
+     *    Fallback: freedesktop icon dirs under the GNUstep theme name / hicolor  */
+    NSString *themeSVGPath = nil;
+    if (_bundleIdentifier.length && iconBase.length)
+        themeSVGPath = FindGNUstepThemeAppIcon(_bundleIdentifier, iconBase, @[@"svg"]);
+    if (!themeSVGPath)
+        themeSVGPath = FindGNUstepThemeSVGPath(appBaseName);
+    if (!themeSVGPath && _bundleIdentifier.length)
+        themeSVGPath = FindGNUstepThemeSVGPath(_bundleIdentifier);
+    if (themeSVGPath)
+        _icon = LoadSVGImage(themeSVGPath, 128);
+
+    /* 2. SVG from the application bundle. */
+    if (!_icon && iconBase.length) {
+        NSString *svgPath = [bundle pathForResource:iconBase ofType:@"svg"]
+                         ?: [bundle pathForResource:iconName ofType:@"svg"];
+        if (svgPath) _icon = LoadSVGImage(svgPath, 128);
     }
 
-    /* 3. Workspace / generic fallback. */
+    /* 3. Raster from the GNUstep system theme.
+     *    Primary:  ThemeImages/<bundleId>/<iconBase>.{png,tiff,...}
+     *    Fallback: freedesktop icon dirs under the GNUstep theme name / hicolor  */
+    if (!_icon) {
+        NSString *rasterPath = nil;
+        if (_bundleIdentifier.length && iconBase.length)
+            rasterPath = FindGNUstepThemeAppIcon(_bundleIdentifier, iconBase,
+                                                  @[@"png", @"xpm", @"tiff", @"tif"]);
+        if (!rasterPath)
+            rasterPath = FindGNUstepThemeRasterPath(appBaseName);
+        if (!rasterPath && _bundleIdentifier.length)
+            rasterPath = FindGNUstepThemeRasterPath(_bundleIdentifier);
+        if (rasterPath) _icon = LoadImageAtPath(rasterPath);
+    }
+
+    /* 4. TIFF/PNG/ICNS from the application bundle. */
+    if (!_icon && iconName.length) {
+        NSString *iconPath = nil;
+        if ([iconName pathExtension].length > 0) {
+            iconPath = [bundle pathForResource:iconBase ofType:[iconName pathExtension]];
+        } else {
+            for (NSString *ext in @[@"tiff", @"png", @"icns"]) {
+                iconPath = [bundle pathForResource:iconName ofType:ext];
+                if (iconPath) break;
+            }
+        }
+        if (iconPath) _icon = LoadImageAtPath(iconPath);
+    }
+
+    /* 5. NSWorkspace / generic fallback. */
     if (!_icon)
         _icon = [[NSWorkspace sharedWorkspace] iconForFile:_launchPath];
     if (!_icon)

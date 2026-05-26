@@ -152,8 +152,9 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
     if (switcher.isVisible) {
         if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
             for (int i = 0; i < nsyms; i++) {
-                if (syms[i] == XKB_KEY_Tab) {
-                    BOOL backwards = (modifiers & WLR_MODIFIER_SHIFT) != 0;
+                if (syms[i] == XKB_KEY_Tab || syms[i] == XKB_KEY_ISO_Left_Tab) {
+                    BOOL backwards = syms[i] == XKB_KEY_ISO_Left_Tab
+                                  || (modifiers & WLR_MODIFIER_SHIFT) != 0;
                     [switcher advanceBy:backwards ? -1 : 1];
                     return YES;
                 }
@@ -212,10 +213,12 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data)
             handled = YES;
         }
         /* Super+Tab / Super+Shift+Tab → app switcher */
-        if (syms[i] == XKB_KEY_Tab && (modifiers & WLR_MODIFIER_LOGO)
+        if ((syms[i] == XKB_KEY_Tab || syms[i] == XKB_KEY_ISO_Left_Tab)
+                && (modifiers & WLR_MODIFIER_LOGO)
                 && !(modifiers & WLR_MODIFIER_ALT)
                 && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-            BOOL backwards = (modifiers & WLR_MODIFIER_SHIFT) != 0;
+            BOOL backwards = syms[i] == XKB_KEY_ISO_Left_Tab
+                          || (modifiers & WLR_MODIFIER_SHIFT) != 0;
             [switcher advanceBy:backwards ? -1 : 1];
             handled = YES;
         }
