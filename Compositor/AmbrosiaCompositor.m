@@ -575,6 +575,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     NSString *_pendingActivateBundleID;
     NSString *_pendingActivateLaunchPath;
     NSString *_pendingActivateAppName;
+    pid_t     _pendingActivatePID;
     NSLock   *_activateLock;
 
     /* Pending session-prefs update — written by the notification thread,
@@ -2667,6 +2668,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     _pendingActivateBundleID   = info[@"bundleIdentifier"];
     _pendingActivateLaunchPath = info[@"launchPath"];
     _pendingActivateAppName    = info[@"appName"];
+    _pendingActivatePID        = (pid_t)[info[@"pid"] intValue];
     [_activateLock unlock];
     char byte = 1;
     (void)write(_state->activate_pipe[1], &byte, 1);
@@ -2900,9 +2902,11 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     NSString *bundleID   = _pendingActivateBundleID;
     NSString *launchPath = _pendingActivateLaunchPath;
     NSString *appName    = _pendingActivateAppName;
+    pid_t     targetPID  = _pendingActivatePID;
     _pendingActivateBundleID   = nil;
     _pendingActivateLaunchPath = nil;
     _pendingActivateAppName    = nil;
+    _pendingActivatePID        = 0;
     [_activateLock unlock];
 
     /* Derive a short app name from launchPath (/path/to/MyApp.app → "MyApp") */
@@ -2930,27 +2934,32 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
         if (v.isDockWindow)        continue;
         if (v.isDesktopBackground) continue;
 
-        const char *rawAppId = v.state->xdg_toplevel->app_id;
-        if (!rawAppId)           continue;
-        NSString *appId = [NSString stringWithUTF8String:rawAppId];
-
         BOOL match = NO;
-        /* 1. Exact bundle identifier match */
-        if (!match && bundleID.length)
-            match = [appId isEqualToString:bundleID];
-        /* 2. Bundle ID ends with the app_id (e.g. "org.gnustep.GCalc" ↔ "GCalc") */
-        if (!match && bundleID.length)
-            match = [bundleID hasSuffix:appId];
-        /* 3. Exact app name match */
-        if (!match && appName.length)
-            match = [appId isEqualToString:appName];
-        /* 4. Base name from .app path */
-        if (!match && pathBaseName.length)
-            match = [appId isEqualToString:pathBaseName];
-        /* 5. Case-insensitive substring (broadest fallback) */
-        if (!match && appName.length)
-            match = ([appId rangeOfString:appName
-                                  options:NSCaseInsensitiveSearch].location != NSNotFound);
+
+        /* 1. PID match — reliable for GNUstep apps that may not set app_id */
+        if (!match && targetPID > 0)
+            match = ([v clientPid] == targetPID);
+
+        const char *rawAppId = v.state->xdg_toplevel->app_id;
+        if (!match && rawAppId) {
+            NSString *appId = [NSString stringWithUTF8String:rawAppId];
+            /* 2. Exact bundle identifier match */
+            if (!match && bundleID.length)
+                match = [appId isEqualToString:bundleID];
+            /* 3. Bundle ID ends with the app_id (e.g. "org.gnustep.GCalc" ↔ "GCalc") */
+            if (!match && bundleID.length)
+                match = [bundleID hasSuffix:appId];
+            /* 4. Exact app name match */
+            if (!match && appName.length)
+                match = [appId isEqualToString:appName];
+            /* 5. Base name from .app path */
+            if (!match && pathBaseName.length)
+                match = [appId isEqualToString:pathBaseName];
+            /* 6. Case-insensitive substring (broadest fallback) */
+            if (!match && appName.length)
+                match = ([appId rangeOfString:appName
+                                      options:NSCaseInsensitiveSearch].location != NSNotFound);
+        }
 
         if (match) {
             if (!v.isMiniaturized) { target = v; break; }

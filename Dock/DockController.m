@@ -793,6 +793,8 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
             info[@"launchPath"] = item.launchPath;
         if (item.label.length)
             info[@"appName"] = item.label;
+        if (item.pid > 0)
+            info[@"pid"] = @(item.pid);
         [[NSDistributedNotificationCenter defaultCenter]
             postNotificationName:@"AmbrosiaActivateApplication"
                           object:nil
