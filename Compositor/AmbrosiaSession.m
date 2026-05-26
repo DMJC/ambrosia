@@ -29,57 +29,7 @@ static NSString *gnustepPrefsDirectory(void)
             stringByAppendingPathComponent:@"GNUstep/Library/Preferences"];
 }
 
-/**
- * Return the SystemPreferences plist path used by the Video module.
- */
-static NSString *systemPreferencesPath(void)
-{
-    NSString *defaultsDir = [NSHomeDirectory()
-                             stringByAppendingPathComponent:@"GNUstep/Defaults"];
-    return [defaultsDir stringByAppendingPathComponent:@"SystemPreferences.plist"];
-}
 
-/**
- * Read primary output resolution from SystemPreferences.plist.
- * Falls back to 1920x1080 if not present.
- */
-static NSSize primaryMonitorSizeFromPreferences(void)
-{
-    CGFloat width = 1920.0;
-    CGFloat height = 1080.0;
-
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:systemPreferencesPath()];
-    NSArray *screens = [prefs[@"Screens"] isKindOfClass:[NSArray class]]
-        ? prefs[@"Screens"] : nil;
-
-    if (screens.count > 0) {
-        NSDictionary *primary = nil;
-        for (NSDictionary *screen in screens) {
-            if (![screen isKindOfClass:[NSDictionary class]]) continue;
-            NSNumber *isPrimary = [screen[@"primary"] isKindOfClass:[NSNumber class]]
-                ? screen[@"primary"] : screen[@"Primary"];
-            if ([isPrimary boolValue]) {
-                primary = screen;
-                break;
-            }
-        }
-        if (!primary) {
-            NSDictionary *first = screens.firstObject;
-            if ([first isKindOfClass:[NSDictionary class]]) primary = first;
-        }
-
-        NSDictionary *resolution = [primary[@"resolution"] isKindOfClass:[NSDictionary class]]
-            ? primary[@"resolution"] : primary[@"Resolution"];
-        NSNumber *rw = resolution[@"width"] ?: resolution[@"Width"];
-        NSNumber *rh = resolution[@"height"] ?: resolution[@"Height"];
-        if ([rw respondsToSelector:@selector(doubleValue)] && [rw doubleValue] > 32)
-            width = [rw doubleValue];
-        if ([rh respondsToSelector:@selector(doubleValue)] && [rh doubleValue] > 32)
-            height = [rh doubleValue];
-    }
-
-    return NSMakeSize(width, height);
-}
 
 /**
  * Search a set of candidate paths and return the first that exists.
@@ -484,34 +434,6 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
 
     /* ---- AmbrosiaDock ---- */
 
-    /* The dock uses wlr-layer-shell (window level 22 / "gnustep-dock") so
-     * the compositor no longer needs to supply X/Y coordinates.  We only pass
-     * icon-size, zoom, position label, and primary-screen dimensions so the
-     * dock can compute the correct surface SIZE.  Positioning is handled by
-     * the layer-shell anchor and exclusive-zone mechanism in gnustep-back.   */
-    NSString *prefsDir = gnustepPrefsDirectory();
-    NSString *dockPlistPath = [prefsDir
-                               stringByAppendingPathComponent:
-                               @"org.gnustep.AmbrosiaDock.plist"];
-    NSDictionary *dockPrefs = [NSDictionary dictionaryWithContentsOfFile:dockPlistPath]
-                              ?: @{};
-
-    NSString *dockPosition = dockPrefs[@"dockPosition"] ?: @"bottom";
-    double    iconSize     = [dockPrefs[@"iconSize"]    doubleValue];
-    double    zoomFactor   = [dockPrefs[@"zoomFactor"]  doubleValue];
-    NSSize    primarySize  = primaryMonitorSizeFromPreferences();
-    if (iconSize   <= 0) iconSize   = 48.0;
-    if (zoomFactor <= 0) zoomFactor = 1.7;
-
-    NSArray<NSString *> *dockArgs =
-        [gnustepWaylandArgs arrayByAddingObjectsFromArray:@[
-            @"-AmbrosiaPosition",      dockPosition,
-            @"-AmbrosiaIconSize",      [NSString stringWithFormat:@"%.1f", iconSize],
-            @"-AmbrosiaZoomFactor",    [NSString stringWithFormat:@"%.2f", zoomFactor],
-            @"-AmbrosiaPrimaryWidth",  [NSString stringWithFormat:@"%.0f", primarySize.width],
-            @"-AmbrosiaPrimaryHeight", [NSString stringWithFormat:@"%.0f", primarySize.height],
-        ]];
-
     NSString *dockExec = findExecutable(candidatePaths(@"AmbrosiaDock.app",
                                                        @"AmbrosiaDock"));
     if (!dockExec) dockExec = @"AmbrosiaDock"; /* fallback: hope it is in PATH */
@@ -519,10 +441,11 @@ AmbrosiaSession *AmbrosiaSessionCreateDefault(struct wl_event_loop *loop)
     AmbrosiaSessionProcess *dock =
         [session addProcessNamed:@"AmbrosiaDock"
                         execPath:dockExec
-                       arguments:dockArgs];
+                       arguments:gnustepWaylandArgs];
     dock.restartDelaySecs = 2;
 
     /* ---- User-configured apps from the session plist ---- */
+    NSString *prefsDir = gnustepPrefsDirectory();
     NSString *sessionPlistPath = [prefsDir
                                   stringByAppendingPathComponent:
                                   @"org.gnustep.AmbrosiaSession.plist"];

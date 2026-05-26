@@ -82,8 +82,6 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
     BOOL _showRunningDots;
     ForceQuitController *_forceQuitController;
     NSTimer *_runningAppsSweepTimer;
-    CGFloat _primaryScreenWidth;
-    CGFloat _primaryScreenHeight;
 }
 
 @synthesize dockPanel       = _dockPanel;
@@ -106,8 +104,6 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
     _dockPosition    = @"bottom";
     _autoHide        = NO;
     _showRunningDots = YES;
-    _primaryScreenWidth  = 0.0;
-    _primaryScreenHeight = 0.0;
 
     NSArray *domainDirs = NSSearchPathForDirectoriesInDomains(
         NSLibraryDirectory, NSUserDomainMask, YES);
@@ -131,43 +127,25 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
 /* ---------------------------------------------------------------------- */
 #pragma mark - NSApplicationDelegate
 
-/* Apply sizing overrides passed by the compositor at launch.
- * Position (DockX/DockY) is now handled by wlr-layer-shell anchoring;
- * only icon-size, zoom, position label, and screen dimensions are needed. */
-- (void)_applyCompositorArgs
-{
-    NSArray<NSString *> *args = [[NSProcessInfo processInfo] arguments];
-    for (NSUInteger i = 0; i + 1 < args.count; i++) {
-        NSString *flag = args[i];
-        NSString *val  = args[i + 1];
-        if ([flag isEqualToString:@"-AmbrosiaPosition"]) {
-            if (val.length) _dockPosition = [val copy];
-        } else if ([flag isEqualToString:@"-AmbrosiaIconSize"]) {
-            double v = [val doubleValue];
-            if (v > 0) _iconSize = v;
-        } else if ([flag isEqualToString:@"-AmbrosiaZoomFactor"]) {
-            double v = [val doubleValue];
-            if (v > 0) _zoomFactor = v;
-        } else if ([flag isEqualToString:@"-AmbrosiaPrimaryWidth"]) {
-            double v = [val doubleValue];
-            if (v > 0) _primaryScreenWidth = v;
-        } else if ([flag isEqualToString:@"-AmbrosiaPrimaryHeight"]) {
-            double v = [val doubleValue];
-            if (v > 0) _primaryScreenHeight = v;
-        }
-    }
-}
-
 - (void)applicationDidFinishLaunching:(NSNotification *)note
 {
     [self loadPreferences];
-    [self _applyCompositorArgs];   /* compositor-provided geometry wins */
     [self createDockPanel];
     [self repositionDock];
     [self observeRunningApps];
     [self observeForceQuitRequests];
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_handlePrefsChanged:)
+               name:@"AmbrosiaDocksPrefsChanged"
+             object:nil];
     /* Persist initial state so the preferences file always exists on disk. */
     [self savePreferences];
+}
+
+- (void)_handlePrefsChanged:(NSNotification *)note
+{
+    [self applyPreferences:note.userInfo];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)note
@@ -212,8 +190,6 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
 - (NSRect)dockRectForScreen:(NSScreen *)screen
 {
     NSRect sf = screen ? screen.frame : NSZeroRect;
-    if (_primaryScreenWidth  > 32) sf.size.width  = _primaryScreenWidth;
-    if (_primaryScreenHeight > 32) sf.size.height = _primaryScreenHeight;
     if (sf.size.width  < 32) sf.size.width  = 1920;
     if (sf.size.height < 32) sf.size.height = 1080;
 
