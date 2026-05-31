@@ -1766,10 +1766,38 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
 
     [self refreshFractionalScaleForAllViews];
     [self notifyOutputManager];
+    [self _postScreenPrefsChanged];
 }
 
 /* ---------------------------------------------------------------------- */
 #pragma mark - Output management (wlr-output-management-unstable-v1)
+
+/**
+ * Post AmbrosiaScreenPrefsChanged to all GNUstep processes so they can
+ * resize/reposition themselves to match the new logical screen dimensions.
+ * Includes the primary output's logical width and height in userInfo so
+ * receivers do not need to consult a plist or call back into the compositor.
+ */
+- (void)_postScreenPrefsChanged
+{
+    struct wlr_output *primary = NULL;
+    struct wlr_output_layout_output *lo;
+    wl_list_for_each(lo, &_state->output_layout->outputs, link) {
+        if (lo->output && lo->output->enabled) { primary = lo->output; break; }
+    }
+    if (!primary) return;
+
+    struct wlr_box box = {};
+    wlr_output_layout_get_box(_state->output_layout, primary, &box);
+    if (box.width <= 0 || box.height <= 0) return;
+
+    [[NSDistributedNotificationCenter defaultCenter]
+        postNotificationName:@"AmbrosiaScreenPrefsChanged"
+                      object:nil
+                    userInfo:@{ @"logicalWidth":  @(box.width),
+                                @"logicalHeight": @(box.height) }
+          deliverImmediately:YES];
+}
 
 /**
  * Broadcasts the current output configuration to all connected
@@ -1866,6 +1894,7 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     /* Broadcast updated state regardless of success so clients stay in sync. */
     [self refreshFractionalScaleForAllViews];
     [self notifyOutputManager];
+    if (ok) [self _postScreenPrefsChanged];
 }
 
 /**

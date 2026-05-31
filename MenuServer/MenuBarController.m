@@ -181,6 +181,7 @@ static NSString * const kForeignWindowIdentifierPrefix = @"__ambrosia_foreign_wi
     [self _startTrackingGFinder];
     [self _setupStatusPlugins];
     [self _observeMenuBarPrefs];
+    [self _observeScreenPrefs];
     [self _startTrayManager];
 }
 
@@ -252,6 +253,36 @@ static NSString * const kForeignWindowIdentifierPrefix = @"__ambrosia_foreign_wi
 {
     dispatch_async(dispatch_get_main_queue(), ^{
         [self _setupStatusPlugins];
+    });
+}
+
+- (void)_observeScreenPrefs
+{
+    [[NSDistributedNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_screenPrefsChanged:)
+               name:@"AmbrosiaScreenPrefsChanged"
+             object:nil
+  suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
+}
+
+- (void)_screenPrefsChanged:(NSNotification *)note
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSNumber *w = note.userInfo[@"logicalWidth"];
+        NSNumber *h = note.userInfo[@"logicalHeight"];
+
+        /* Use compositor-supplied logical dimensions when available; fall back
+         * to the plist + screen.frame calculation for older senders.          */
+        NSRect sf = [NSScreen mainScreen].frame;
+        if (w && w.doubleValue > 0) sf.size.width  = w.doubleValue;
+        if (h && h.doubleValue > 0) sf.size.height = h.doubleValue;
+
+        NSRect barRect = NSMakeRect(sf.origin.x,
+                                    sf.origin.y + sf.size.height - kBarHeight,
+                                    sf.size.width,
+                                    kBarHeight);
+        [_menuPanel setFrame:barRect display:YES animate:NO];
     });
 }
 
