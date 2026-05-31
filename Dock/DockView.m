@@ -286,11 +286,11 @@ static const CGFloat kRecyclerGap    = 18.0;
         if (item.isRunning) {
             CGFloat dotX, dotY;
             if (_verticalLayout) {
-                /* Dot faces toward the screen centre:
-                 * right dock → left edge; left dock → right edge */
+                /* Dot sits between the icon and the nearest screen edge:
+                 * left dock → left of icon; right dock → right of icon. */
                 dotX = _rightSideDock
-                    ? kDockPadding * 0.4
-                    : (NSMaxX(iconRect) + kRunningDotGap);
+                    ? (NSMaxX(iconRect) + kRunningDotGap)
+                    : (iconRect.origin.x - kRunningDotGap - kRunningDotSize);
                 dotY = NSMidY(iconRect) - kRunningDotSize * 0.5;
             } else {
                 dotX = NSMidX(iconRect) - kRunningDotSize * 0.5;
