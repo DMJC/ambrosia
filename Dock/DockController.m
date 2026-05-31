@@ -197,12 +197,18 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
     CGFloat panelW = _iconSize * _zoomFactor + 44.0;
 
     if ([_dockPosition isEqualToString:@"left"]) {
-        CGFloat panelW = _iconSize * _zoomFactor + 44.0;
+        /* Extra width beyond the background strip so icon labels (drawn to
+         * the right of icons) are not clipped by the panel boundary.       */
+        CGFloat stripW = _iconSize * _zoomFactor + 44.0;
+        CGFloat panelW = stripW + 160.0;
         CGFloat panelH = sf.size.height - kMenuBarHeight;
         return NSMakeRect(sf.origin.x, sf.origin.y, panelW, panelH);
     }
     if ([_dockPosition isEqualToString:@"right"]) {
-        CGFloat panelW = _iconSize * _zoomFactor + 44.0;
+        /* Extra width on the left so labels (drawn left of icons) are not
+         * clipped.  The panel's right edge stays at the screen edge.       */
+        CGFloat stripW = _iconSize * _zoomFactor + 44.0;
+        CGFloat panelW = stripW + 160.0;
         CGFloat panelH = sf.size.height - kMenuBarHeight;
         return NSMakeRect(NSMaxX(sf) - panelW, sf.origin.y, panelW, panelH);
     }
@@ -218,8 +224,7 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
     CGFloat w = MAX(120.0, regularCount * itemSlot + (_iconSize + 24.0) + 20.0);
     w = MIN(w, sf.size.width - 40.0);
 
-    CGFloat x = sf.origin.x + floor((sf.size.width * 0.5)- w);
-    NSLog(@"sf.size.width = %f, sf.size.height = %f, sf.origin.x = %f, sf.origin.y = %f, w = %f, x = %f", sf.size.width, sf.size.height, sf.origin.x, sf.origin.y, w, x);
+    CGFloat x = sf.origin.x + floor((sf.size.width - w) * 0.5);
     return NSMakeRect(x, sf.origin.y, w, h);
 }
 

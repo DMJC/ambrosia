@@ -2208,18 +2208,32 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
         if (layer != ZWLR_LAYER_SHELL_V1_LAYER_TOP &&
             layer != ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM) continue;
 
+        /*
+         * Per wlr-layer-shell-v1 spec, a positive exclusive zone is only
+         * meaningful when the surface is anchored to exactly one edge, OR to
+         * one edge plus both perpendicular edges (spanning).  Corner anchors
+         * (two perpendicular edges, e.g. LEFT|BOTTOM) and parallel-edge or
+         * all-edge anchors have a meaningless zone (treated as -1).
+         * Check for the exact valid patterns to avoid misclassifying a corner-
+         * anchored dock (LEFT|BOTTOM) as a bottom-edge zone.
+         */
         uint32_t anchor = wls->current.anchor;
-        if (anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP) {
+        uint32_t T = ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP;
+        uint32_t B = ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
+        uint32_t L = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT;
+        uint32_t R = ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
+        if (anchor == T || anchor == (T|L|R)) {
             box->y      += ez;
             box->height -= ez;
-        } else if (anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM) {
+        } else if (anchor == B || anchor == (B|L|R)) {
             box->height -= ez;
-        } else if (anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT) {
+        } else if (anchor == L || anchor == (L|T|B)) {
             box->x     += ez;
             box->width -= ez;
-        } else if (anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT) {
+        } else if (anchor == R || anchor == (R|T|B)) {
             box->width -= ez;
         }
+        /* else: corner/parallel/all-edges anchor — zone is meaningless, skip */
     }
 }
 
@@ -2787,6 +2801,13 @@ static void handle_new_xwayland_surface(struct wl_listener *listener, void *data
     NSString *name = _appNameByPID[@(pid)];
     [_appNameLock unlock];
     return name;
+}
+
+- (NSPoint)dockAnimationTarget
+{
+    struct wlr_box box = {};
+    wlr_output_layout_get_box(_state->output_layout, NULL, &box);
+    return NSMakePoint(box.x + box.width / 2.0, box.y + box.height);
 }
 
 - (void)_handleCompPrefsNotification:(NSNotification *)note

@@ -94,28 +94,50 @@ static const CGFloat kRecyclerGap    = 18.0;
 - (NSRect)rectForIndex:(NSInteger)idx useBaseSize:(BOOL)useBase
 {
     NSArray *items = _controller.items;
+
+    if (_verticalLayout) {
+        /* Compute total layout height at base size so the group is centred
+         * vertically in the panel regardless of zoom level.               */
+        CGFloat totalH = 0;
+        for (NSInteger j = 0; j < (NSInteger)items.count; j++) {
+            DockItem *jItem = items[(NSUInteger)j];
+            if (jItem.itemType == DockItemTypeRecycler) totalH += kRecyclerGap;
+            totalH += _baseIconSize;
+            if (j < (NSInteger)items.count - 1) totalH += kItemPadding;
+        }
+        CGFloat startY = MAX(kDockPadding,
+                             (self.bounds.size.height - totalH) * 0.5);
+        CGFloat y = startY;
+
+        for (NSInteger i = 0; i < (NSInteger)items.count; i++) {
+            DockItem *item = items[(NSUInteger)i];
+            if (item.itemType == DockItemTypeRecycler) y += kRecyclerGap;
+            CGFloat size = useBase ? _baseIconSize
+                                   : (_baseIconSize * [self zoomForIndex:i]);
+            if (i == idx) {
+                CGFloat iconX = _rightSideDock
+                    ? (self.bounds.size.width - kDockPadding - size)
+                    : (kDockPadding + kRunningDotSize + kRunningDotGap);
+                return NSMakeRect(iconX, y, size, size);
+            }
+            y += size + kItemPadding;
+        }
+        return NSZeroRect;
+    }
+
+    /* Horizontal layout */
     CGFloat x = kDockPadding;
-    CGFloat y = kDockPadding;
     for (NSInteger i = 0; i < (NSInteger)items.count; i++) {
         DockItem *item = items[(NSUInteger)i];
-        /* Insert separator gap immediately before the recycler */
-        if (item.itemType == DockItemTypeRecycler) {
-            if (_verticalLayout) y += kRecyclerGap;
-            else x += kRecyclerGap;
-        }
+        if (item.itemType == DockItemTypeRecycler) x += kRecyclerGap;
         CGFloat size = useBase ? _baseIconSize
                                : (_baseIconSize * [self zoomForIndex:i]);
         if (i == idx) {
-            if (_verticalLayout) {
-                return NSMakeRect(kDockPadding + kRunningDotSize + kRunningDotGap,
-                                  y, size, size);
-            }
             return NSMakeRect(x,
                               kDockPadding + kRunningDotSize + kRunningDotGap,
                               size, size);
         }
-        if (_verticalLayout) y += size + kItemPadding;
-        else x += size + kItemPadding;
+        x += size + kItemPadding;
     }
     return NSZeroRect;
 }
@@ -193,7 +215,7 @@ static const CGFloat kRecyclerGap    = 18.0;
     NSRect bounds = self.bounds;
     CGFloat bgH   = _baseIconSize + 22.0;
     NSRect bgRect = _verticalLayout
-        ? NSMakeRect(0, 0, bgH, bounds.size.height)
+        ? NSMakeRect(_rightSideDock ? bounds.size.width - bgH : 0, 0, bgH, bounds.size.height)
         : NSMakeRect(0, 0, bounds.size.width, bgH);
 
     NSBezierPath *bg = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(bgRect, 2, 2)

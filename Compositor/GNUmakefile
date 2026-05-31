@@ -14,7 +14,8 @@ ambrosia-compositor_OBJC_FILES = \
 	AmbrosiaBackground.m \
 	Ambrosia3DBackground.m \
 	AmbrosiaDesktopIcons.m \
-	AmbrosiaSwitcher.m
+	AmbrosiaSwitcher.m \
+	AmbrosiaAnimation.m
 
 ambrosia-compositor_OBJCFLAGS = \
 	$(shell pkg-config --cflags wlroots-0.20 wayland-server xkbcommon cairo xcb xcb-icccm xcb-ewmh egl glesv2) \

@@ -515,17 +515,62 @@ static BOOL isGNUstepWindow(struct wlr_xdg_toplevel *toplevel)
 {
     if (_isMiniaturized) return;
     _isMiniaturized = YES;
-    /* Hide compositor-side scene node.  There is no standard XDG-shell state
-     * for "minimized", so the client is not notified; its surface continues
-     * to commit normally while invisible.                                   */
+
+    /* Cancel any in-flight deminiaturize animation */
+    [_animation cancel];
+    _animation = nil;
+
+    /* Hide real window immediately — animation shows a frozen snapshot */
     wlr_scene_node_set_enabled(&_state->scene_tree->node, false);
+
+    struct wlr_box geo = [self geometry];
+    NSEdgeInsets insets = _decoration ? [AmbrosiaDecoration frameInsets]
+                                      : (NSEdgeInsets){0, 0, 0, 0};
+    int cx = _x + (int)insets.left;
+    int cy = _y + (int)insets.top;
+    NSPoint target = [_compositor dockAnimationTarget];
+
+    __weak AmbrosiaView *weakSelf = self;
+    _animation = [[AmbrosiaAnimation alloc]
+        initMiniaturizeWithSurface:[self surface]
+                           windowX:cx windowY:cy
+                           windowW:geo.width windowH:geo.height
+                            targetX:(int)target.x targetY:(int)target.y
+                        overlayTree:_compositor.state->scene_layer_overlay
+                          eventLoop:_compositor.state->event_loop
+                         completion:^{ weakSelf.animation = nil; }];
 }
 
 - (void)deminiaturize
 {
     if (!_isMiniaturized) return;
     _isMiniaturized = NO;
-    wlr_scene_node_set_enabled(&_state->scene_tree->node, true);
+
+    /* Cancel any in-flight miniaturize animation */
+    [_animation cancel];
+    _animation = nil;
+
+    struct wlr_box geo = [self geometry];
+    NSEdgeInsets insets = _decoration ? [AmbrosiaDecoration frameInsets]
+                                      : (NSEdgeInsets){0, 0, 0, 0};
+    int cx = _x + (int)insets.left;
+    int cy = _y + (int)insets.top;
+    NSPoint source = [_compositor dockAnimationTarget];
+
+    __weak AmbrosiaView *weakSelf = self;
+    _animation = [[AmbrosiaAnimation alloc]
+        initDeminiaturizeWithSurface:[self surface]
+                             windowX:cx windowY:cy
+                             windowW:geo.width windowH:geo.height
+                              sourceX:(int)source.x sourceY:(int)source.y
+                          overlayTree:_compositor.state->scene_layer_overlay
+                            eventLoop:_compositor.state->event_loop
+                           completion:^{
+            AmbrosiaView *s = weakSelf;
+            if (s && !s.isMiniaturized)
+                wlr_scene_node_set_enabled(&s->_state->scene_tree->node, true);
+            s.animation = nil;
+        }];
 }
 
 /* ---------------------------------------------------------------------- */

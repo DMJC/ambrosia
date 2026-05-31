@@ -3,6 +3,7 @@
 
 #import <Foundation/Foundation.h>
 #import "AmbrosiaWindowView.h"
+#import "AmbrosiaAnimation.h"
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_server_decoration.h>
@@ -45,9 +46,11 @@ struct ambrosia_view_state {
 
 @interface AmbrosiaView : NSObject <AmbrosiaWindowView>
 
-@property (nonatomic, weak) AmbrosiaCompositor *compositor;
+@property (nonatomic, weak)   AmbrosiaCompositor  *compositor;
 @property (nonatomic, readonly) struct ambrosia_view_state *state;
-@property (nonatomic, strong, nullable) AmbrosiaDecoration *decoration;
+@property (nonatomic, strong, nullable) AmbrosiaDecoration  *decoration;
+/** Running Magic Lamp animation, if any. Cancels automatically on dealloc. */
+@property (nonatomic, strong, nullable) AmbrosiaAnimation   *animation;
 
 /** Position of the view (including decoration offset) in compositor space */
 @property (nonatomic) int x;

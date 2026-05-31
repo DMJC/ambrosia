@@ -198,6 +198,13 @@ struct ambrosia_compositor_state {
  *  menu server, or nil if no registration has been received for that PID.   */
 - (nullable NSString *)appNameForPID:(pid_t)pid;
 
+/**
+ * Returns the compositor-space point that Magic Lamp animations should target
+ * (miniaturize) or originate from (deminiaturize).  Computed as the horizontal
+ * centre of the primary output's bottom edge — where the dock lives.
+ */
+- (NSPoint)dockAnimationTarget;
+
 - (instancetype)init;
 - (BOOL)setup:(NSError **)error;
 - (void)run;
