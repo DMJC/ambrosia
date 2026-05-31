@@ -65,7 +65,9 @@ static NSDictionary *PrimaryMonitorFromSystemPreferences(void)
         [NSDictionary dictionaryWithContentsOfFile:SystemPreferencesPath()];
     if (![prefs isKindOfClass:[NSDictionary class]]) return nil;
 
-    NSArray *keyCandidates = @[@"Monitors", @"monitors", @"Monitor", @"monitor"];
+    /* The plist uses "Screens" as the array key. */
+    NSArray *keyCandidates = @[@"Screens", @"screens", @"Monitors", @"monitors",
+                                @"Monitor", @"monitor"];
     NSArray *monitors = nil;
     for (NSString *key in keyCandidates) {
         id value = prefs[key];
@@ -86,7 +88,8 @@ static NSDictionary *PrimaryMonitorFromSystemPreferences(void)
             [monitor[@"IsPrimary"] boolValue];
         if (isPrimary) return monitor;
     }
-    return nil;
+    /* Fall back to the first entry if none is marked primary. */
+    return [monitors firstObject];
 }
 
 static NSRect MenuBarRectForStartupScreen(void)
@@ -96,8 +99,15 @@ static NSRect MenuBarRectForStartupScreen(void)
 
     NSDictionary *primaryMonitor = PrimaryMonitorFromSystemPreferences();
     if (primaryMonitor) {
-        double width =
-            [primaryMonitor[@"width"] doubleValue] ?: [primaryMonitor[@"Width"] doubleValue];
+        /* Physical pixel width is nested under "resolution" in the plist
+         * written by SystemPreferences (e.g. resolution.width = 2560).
+         * Fall back to a flat "width" key for older plist formats.        */
+        NSDictionary *res = primaryMonitor[@"resolution"];
+        double width = [res[@"width"] doubleValue];
+        if (width <= 0.0)
+            width = [primaryMonitor[@"width"] doubleValue]
+                 ?: [primaryMonitor[@"Width"] doubleValue];
+
         double scale =
             [primaryMonitor[@"scale"] doubleValue] ?: [primaryMonitor[@"Scale"] doubleValue];
 
