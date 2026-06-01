@@ -109,9 +109,10 @@ static const CGFloat kRecyclerGap    = 18.0;
                              (self.bounds.size.height - totalH) * 0.5);
         CGFloat y = startY;
 
-        for (NSInteger i = 0; i < (NSInteger)items.count; i++) {
+        /* Iterate bottom-to-top in reverse so the Recycler (last item) sits
+         * at the bottom; gap appears above it, regular items stack upward. */
+        for (NSInteger i = (NSInteger)items.count - 1; i >= 0; i--) {
             DockItem *item = items[(NSUInteger)i];
-            if (item.itemType == DockItemTypeRecycler) y += kRecyclerGap;
             CGFloat size = useBase ? _baseIconSize
                                    : (_baseIconSize * [self zoomForIndex:i]);
             if (i == idx) {
@@ -121,6 +122,8 @@ static const CGFloat kRecyclerGap    = 18.0;
                 return NSMakeRect(iconX, y, size, size);
             }
             y += size + kItemPadding;
+            /* Gap goes above the recycler, separating it from regular items. */
+            if (item.itemType == DockItemTypeRecycler) y += kRecyclerGap;
         }
         return NSZeroRect;
     }
@@ -236,7 +239,8 @@ static const CGFloat kRecyclerGap    = 18.0;
             /* Thin separator line midway through the gap */
             [[NSColor colorWithCalibratedWhite:0.55 alpha:0.45] set];
             if (_verticalLayout) {
-                CGFloat sepY = iconRect.origin.y - kRecyclerGap * 0.5;
+                /* Recycler is at the bottom; separator sits above it. */
+                CGFloat sepY = NSMaxY(iconRect) + kRecyclerGap * 0.5;
                 NSRectFill(NSMakeRect(kDockPadding, sepY, _baseIconSize + 4, 1.0));
             } else {
                 CGFloat sepX = iconRect.origin.x - kRecyclerGap * 0.5;
