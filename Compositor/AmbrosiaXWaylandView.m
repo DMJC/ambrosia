@@ -496,6 +496,11 @@ static BOOL isDockXWayland(struct wlr_xwayland_surface *xs)
         wlr_scene_node_destroy(&_state->scene_tree->node);
         _state->scene_tree = NULL;
     }
+    /* _decorTree (and _titleSceneBuf within it) was a child of scene_tree and
+     * was just destroyed along with it — drop the now-dangling decoration so
+     * a late set_title (the xwayland_surface listener survives dissociate)
+     * can't call back into freed wlroots scene objects. */
+    _decoration = nil;
 }
 
 /* Returns YES if this override-redirect window covers an entire output —
