@@ -60,6 +60,13 @@
 /** Apply updated preferences (called by SystemPreferences applet) */
 - (void)applyPreferences:(NSDictionary *)prefs;
 
+/**
+ * Called by DockView on any mouse activity over the dock (movement, hover,
+ * clicks, drags). Resets the auto-hide idle timer and, if the dock is
+ * currently hidden, reveals it.
+ */
+- (void)noteUserActivity;
+
 @end
 
 #endif /* DOCK_CONTROLLER_H */

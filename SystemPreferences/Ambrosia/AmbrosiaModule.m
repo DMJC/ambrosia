@@ -16,6 +16,10 @@ static NSString *const kDesktopPrefsChanged = @"AmbrosiaDesktopPrefsChanged";
 static const NSInteger kIntervalValues[] = { 5, 10, 30, 60, 300, 600 };
 static const NSUInteger kIntervalCount   = 6;
 
+/* Discrete auto-hide delay values exposed on the slider (position → seconds). */
+static const NSInteger kAutoHideDelayValues[] = { 3, 5, 10, 20, 30, 60, 120 };
+static const NSUInteger kAutoHideDelayCount   = 7;
+
 @interface AmbrosiaModule () <NSTableViewDataSource, NSTableViewDelegate>
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *dockItems;
 @property (nonatomic, strong) NSMutableArray<NSDictionary *> *sessionItems;
@@ -161,6 +165,26 @@ static NSString *intervalLabel(NSInteger secs)
             (secs / 60 == 1) ? "" : "s"];
 }
 
+/* Convert an auto-hide delay slider position (0…kAutoHideDelayCount-1) to seconds. */
+static NSInteger autoHideDelayForSliderPos(NSInteger pos)
+{
+    if (pos < 0) pos = 0;
+    if (pos >= (NSInteger)kAutoHideDelayCount) pos = (NSInteger)kAutoHideDelayCount - 1;
+    return kAutoHideDelayValues[(NSUInteger)pos];
+}
+
+/* Find the slider position closest to a given auto-hide delay in seconds. */
+static NSInteger sliderPosForAutoHideDelay(NSInteger secs)
+{
+    NSInteger best = 0;
+    NSInteger bestDiff = ABS(kAutoHideDelayValues[0] - secs);
+    for (NSUInteger i = 1; i < kAutoHideDelayCount; i++) {
+        NSInteger diff = ABS(kAutoHideDelayValues[i] - secs);
+        if (diff < bestDiff) { bestDiff = diff; best = (NSInteger)i; }
+    }
+    return best;
+}
+
 /* Add a label + slider + value-label row to |tab| at y, return next y */
 - (CGFloat)addSliderRow:(NSView *)tab
                   label:(NSString *)labelText
@@ -301,6 +325,19 @@ static NSString *intervalLabel(NSInteger secs)
     [_autoHideCheck setAction:@selector(toggleAutoHide:)];
     [tab addSubview:_autoHideCheck];
     y += MV_ROW_H + MV_ROW_GAP;
+
+    /* Auto-hide delay */
+    _autoHideDelaySlider = [[NSSlider alloc] initWithFrame:NSZeroRect];
+    _autoHideDelaySlider.minValue                 = 0;
+    _autoHideDelaySlider.maxValue                 = (double)(kAutoHideDelayCount - 1);
+    _autoHideDelaySlider.numberOfTickMarks        = (NSInteger)kAutoHideDelayCount;
+    _autoHideDelaySlider.allowsTickMarkValuesOnly = YES;
+    [_autoHideDelaySlider setTarget:self];
+    [_autoHideDelaySlider setAction:@selector(autoHideDelayChanged:)];
+    _autoHideDelayLabel = MakeValueLabel();
+    y = [self addSliderRow:tab label:@"Auto-hide Delay:"
+                    slider:_autoHideDelaySlider valueLabel:_autoHideDelayLabel atY:y];
+    [_autoHideDelayLabel setBezeled:NO];
 
     _showRunningIndicatorCheck = MakeCheckbox(@"Show Running Indicators");
     _showRunningIndicatorCheck.frame = NSMakeRect(MV_MARGIN, y,
@@ -723,8 +760,18 @@ static NSButton *MakeRadioButton(NSString *title)
     else if ([pos isEqualToString:@"left"])  [_positionControl setSelectedSegment:1];
     else if ([pos isEqualToString:@"right"]) [_positionControl setSelectedSegment:2];
 
-    _autoHideCheck.state =
-        [_dockPrefs[@"autoHide"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
+    BOOL autoHide = [_dockPrefs[@"autoHide"] boolValue];
+    _autoHideCheck.state = autoHide ? NSControlStateValueOn : NSControlStateValueOff;
+
+    NSInteger autoHideDelay = [_dockPrefs[@"autoHideDelay"] integerValue];
+    if (autoHideDelay <= 0) autoHideDelay = 10;
+    _autoHideDelaySlider.integerValue = sliderPosForAutoHideDelay(autoHideDelay);
+    _autoHideDelaySlider.enabled = autoHide;
+    _autoHideDelayLabel.stringValue =
+        intervalLabel(autoHideDelayForSliderPos(_autoHideDelaySlider.integerValue));
+    _autoHideDelayLabel.textColor = autoHide
+        ? [NSColor controlTextColor] : [NSColor disabledControlTextColor];
+
     _showRunningIndicatorCheck.state =
         (_dockPrefs[@"showRunningDots"] ? [_dockPrefs[@"showRunningDots"] boolValue] : YES)
         ? NSControlStateValueOn : NSControlStateValueOff;
@@ -808,7 +855,21 @@ static NSButton *MakeRadioButton(NSString *title)
 }
 
 - (IBAction)dockPositionChanged:(id)sender { }
-- (IBAction)toggleAutoHide:(id)sender { }
+
+- (IBAction)toggleAutoHide:(id)sender
+{
+    BOOL enabled = (_autoHideCheck.state == NSControlStateValueOn);
+    _autoHideDelaySlider.enabled = enabled;
+    _autoHideDelayLabel.textColor = enabled
+        ? [NSColor controlTextColor] : [NSColor disabledControlTextColor];
+}
+
+- (IBAction)autoHideDelayChanged:(id)sender
+{
+    NSInteger secs = autoHideDelayForSliderPos(_autoHideDelaySlider.integerValue);
+    _autoHideDelayLabel.stringValue = intervalLabel(secs);
+}
+
 - (IBAction)toggleRunningIndicator:(id)sender { }
 
 - (IBAction)addDockItem:(id)sender
@@ -1099,6 +1160,7 @@ static NSButton *MakeRadioButton(NSString *title)
     _dockPrefs[@"zoomFactor"]      = @(_zoomFactorSlider.doubleValue);
     _dockPrefs[@"dockPosition"]    = pos;
     _dockPrefs[@"autoHide"]        = @(_autoHideCheck.state == NSControlStateValueOn);
+    _dockPrefs[@"autoHideDelay"]   = @(autoHideDelayForSliderPos(_autoHideDelaySlider.integerValue));
     _dockPrefs[@"showRunningDots"] = @(_showRunningIndicatorCheck.state == NSControlStateValueOn);
     _dockPrefs[@"items"]           = [_dockItems copy];
     SavePlist(_dockPrefs, _dockPrefsPath);
@@ -1109,6 +1171,7 @@ static NSButton *MakeRadioButton(NSString *title)
         @"zoomFactor":      _dockPrefs[@"zoomFactor"],
         @"dockPosition":    pos,
         @"autoHide":        _dockPrefs[@"autoHide"],
+        @"autoHideDelay":   _dockPrefs[@"autoHideDelay"],
         @"showRunningDots": _dockPrefs[@"showRunningDots"],
     };
     [[NSDistributedNotificationCenter defaultCenter]

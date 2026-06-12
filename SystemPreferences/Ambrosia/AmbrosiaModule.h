@@ -31,6 +31,8 @@
 @property (nonatomic, strong) IBOutlet NSTextField    *zoomFactorLabel;
 @property (nonatomic, strong) IBOutlet NSSegmentedControl *positionControl;
 @property (nonatomic, strong) IBOutlet NSButton       *autoHideCheck;
+@property (nonatomic, strong) IBOutlet NSSlider       *autoHideDelaySlider;
+@property (nonatomic, strong) IBOutlet NSTextField    *autoHideDelayLabel;
 @property (nonatomic, strong) IBOutlet NSButton       *showRunningIndicatorCheck;
 @property (nonatomic, strong) IBOutlet NSTableView    *dockItemsTable;
 @property (nonatomic, strong) IBOutlet NSButton       *addItemButton;
@@ -73,6 +75,7 @@
 - (IBAction)zoomFactorChanged:(id)sender;
 - (IBAction)dockPositionChanged:(id)sender;
 - (IBAction)toggleAutoHide:(id)sender;
+- (IBAction)autoHideDelayChanged:(id)sender;
 - (IBAction)toggleRunningIndicator:(id)sender;
 - (IBAction)addDockItem:(id)sender;
 - (IBAction)removeDockItem:(id)sender;

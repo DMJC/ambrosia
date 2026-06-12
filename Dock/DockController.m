@@ -14,12 +14,20 @@
  * extend into this area, so we subtract it from the sidebar panel height. */
 static const CGFloat kMenuBarHeight = 24.0;
 
-static NSString *const kPrefsIconSize    = @"iconSize";
-static NSString *const kPrefsZoomFactor  = @"zoomFactor";
-static NSString *const kPrefsPosition    = @"dockPosition";
-static NSString *const kPrefsAutoHide    = @"autoHide";
-static NSString *const kPrefsShowDots    = @"showRunningDots";
-static NSString *const kPrefsItems       = @"items";
+static NSString *const kPrefsIconSize     = @"iconSize";
+static NSString *const kPrefsZoomFactor   = @"zoomFactor";
+static NSString *const kPrefsPosition     = @"dockPosition";
+static NSString *const kPrefsAutoHide     = @"autoHide";
+static NSString *const kPrefsAutoHideDelay = @"autoHideDelay";
+static NSString *const kPrefsShowDots     = @"showRunningDots";
+static NSString *const kPrefsItems        = @"items";
+
+/* Default idle time (seconds) before the dock auto-hides. */
+static const NSTimeInterval kDefaultAutoHideDelay = 10.0;
+
+/* Thickness (in points) of the hot-edge strip the dock shrinks to when
+ * auto-hidden. Mouse entry on this strip reveals the dock again. */
+static const CGFloat kAutoHideEdgeSize = 4.0;
 
 /* Apps that must never appear in the dock as running-app entries or defaults.
  * These are Ambrosia infrastructure processes, not user-visible applications. */
@@ -79,6 +87,9 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
     NSMutableArray<NSRunningApplication *> *_runningApps;
     id _workspaceObserver;
     BOOL _autoHide;
+    NSTimeInterval _autoHideDelay;
+    NSTimer *_autoHideTimer;
+    BOOL _dockHidden;
     BOOL _showRunningDots;
     ForceQuitController *_forceQuitController;
     NSTimer *_runningAppsSweepTimer;
@@ -103,6 +114,8 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
     _zoomFactor      = 1.7;
     _dockPosition    = @"bottom";
     _autoHide        = NO;
+    _autoHideDelay   = kDefaultAutoHideDelay;
+    _dockHidden      = NO;
     _showRunningDots = YES;
 
     NSArray *domainDirs = NSSearchPathForDirectoriesInDomains(
@@ -117,6 +130,9 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
 {
     [_runningAppsSweepTimer invalidate];
     _runningAppsSweepTimer = nil;
+
+    [_autoHideTimer invalidate];
+    _autoHideTimer = nil;
 
     if (_workspaceObserver)
         [[NSWorkspace sharedWorkspace].notificationCenter
@@ -134,6 +150,7 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
     [self repositionDock];
     [self observeRunningApps];
     [self observeForceQuitRequests];
+    [self _resetAutoHideTimer];
     [[NSDistributedNotificationCenter defaultCenter]
         addObserver:self
            selector:@selector(_handlePrefsChanged:)
@@ -286,6 +303,7 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
         _zoomFactor      = [defaults[kPrefsZoomFactor] doubleValue] ?: 1.7;
         _dockPosition    = defaults[kPrefsPosition] ?: @"bottom";
         _autoHide        = [defaults[kPrefsAutoHide]   boolValue];
+        _autoHideDelay   = [defaults[kPrefsAutoHideDelay] doubleValue] ?: kDefaultAutoHideDelay;
         _showRunningDots = defaults[kPrefsShowDots]
                            ? [defaults[kPrefsShowDots] boolValue] : YES;
         [self loadDefaultItems];
@@ -298,6 +316,8 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
                        ?: ([defaults[kPrefsZoomFactor] doubleValue] ?: 1.7);
     _dockPosition    = prefs[kPrefsPosition]  ?: defaults[kPrefsPosition]  ?: @"bottom";
     _autoHide        = [prefs[kPrefsAutoHide]   boolValue];
+    _autoHideDelay   = [prefs[kPrefsAutoHideDelay] doubleValue]
+                       ?: ([defaults[kPrefsAutoHideDelay] doubleValue] ?: kDefaultAutoHideDelay);
     _showRunningDots = prefs[kPrefsShowDots]
                        ? [prefs[kPrefsShowDots] boolValue]
                        : (defaults[kPrefsShowDots]
@@ -444,6 +464,7 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
         kPrefsZoomFactor: @(_zoomFactor),
         kPrefsPosition:   _dockPosition ?: @"bottom",
         kPrefsAutoHide:   @(_autoHide),
+        kPrefsAutoHideDelay: @(_autoHideDelay),
         kPrefsShowDots:   @(_showRunningDots),
         kPrefsItems:      rawItems,
     };
@@ -462,11 +483,15 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
     if (prefs[kPrefsZoomFactor]) _zoomFactor  = [prefs[kPrefsZoomFactor] doubleValue];
     if (prefs[kPrefsPosition])   _dockPosition = prefs[kPrefsPosition];
     if (prefs[kPrefsAutoHide])   _autoHide    = [prefs[kPrefsAutoHide]   boolValue];
+    if (prefs[kPrefsAutoHideDelay]) _autoHideDelay = [prefs[kPrefsAutoHideDelay] doubleValue];
     if (prefs[kPrefsShowDots])   _showRunningDots = [prefs[kPrefsShowDots] boolValue];
+
+    if (!_autoHide) _dockHidden = NO;
 
     _dockView.baseIconSize  = _iconSize;
     _dockView.maxZoomFactor = _zoomFactor;
     [self repositionDock];
+    [self _resetAutoHideTimer];
     [self savePreferences];
     [_dockView reloadItems];
 }
@@ -1030,15 +1055,88 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
 
 - (void)repositionDock
 {
+    [self _repositionDockAnimated:NO];
+}
+
+- (void)_repositionDockAnimated:(BOOL)animate
+{
     NSScreen *screen = [NSScreen mainScreen];
-    NSRect rect = [self dockRectForScreen:screen];
-    [_dockPanel setFrame:rect display:YES animate:NO];
+    NSRect rect = _dockHidden ? [self _hotEdgeRectForScreen:screen]
+                              : [self dockRectForScreen:screen];
+    [_dockPanel setFrame:rect display:YES animate:animate];
     _dockView.baseIconSize   = _iconSize;
     _dockView.maxZoomFactor  = _zoomFactor;
     _dockView.verticalLayout = ![_dockPosition isEqualToString:@"bottom"];
     _dockView.rightSideDock  = [_dockPosition isEqualToString:@"right"];
+    _dockView.autoHidden     = _dockHidden;
     [_dockView setFrame:((NSView *)_dockPanel.contentView).bounds];
     [_dockView setNeedsDisplay:YES];
+}
+
+/* ---------------------------------------------------------------------- */
+#pragma mark - Auto-hide
+
+/** Returns the thin hot-edge strip the dock shrinks to while auto-hidden. */
+- (NSRect)_hotEdgeRectForScreen:(NSScreen *)screen
+{
+    NSRect full = [self dockRectForScreen:screen];
+    const CGFloat hot = kAutoHideEdgeSize;
+
+    if ([_dockPosition isEqualToString:@"left"]) {
+        return NSMakeRect(full.origin.x, full.origin.y, hot, full.size.height);
+    }
+    if ([_dockPosition isEqualToString:@"right"]) {
+        return NSMakeRect(NSMaxX(full) - hot, full.origin.y, hot, full.size.height);
+    }
+    return NSMakeRect(full.origin.x, full.origin.y, full.size.width, hot);
+}
+
+- (void)_hideDock
+{
+    if (_dockHidden) return;
+    _dockHidden = YES;
+    [self _repositionDockAnimated:YES];
+}
+
+- (void)_revealDock
+{
+    if (!_dockHidden) return;
+    _dockHidden = NO;
+    [self _repositionDockAnimated:YES];
+}
+
+- (void)_resetAutoHideTimer
+{
+    [_autoHideTimer invalidate];
+    _autoHideTimer = nil;
+    if (!_autoHide) return;
+
+    _autoHideTimer = [NSTimer scheduledTimerWithTimeInterval:_autoHideDelay
+                                                       target:self
+                                                     selector:@selector(_autoHideTimerFired:)
+                                                     userInfo:nil
+                                                      repeats:NO];
+}
+
+- (void)_autoHideTimerFired:(NSTimer *)timer
+{
+    _autoHideTimer = nil;
+    if (!_autoHide || _dockHidden) return;
+
+    /* Don't hide while the pointer is sitting motionless over the dock;
+     * recheck once more after the same delay. */
+    if (_dockView.mouseInside) {
+        [self _resetAutoHideTimer];
+        return;
+    }
+    [self _hideDock];
+}
+
+- (void)noteUserActivity
+{
+    if (!_autoHide) return;
+    if (_dockHidden) [self _revealDock];
+    [self _resetAutoHideTimer];
 }
 
 @end

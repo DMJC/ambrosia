@@ -29,6 +29,8 @@ static const CGFloat kRecyclerGap    = 18.0;
 @synthesize verticalLayout  = _verticalLayout;
 @synthesize rightSideDock   = _rightSideDock;
 @synthesize isDragging      = _isDragging;
+@synthesize mouseInside     = _mouseInside;
+@synthesize autoHidden      = _autoHidden;
 
 - (instancetype)initWithFrame:(NSRect)frame
 {
@@ -215,6 +217,10 @@ static const CGFloat kRecyclerGap    = 18.0;
 
 - (void)drawRect:(NSRect)dirtyRect
 {
+    /* While shrunk to the auto-hide hot edge, stay invisible so the strip
+     * doesn't draw a stray sliver of background/icons. */
+    if (_autoHidden) { (void)dirtyRect; return; }
+
     NSRect bounds = self.bounds;
     CGFloat bgH   = _baseIconSize + 22.0;
     NSRect bgRect = _verticalLayout
@@ -351,24 +357,31 @@ static const CGFloat kRecyclerGap    = 18.0;
 {
     _mouseLocation = [self convertPoint:event.locationInWindow fromView:nil];
     _hoveredIndex  = [self indexAtPoint:_mouseLocation];
+    [_controller noteUserActivity];
     [self setNeedsDisplay:YES];
 }
 
 - (void)mouseEntered:(NSEvent *)event
 {
+    _mouseInside   = YES;
     _mouseLocation = [self convertPoint:event.locationInWindow fromView:nil];
     _hoveredIndex  = [self indexAtPoint:_mouseLocation];
+    [_controller noteUserActivity];
     [self setNeedsDisplay:YES];
 }
 
 - (void)mouseExited:(NSEvent *)event
 {
+    _mouseInside  = NO;
     _hoveredIndex = -1;
+    [_controller noteUserActivity];
     [self setNeedsDisplay:YES];
 }
 
 - (void)mouseDown:(NSEvent *)event
 {
+    [_controller noteUserActivity];
+
     NSPoint   pt  = [self convertPoint:event.locationInWindow fromView:nil];
     NSInteger idx = [self indexAtPoint:pt];
     if (idx < 0) return;
@@ -387,6 +400,8 @@ static const CGFloat kRecyclerGap    = 18.0;
 
 - (void)mouseUp:(NSEvent *)event
 {
+    [_controller noteUserActivity];
+
     NSPoint   pt  = [self convertPoint:event.locationInWindow fromView:nil];
     NSInteger idx = [self indexAtPoint:pt];
     if (!_isDragging && idx >= 0 && idx == _draggingFromIndex) {
@@ -405,6 +420,7 @@ static const CGFloat kRecyclerGap    = 18.0;
     if (_draggingFromIndex < 0) return;
     if (_isDragging) return;
 
+    [_controller noteUserActivity];
     _isDragging = YES;
 
     DockItem *item    = _controller.items[(NSUInteger)_draggingFromIndex];
