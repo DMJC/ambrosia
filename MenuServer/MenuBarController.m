@@ -52,6 +52,13 @@ static BOOL ReadMenuBarPref(NSString *key)
     return [prefs[key] boolValue];
 }
 
+static NSString *ReadMenuBarStringPref(NSString *key)
+{
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:MenuBarPrefsPath()];
+    NSString *value = prefs[key];
+    return [value isKindOfClass:[NSString class]] ? value : nil;
+}
+
 /* Shared plist path for monitor configuration written by SystemPreferences. */
 static NSString *SystemPreferencesPath(void)
 {
@@ -855,6 +862,32 @@ static NSString * const kForeignWindowIdentifierPrefix = @"__ambrosia_foreign_wi
         }
     }
     NSLog(@"MenuServer: no terminal emulator found in standard locations.");
+}
+
+- (void)launchCalendar
+{
+    /* CalendarAppPath in AmbrosiaMenuBar.plist overrides the default app. */
+    NSString *overridePath = ReadMenuBarStringPref(@"CalendarAppPath");
+
+    NSMutableArray<NSString *> *candidates = [NSMutableArray array];
+    if (overridePath.length) [candidates addObject:overridePath];
+    [candidates addObjectsFromArray:@[
+        @"/usr/GNUstep/Local/Applications/SimpleAgenda.app",
+        @"/usr/GNUstep/System/Applications/SimpleAgenda.app",
+        @"/usr/local/GNUstep/Local/Applications/SimpleAgenda.app",
+        [NSHomeDirectory() stringByAppendingPathComponent:
+            @"GNUstep/Applications/SimpleAgenda.app"],
+    ]];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *path in candidates) {
+        if ([fm fileExistsAtPath:path]) {
+            [[NSWorkspace sharedWorkspace] launchApplication:path];
+            return;
+        }
+    }
+    NSLog(@"MenuServer: calendar app not found (looked for %@)",
+          overridePath.length ? overridePath : @"SimpleAgenda.app");
 }
 
 - (void)shutdown

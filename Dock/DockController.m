@@ -1124,8 +1124,12 @@ static const NSInteger kAmbrosiaDockWindowLevel = 22;
     if (!_autoHide || _dockHidden) return;
 
     /* Don't hide while the pointer is sitting motionless over the dock;
-     * recheck once more after the same delay. */
-    if (_dockView.mouseInside) {
+     * recheck once more after the same delay. Query the live pointer
+     * position rather than a tracking-rect flag: resetTrackingRect (called
+     * whenever the panel is resized, e.g. by _revealDock) re-registers the
+     * tracking rect with assumeInside:NO even if the pointer is currently
+     * inside it, which can leave a stale "inside" flag that never clears. */
+    if (NSPointInRect([_dockPanel mouseLocationOutsideOfEventStream], _dockView.bounds)) {
         [self _resetAutoHideTimer];
         return;
     }

@@ -46,6 +46,9 @@
 /** Launch a terminal emulator. */
 - (void)openTerminal;
 
+/** Launch the calendar app (SimpleAgenda.app by default, overridable via prefs). */
+- (void)launchCalendar;
+
 /** Post the AmbrosiaLogoutRequest notification (with confirmation alert). */
 - (void)logout;
 

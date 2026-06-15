@@ -33,6 +33,7 @@ typedef NS_ENUM(NSInteger, MenuBarRegion) {
     MenuBarRegionNone        = -1,
     MenuBarRegionAmbrosia    =  0,
     MenuBarRegionSession     =  1,
+    MenuBarRegionClock       =  2,
     MenuBarRegionTrayItem    =  200,  /* tray icons 200…249; index = tag − 200 */
     MenuBarRegionStatusItem  =  50,   /* plugins 50…99;  index = tag − 50  */
     MenuBarRegionMenuItem    =  100,  /* items >= 100;   index = tag − 100  */
@@ -125,6 +126,19 @@ static NSDictionary *GrayedItemAttrs(BOOL highlighted)
         NSForegroundColorAttributeName: fg,
         NSFontAttributeName: MenuFont(),
     };
+}
+
+/* Ordinal suffix for a day-of-month number: 1 -> "st", 2 -> "nd", 11 -> "th", etc. */
+static NSString *OrdinalSuffixForDay(NSInteger day)
+{
+    NSInteger rem100 = day % 100;
+    if (rem100 >= 11 && rem100 <= 13) return @"th";
+    switch (day % 10) {
+        case 1:  return @"st";
+        case 2:  return @"nd";
+        case 3:  return @"rd";
+        default: return @"th";
+    }
 }
 
 /* Centre a string rect vertically inside a bar-item rect */
@@ -322,7 +336,11 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     NSSize clockSz  = [clock sizeWithAttributes:NormalAttrs()];
     CGFloat clockW  = clockSz.width + kItemPad * 2;
     _clockRect = NSMakeRect(rightX - clockW, 0, clockW, kBarHeight);
-    [self _drawLabelInRect:_clockRect label:clock attrs:NormalAttrs()];
+    [self _drawBarButton:_clockRect
+                   label:clock
+                   attrs:NormalAttrs()
+               isPressed:(_pressedRegion == MenuBarRegionClock)
+                  isOpen:(_openTag == MenuBarRegionClock)];
     rightX -= clockW + kItemGap;
 
     /* ---- RIGHT SIDE: status item plugins (right-to-left) ---- */
@@ -877,6 +895,7 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
 
     if (NSPointInRect(pt, _ambrosiaRect)) return MenuBarRegionAmbrosia;
     if (NSPointInRect(pt, _sessionRect))  return MenuBarRegionSession;
+    if (NSPointInRect(pt, _clockRect))    return MenuBarRegionClock;
     for (NSUInteger i = 0; i < _trayRects.count; i++) {
         NSRect r = [_trayRects[i] rectValue];
         if (r.size.width == 0) continue;
@@ -957,6 +976,9 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     if (region == MenuBarRegionAmbrosia) {
         descriptors = [self _systemDescriptorsForAmbrosia];
         openX = _ambrosiaRect.origin.x;
+    } else if (region == MenuBarRegionClock) {
+        descriptors = [self _systemDescriptorsForClock];
+        openX = _clockRect.origin.x;
     } else if (region == MenuBarRegionSession) {
         descriptors = [self _systemDescriptorsForSession];
         openX = _sessionRect.origin.x;
@@ -1086,12 +1108,40 @@ static NSRect CentreInRect(NSString *s, NSDictionary *a, NSRect r)
     ];
 }
 
+/* Build a single, non-interactive row showing the full date and time,
+ * e.g. "15th of June 2026 9:24 AM". */
+- (NSArray *)_systemDescriptorsForClock
+{
+    NSDate *now = [NSDate date];
+
+    NSCalendar *cal = [NSCalendar currentCalendar];
+    NSInteger day = [cal component:NSCalendarUnitDay fromDate:now];
+
+    NSDateFormatter *monthYearFmt = [[NSDateFormatter alloc] init];
+    [monthYearFmt setDateFormat:@"MMMM yyyy"];
+    NSString *monthYear = [monthYearFmt stringFromDate:now];
+
+    NSDateFormatter *timeFmt = [[NSDateFormatter alloc] init];
+    [timeFmt setDateFormat:@"h:mm a"];
+    NSString *time = [timeFmt stringFromDate:now];
+
+    NSString *title = [NSString stringWithFormat:@"%ld%@ of %@ %@",
+                        (long)day, OrdinalSuffixForDay(day), monthYear, time];
+
+    return @[
+        @{ kSysItemTitle: title, kMenuItemEnabled: @NO },
+        @{ kSysItemSep: @YES },
+        @{ kSysItemTitle: @"Launch Calendar", kSysItemSel: @"_doLaunchCalendar" },
+    ];
+}
+
 /* ---------------------------------------------------------------------- */
 #pragma mark - System-menu action targets (called via _activateDropdownItem:)
 
 - (void)_doAbout       { [_controller showAbout]; }
 - (void)_doPreferences { [_controller openSystemPreferences]; }
 - (void)_doTerminal    { [_controller openTerminal]; }
+- (void)_doLaunchCalendar { [_controller launchCalendar]; }
 - (void)_doGFinder     { [_controller openGFinder]; }
 - (void)_doLogout      { [_controller logout]; }
 - (void)_doShutdown    { [_controller shutdown]; }

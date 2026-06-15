@@ -29,7 +29,6 @@ static const CGFloat kRecyclerGap    = 18.0;
 @synthesize verticalLayout  = _verticalLayout;
 @synthesize rightSideDock   = _rightSideDock;
 @synthesize isDragging      = _isDragging;
-@synthesize mouseInside     = _mouseInside;
 @synthesize autoHidden      = _autoHidden;
 
 - (instancetype)initWithFrame:(NSRect)frame
@@ -218,8 +217,16 @@ static const CGFloat kRecyclerGap    = 18.0;
 - (void)drawRect:(NSRect)dirtyRect
 {
     /* While shrunk to the auto-hide hot edge, stay invisible so the strip
-     * doesn't draw a stray sliver of background/icons. */
-    if (_autoHidden) { (void)dirtyRect; return; }
+     * doesn't draw a stray sliver of background/icons. Still draw (a fully
+     * transparent fill) so a buffer is committed for the new size — if
+     * drawRect: returns without drawing anything, the wl_surface can end up
+     * with no buffer attached for the shrunken size and stop receiving
+     * pointer input, breaking hot-edge reveal. */
+    if (_autoHidden) {
+        [[NSColor clearColor] set];
+        NSRectFillUsingOperation(dirtyRect, NSCompositeCopy);
+        return;
+    }
 
     NSRect bounds = self.bounds;
     CGFloat bgH   = _baseIconSize + 22.0;
@@ -363,7 +370,6 @@ static const CGFloat kRecyclerGap    = 18.0;
 
 - (void)mouseEntered:(NSEvent *)event
 {
-    _mouseInside   = YES;
     _mouseLocation = [self convertPoint:event.locationInWindow fromView:nil];
     _hoveredIndex  = [self indexAtPoint:_mouseLocation];
     [_controller noteUserActivity];
@@ -372,7 +378,6 @@ static const CGFloat kRecyclerGap    = 18.0;
 
 - (void)mouseExited:(NSEvent *)event
 {
-    _mouseInside  = NO;
     _hoveredIndex = -1;
     [_controller noteUserActivity];
     [self setNeedsDisplay:YES];

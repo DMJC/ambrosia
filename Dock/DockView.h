@@ -27,9 +27,6 @@
 /** YES while a drag is in progress originating from this dock */
 @property (nonatomic, readonly) BOOL isDragging;
 
-/** YES while the pointer is within the dock view's bounds */
-@property (nonatomic, readonly) BOOL mouseInside;
-
 /**
  * Set by the controller when the dock has shrunk to its auto-hide hot-edge
  * strip. While YES, drawRect: skips normal content so the strip stays
