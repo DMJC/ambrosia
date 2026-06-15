@@ -28,6 +28,11 @@ Ambrosia is organized as GNUstep subprojects (Compositor, Dock, MenuServer, Syst
 - **Build tooling**
   - `pkg-config` (used to resolve compiler/linker flags)
 
+- **GNUstep Applications**
+ - `SimpleAgenda.app` For MenuServer calendar
+ - `Terminal.app` Default System Terminal
+ - `GFinder.app` File Manager
+
 Screenshot of Desktop Environment:
 
 <img width="2552" height="1543" alt="Ambrosia-Desktop" src="https://github.com/user-attachments/assets/f467db09-3bf3-48c6-bd37-574bdc0319b4" />
